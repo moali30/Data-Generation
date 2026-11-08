@@ -32,6 +32,7 @@ right-to-left is the wrong log.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -64,7 +65,8 @@ SPEC_TO_METHOD: Dict[str, str] = {v: k for k, v in METHOD_CHOICES}
 #: holding a frame with no columns at all: :class:`DataFrameModel` announces a
 #: header change for section 0 when the language switches, and on an empty
 #: frame there is no section 0 for the sort proxy to map.
-EMPTY_HISTORY_COLUMNS: Tuple[str, ...] = ("round", "rmsea", "cfi", "srmr")
+EMPTY_HISTORY_COLUMNS: Tuple[str, ...] = (
+    "round", "injected_rmsea", "realised_rmsea", "target_rmsea", "deviation")
 
 
 def empty_history() -> pd.DataFrame:
@@ -119,15 +121,23 @@ def _size_to_content(panel: TablePanel, max_rows: int, *,
     """
     table = panel.table
     header = table.horizontalHeader()
-    if header.count():
+    columns = header.count()
+    if columns:
         # stretchLastSection only ever *grows* the final column, so it has to
         # come off before the stretch resize mode can shrink one.
         header.setStretchLastSection(False)
         header.setSectionResizeMode(
-            header.count() - 1,
+            columns - 1,
             QHeaderView.ResizeMode.Stretch if stretch_last
             else QHeaderView.ResizeMode.Interactive)
     height = table.ideal_height(max_rows)
+    # A log wide enough to scroll sideways needs room for the bar that does
+    # the scrolling; without it the bar eats a row and the last column's
+    # right-aligned figures disappear under the vertical scrollbar.
+    viewport = table.viewport().width()
+    needed = sum(header.sectionSize(i) for i in range(columns))
+    if viewport > 0 and needed > viewport:
+        height += table.horizontalScrollBar().sizeHint().height()
     table.setMinimumHeight(height)
     table.setMaximumHeight(height)
 
@@ -410,12 +420,12 @@ class TargetingPage(StagePage):
         if not present:
             return
 
-        target = float(self._target_rmsea())
+        target = self._calibration_target(calibration)
         realised = self._realised_rmsea(calibration)
         tolerance = float(getattr(self.spec.fit_target, "tolerance", 0.006))
         self._badge_target.set_value(f"{target:.3f}")
         rounds = getattr(calibration, "rounds", None)
-        if rounds is None:
+        if not isinstance(rounds, int):
             history = getattr(calibration, "history", None)
             rounds = len(history) if history is not None else "-"
         self._badge_rounds.set_value(rounds)
@@ -425,7 +435,12 @@ class TargetingPage(StagePage):
             self._chip_tolerance.set_verdict(
                 "borderline", translator.t("t.outside_tolerance"))
         else:
-            inside = abs(realised - target) <= tolerance
+            # The result's own verdict wins when it carries one: it was made
+            # against the tolerance the run actually used, which the spec may
+            # have moved on from since.
+            inside = getattr(calibration, "within_tolerance", None)
+            if not isinstance(inside, bool):
+                inside = abs(realised - target) <= tolerance
             self._badge_realised.set_value(
                 f"{realised:.3f}", kind="pass" if inside else "fail")
             self._chip_tolerance.set_verdict(
@@ -468,22 +483,36 @@ class TargetingPage(StagePage):
         # section 0 to re-label when the language changes.
         return frame if len(frame.columns) else empty_history()
 
+    @staticmethod
+    def _finite(value: Any) -> Optional[float]:
+        """``value`` as a float, or ``None`` when it is missing or NaN."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        number = float(value)
+        return number if math.isfinite(number) else None
+
+    def _calibration_target(self, calibration: Any) -> float:
+        """The RMSEA the run aimed at, not the one the spec asks for now."""
+        target = self._finite(getattr(calibration, "target_rmsea", None))
+        return target if target is not None else float(self._target_rmsea())
+
     def _realised_rmsea(self, calibration: Any) -> Optional[float]:
         """The RMSEA the run actually landed on, however it is reported.
 
         The calibration module may not exist yet, and when it does it may
-        report a discrepancy function rather than an index, so every route is
-        tried and a missing one simply yields ``None``.
+        report a discrepancy function rather than an index -- and a run that
+        never converged reports NaN -- so every route is tried and anything
+        unusable simply yields ``None``.
         """
         for attribute in ("realised_rmsea", "achieved_rmsea", "rmsea",
                           "final_rmsea"):
-            value = getattr(calibration, attribute, None)
-            if isinstance(value, (int, float)):
-                return float(value)
+            value = self._finite(getattr(calibration, attribute, None))
+            if value is not None:
+                return value
         fit = getattr(self.state.results, "fit", None)
-        value = getattr(fit, "rmsea", None)
-        if isinstance(value, (int, float)):
-            return float(value)
+        value = self._finite(getattr(fit, "rmsea", None))
+        if value is not None:
+            return value
         discrepancy = getattr(calibration, "discrepancy", None)
         if isinstance(discrepancy, (int, float)):
             try:
@@ -498,8 +527,8 @@ class TargetingPage(StagePage):
         return None
 
     def _paths_matched(self, calibration: Any) -> Optional[bool]:
-        for attribute in ("paths_matched", "all_targets_met", "targets_met",
-                          "significance_matched"):
+        for attribute in ("significance_ok", "paths_matched", "all_targets_met",
+                          "targets_met", "significance_matched"):
             value = getattr(calibration, attribute, None)
             if isinstance(value, bool):
                 return value

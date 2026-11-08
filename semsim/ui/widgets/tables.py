@@ -34,13 +34,16 @@ from semsim.ui.i18n import translator
 #: Columns whose name matches one of these get special rendering.
 P_VALUE_COLUMNS = {"p", "p_value", "pvalue", "p-value", "sig", "pclose",
                    "shapiro_p", "p_close"}
-VERDICT_COLUMNS = {"verdict", "pass", "result", "decision", "status"}
+VERDICT_COLUMNS = {"verdict", "pass", "result", "decision", "status",
+                   "requested", "realised", "significance_ok"}
 #: Default decimal places by column name fragment.
 PRECISION_HINTS: Dict[str, int] = {
     "p": 4, "chi": 3, "rmsea": 4, "cfi": 3, "tli": 3, "srmr": 4, "gfi": 3,
     "alpha": 3, "ave": 3, "cr": 3, "omega": 3, "htmt": 3, "loading": 3,
     "est": 3, "se": 4, "z": 3, "std": 3, "mean": 3, "sd": 3, "power": 3,
     "skew": 3, "kurt": 3, "r2": 3, "r_squared": 3, "correlation": 3,
+    "injected_rmsea": 4, "realised_rmsea": 4, "target_rmsea": 4,
+    "deviation": 4, "specified": 3, "estimate": 3,
 }
 DEFAULT_PRECISION = 3
 
@@ -52,6 +55,12 @@ DEFAULT_HEADER_KEYS: Dict[str, str] = {
     "p": "r.p", "std": "r.std", "lower": "r.ci_lower", "upper": "r.ci_upper",
     "source": "s.source", "target": "s.target", "item": "m.item",
     "factor": "m.construct", "name": "m.name", "n": "r.n", "n_items": "m.n_items",
+    "label": "r.index", "specified": "t.specified", "realised": "t.achieved",
+    "requested": "t.requested", "kind": "m.construct",
+    "injected_rmsea": "t.injected", "realised_rmsea": "t.realised_rmsea",
+    "target_rmsea": "t.target_rmsea", "deviation": "t.deviation",
+    "draws": "t.draws", "significance_ok": "t.significance_ok",
+    "n_required": "p.recommended",
     "mean": "r.mean", "sd": "r.sd", "median": "r.median",
     "minimum": "r.min", "maximum": "r.max", "n_missing": "r.missing",
     "skewness": "d.skewness", "kurtosis": "d.kurtosis",
@@ -65,7 +74,15 @@ DEFAULT_HEADER_KEYS: Dict[str, str] = {
 }
 #: Columns holding counts render without decimals.
 INTEGER_COLUMNS = {"n", "df", "n_items", "n_free", "count", "n_missing",
-                   "iterations", "round", "replications", "baseline_df"}
+                   "iterations", "round", "replications", "baseline_df",
+                   "draws", "rounds", "n_required", "n_recommended",
+                   "n_categories", "n_cases"}
+
+
+#: Fragment matching is only safe for fragments long enough to be distinctive.
+#: "p" appears inside "Task performance"; matching on it would print a factor's
+#: item count as "4.0000".
+MIN_FRAGMENT_LENGTH = 3
 
 
 def _precision_for(column: str) -> int:
@@ -75,7 +92,7 @@ def _precision_for(column: str) -> int:
     if name in PRECISION_HINTS:
         return PRECISION_HINTS[name]
     for fragment, places in PRECISION_HINTS.items():
-        if fragment in name:
+        if len(fragment) >= MIN_FRAGMENT_LENGTH and fragment in name:
             return places
     return DEFAULT_PRECISION
 
@@ -210,7 +227,7 @@ class DataFrameModel(QAbstractTableModel):
         if name in PRECISION_HINTS:
             return PRECISION_HINTS[name]
         for fragment, places in PRECISION_HINTS.items():
-            if fragment in name:
+            if len(fragment) >= MIN_FRAGMENT_LENGTH and fragment in name:
                 return places
         return None
 
@@ -354,8 +371,10 @@ class DataFrameView(QTableView):
                  stretch_last: bool = True,
                  max_rows: Optional[int] = None,
                  row_key_column: Optional[str] = "index",
+                 hide_columns: Optional[Sequence[str]] = None,
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self._hidden = list(hide_columns or [])
         self._model = DataFrameModel(frame, precision=precision,
                                      header_keys=header_keys,
                                      max_rows=max_rows,
@@ -402,6 +421,12 @@ class DataFrameView(QTableView):
         header = self.horizontalHeader()
         for col in range(self._model.columnCount()):
             header.resizeSection(col, header.sectionSize(col) + 14)
+        # A hidden column can still drive row-aware precision: the fit table
+        # keys its decimals off the statistic's machine code while showing the
+        # reader its translated name.
+        names = [str(c) for c in self._model.frame.columns]
+        for col, name in enumerate(names):
+            self.setColumnHidden(col, name in self._hidden)
 
     @property
     def frame(self) -> pd.DataFrame:
@@ -451,6 +476,7 @@ class TablePanel(QWidget):
 
     def __init__(self, title_key: str, frame: Optional[pd.DataFrame] = None,
                  *, max_rows: int = 14, both: bool = False,
+                 hide_columns: Optional[Sequence[str]] = None,
                  parent: Optional[QWidget] = None) -> None:
         from semsim.ui.widgets.common import Card
         super().__init__(parent)
@@ -458,7 +484,7 @@ class TablePanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         self._card = Card(title_key, both=both)
         lay.addWidget(self._card)
-        self.table = DataFrameView(frame)
+        self.table = DataFrameView(frame, hide_columns=hide_columns)
         self._card.add(self.table)
         self._max_rows = max_rows
         if frame is not None:
@@ -466,7 +492,10 @@ class TablePanel(QWidget):
 
     def set_frame(self, frame: pd.DataFrame) -> None:
         self.table.set_frame(frame)
-        self.table.setMinimumHeight(min(self.table.ideal_height(self._max_rows), 420))
+        height = min(self.table.ideal_height(self._max_rows), 420)
+        self.table.setMinimumHeight(height)
+        # Without a ceiling a three-row table stretches to fill the page.
+        self.table.setMaximumHeight(max(height, 90))
 
     def set_theme(self, name: str) -> None:
         self.table.set_theme(name)

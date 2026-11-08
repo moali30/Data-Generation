@@ -431,12 +431,27 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "t.requested": ("المطلوب", "Requested"),
     "t.calibration": ("سجل المعايرة", "Calibration log"),
     "t.round": ("الدورة", "Round"),
+    "t.injected": ("الخطأ المحقون (RMSEA)", "Injected RMSEA"),
+    "t.realised_rmsea": ("RMSEA المتحقق", "Realised RMSEA"),
+    "t.target_rmsea": ("RMSEA المستهدف", "Target RMSEA"),
+    "t.deviation": ("الانحراف عن الهدف", "Deviation from target"),
+    "t.draws": ("عدد السحبات", "Draws"),
+    "t.significance_ok": ("نمط الدلالة مطابق", "Significance pattern matched"),
+    "t.specified": ("القيمة المحددة", "Specified"),
 
     # ---- stage 6: results --------------------------------------------- #
     "r.results": ("النتائج", "Results"),
     "r.data_preview": ("معاينة البيانات", "Data preview"),
     "r.descriptives": ("الإحصاءات الوصفية", "Descriptive statistics"),
     "r.reliability": ("مؤشرات الثبات", "Reliability"),
+    "r.reliability.explain": (
+        "ألفا كرونباخ والثبات المركب (CR) يقيسان اتساق الأسئلة داخل كل متغير "
+        "كامن؛ والمعيار المتعارف عليه هو ≥ 0.70. ومتوسط التباين المستخلص (AVE) "
+        "يقيس الصدق التقاربي، ومعياره ≥ 0.50.",
+        "Cronbach's alpha and composite reliability measure how consistently "
+        "a construct's items hang together; the convention is >= 0.70. The "
+        "average variance extracted measures convergent validity, and its "
+        "convention is >= 0.50."),
     "r.validity": ("مؤشرات الصدق", "Validity"),
     "r.fit": ("مؤشرات جودة المطابقة", "Model fit indices"),
     "r.estimates": ("تقديرات المعالم", "Parameter estimates"),
@@ -763,6 +778,27 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "The model has changed since this was computed, so the figures below "
         "describe its earlier form; run the calculation again to refresh the "
         "recommendation."),
+    # ---- validation panel additions (dialog controls) ----------------- #
+    "v.recheck": ("إعادة الفحص", "Re-check"),
+    "v.filter": ("تصفية بالرمز أو بنص الملاحظة",
+                 "Filter by code or message text"),
+    "v.copy_report": ("نسخ التقرير كاملًا إلى الحافظة",
+                      "Copy the whole report to the clipboard"),
+    "v.copied": ("تم نسخ التقرير إلى الحافظة",
+                 "The report was copied to the clipboard"),
+    "v.no_match": ("لا توجد ملاحظات تطابق نص التصفية",
+                   "No diagnostics match the filter"),
+    "v.code": ("رمز الملاحظة", "Diagnostic code"),
+    "v.severity.error": ("خطأ", "Error"),
+    "v.severity.warning": ("تحذير", "Warning"),
+    "v.severity.info": ("ملاحظة", "Note"),
+    "v.unavailable": (
+        "وحدة فحص النموذج (Validation) غير متاحة في هذه النسخة، فلا يمكن "
+        "عرض ملاحظات على مواصفات النموذج الآن؛ راجع المواصفات يدويًا أو "
+        "أعد تثبيت البرنامج.",
+        "The validation module is unavailable in this build, so no "
+        "diagnostics on the model specification can be listed. Review the "
+        "specification by hand, or reinstall the application."),
 }
 
 
