@@ -849,10 +849,36 @@ def polychoric_attenuation(thresholds: np.ndarray) -> float:
     worse: at ``K = 5`` and ``rho = 0.7`` the extreme styles are out by
     0.081 in ``r`` (exact 0.5704 against a predicted 0.4896, 14.2%), and a
     dichotomy (``K = 2``) of an extreme style is out by 0.214 in ``r``
-    (exact 0.3258 against 0.1116, 65.7%).  The error is one-signed
-    throughout: the product rule always *under*-predicts ``|r|``, because
-    ``kappa_i kappa_j`` discards the positive higher-order terms of the
-    polychoric series.
+    (exact 0.3258 against 0.1116, 65.7%).
+
+    **The sign of the correlation matters, and the error is not one-signed.**
+    For a style with *symmetric* marginals -- ``SYMMETRIC``, ``UNIFORM``,
+    ``BIMODAL`` -- the error really is one-signed and the envelope is the same
+    either way, because the categorisation is invariant under reflection.  For
+    an *asymmetric* style it is not: the two marginals are skewed the same
+    way, so a negative correlation puts most of the joint mass in the sparse
+    corners of the table, and there the product rule *over*-predicts ``|r|``.
+    Measured exactly over a signed grid in steps of 0.05 (worst relative error
+    over ``K`` in {3, 5, 7}, ``|rho| <= 0.7`` at ``K >= 5`` and
+    ``|rho| <= 0.8`` at ``K = 3``):
+
+    =================  =============  =============  ==================
+    style              worst rho > 0  worst rho < 0  over-predicts |r|?
+    =================  =============  =============  ==================
+    SYMMETRIC                  2.68%          2.68%  no
+    UNIFORM                    7.98%          7.98%  no
+    BIMODAL                   13.33%         13.33%  no
+    POSITIVE_SKEW             15.51%         13.04%  yes, when rho < 0
+    NEGATIVE_SKEW             15.51%         13.04%  yes, when rho < 0
+    EXTREME_POSITIVE          37.06%        100.47%  yes, when rho < 0
+    EXTREME_NEGATIVE          37.06%        100.47%  yes, when rho < 0
+    =================  =============  =============  ==================
+
+    The worst cell in that sweep is ``EXTREME_NEGATIVE`` at ``K = 3`` and
+    ``rho = -0.7``: the exact correlation is ``-0.1704`` against a predicted
+    ``-0.3033``, nearly double in magnitude and in the wrong direction for a
+    correction.  Treat the product rule as usable for the symmetric-marginal
+    styles and as an order-of-magnitude guide elsewhere.
 
     **Consequence for the calibration loop.**  Pre-dividing a loading by
     ``kappa`` assumes the product rule, so for ``EXTREME_POSITIVE``,

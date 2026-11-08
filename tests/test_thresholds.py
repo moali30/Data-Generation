@@ -526,33 +526,51 @@ def test_product_rule_envelope_matches_the_documented_figures() -> None:
     """
     # style -> (worst relative error over K in {5, 7} and rho in {.3,.5,.7})
     documented = {
+        # style -> worst relative error over K in {5, 7} and rho in
+        # {-.7, -.5, -.3, .3, .5, .7}. These are BOTH signs: the earlier
+        # figures were measured on positive rho only, which understated the
+        # asymmetric styles -- extreme_* is 14.2% at positive rho and 18.6%
+        # once negative rho is included. The docstring quotes these.
         ResponseStyle.SYMMETRIC: 0.3,
         ResponseStyle.UNIFORM: 3.8,
         ResponseStyle.POSITIVE_SKEW: 4.3,
         ResponseStyle.NEGATIVE_SKEW: 4.3,
         ResponseStyle.BIMODAL: 8.2,
-        ResponseStyle.EXTREME_POSITIVE: 14.2,
-        ResponseStyle.EXTREME_NEGATIVE: 14.2,
+        ResponseStyle.EXTREME_POSITIVE: 18.6,
+        ResponseStyle.EXTREME_NEGATIVE: 18.6,
     }
     print("\n  exact vs first-order product rule (worst over K=5,7 and "
-          "rho=.3,.5,.7):")
+          "rho = +/-.3, +/-.5, +/-.7):")
     worst_by_style = {}
     for style, bound in documented.items():
         worst = 0.0
         for k in (5, 7):
             tau = thresholds_for_style(k, style)
             kappa = polychoric_attenuation(tau)
-            for rho in (0.3, 0.5, 0.7):
+            # Both signs. The old sweep tested positive rho only, which is
+            # what let the docstring claim the error was one-signed
+            # "throughout": for a style with asymmetric marginals a negative
+            # correlation puts the joint mass in the sparse corners of the
+            # table, and there the product rule OVER-predicts |r|.
+            symmetric_marginals = style in (ResponseStyle.SYMMETRIC,
+                                            ResponseStyle.UNIFORM,
+                                            ResponseStyle.BIMODAL)
+            for rho in (-0.7, -0.5, -0.3, 0.3, 0.5, 0.7):
                 exact = _exact_ordinal_correlation(tau, rho)
                 product = rho * kappa * kappa
-                # One-signed: the product rule drops the positive
-                # higher-order terms of the polychoric series, so it always
-                # under-predicts the realised correlation.
-                assert product <= exact + 1e-12, (
-                    f"{style.value} K={k} rho={rho}: product {product:.6f} "
-                    f"exceeded the exact {exact:.6f}"
-                )
-                worst = max(worst, 100.0 * abs(exact - product) / exact)
+                if rho > 0 or symmetric_marginals:
+                    # Here the product rule drops the positive higher-order
+                    # terms of the polychoric series and so under-predicts.
+                    assert abs(product) <= abs(exact) + 1e-12, (
+                        f"{style.value} K={k} rho={rho}: |product| "
+                        f"{abs(product):.6f} exceeded |exact| {abs(exact):.6f}"
+                    )
+                # abs() on the denominator too: with a negative rho the exact
+                # correlation is negative, so dividing by it gave a
+                # NEGATIVE percentage that max() quietly discarded -
+                # which is why the one-signedness claim survived.
+                worst = max(worst,
+                            100.0 * abs(exact - product) / abs(exact))
         worst_by_style[style] = worst
         print(f"    {style.value:18s} worst {worst:6.2f}%  "
               f"(documented bound {bound}%)")

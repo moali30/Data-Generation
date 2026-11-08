@@ -801,3 +801,63 @@ if __name__ == "__main__":  # pragma: no cover - manual runner
                 print(f"PASS {name}")
     print(f"\n{failures} failure(s)")
     sys.exit(1 if failures else 0)
+
+
+def test_a_missing_rate_above_the_holdout_ceiling_is_reported() -> None:
+    """Holding the MAR driver out caps the attainable missing rate.
+
+    Scaling the remaining columns up is clamped at 1, so once the request
+    exceeds ``1 - len(driver)/p`` it simply cannot be met. That is a
+    defensible trade-off -- missingness that depends on data the researcher
+    cannot see is not MAR -- but a caller reading only the report had no way
+    to see the realised rate fall short, so the shortfall is recorded with
+    its numbers and its remedies.
+    """
+    import numpy as np
+
+    from semsim.core.compile import compile_model
+    from semsim.core.spec import ConstructRole, MissingMechanism, ModelSpec
+    from semsim.generation.noise import _mar_driver_columns, apply_noise
+
+    def build(requested: float) -> ModelSpec:
+        spec = ModelSpec(seed=3)
+        driver = spec.add_construct("D", n_items=3, loading=0.8)
+        spec.add_construct("O", role=ConstructRole.DEPENDENT, n_items=3,
+                           loading=0.8)
+        spec.ensure_unique_item_names()
+        spec.add_path("D", "O")
+        spec.noise.enabled = True
+        spec.noise.careless_proportion = 0.0
+        spec.noise.outlier_proportion = 0.0
+        spec.noise.missing_mechanism = MissingMechanism.MAR
+        spec.noise.missing_proportion = requested
+        spec.noise.mar_driver = driver.id
+        return spec
+
+    data = np.random.default_rng(1).integers(1, 6, size=(600, 6)).astype(float)
+    ceiling = 0.5          # three driver columns out of six
+
+    for requested, expect_note in ((0.10, False), (0.30, False),
+                                   (0.49, False), (0.60, True),
+                                   (0.90, True), (1.00, True)):
+        spec = build(requested)
+        compiled = compile_model(spec)
+        cols = _mar_driver_columns(spec, compiled, spec.noise.mar_driver, 6)
+        assert len(cols) == 3, cols
+        out, report = apply_noise(data.copy(), spec, compiled,
+                                  np.random.default_rng(7))
+        realised = float(np.isnan(out).mean())
+        notes = [line for line in report.applied if "requested" in line]
+
+        # The driver must survive intact whatever was asked for: that is the
+        # whole reason the ceiling exists.
+        assert not np.isnan(out[:, cols]).any(), requested
+
+        if expect_note:
+            assert notes, f"no shortfall recorded for {requested}"
+            assert abs(realised - ceiling) < 0.01, realised
+            assert f"{requested:.3f}" in notes[0]
+            assert f"{ceiling:.3f}" in notes[0]
+        else:
+            assert not notes, notes
+            assert abs(realised - requested) < 0.02, (requested, realised)

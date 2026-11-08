@@ -702,7 +702,9 @@ def _scales_for(spec: ModelSpec, cm: Optional["CompiledModel"], p: int
     compilation, a duck-typed stand-in -- the comprehension yields a list of
     the right *length* made entirely of ``None``.  The old guard was
     ``if not items:``, which a list of ``None`` passes happily, so the
-    fallback never ran and every column came back with no scale.  Downstream
+    fallback never ran and every column came back with no scale.  Testing
+    that *some* id resolved was not enough either: a partial rename leaves
+    exactly the unresolved columns unclipped.  Downstream
     that is not a mild loss of metadata: :func:`_ordinal_flags_and_bounds`
     treats a ``None`` scale as "continuous, unbounded", so
     :func:`inject_outliers` skips the Likert clip and writes values such as
@@ -718,7 +720,14 @@ def _scales_for(spec: ModelSpec, cm: Optional["CompiledModel"], p: int
         getter = getattr(spec, "item", None)
         if ids and callable(getter):
             items = [getter(i) for i in ids]
-    if not any(it is not None for it in items):
+    # EVERY id must resolve, not merely one. A partially resolvable list is
+    # the same failure one input over: the columns whose ids were renamed
+    # still come back with no scale, so inject_outliers skips the Likert clip
+    # for exactly those and writes illegal codes into them. It is also not
+    # trustworthy positionally -- a mapping that is wrong for some ids gives
+    # no reason to believe the positions of the rest line up -- so a single
+    # unresolved id discards the compiled order and falls back wholesale.
+    if (not items) or any(it is None for it in items):
         try:
             items = list(spec.all_items())
         except Exception:  # pragma: no cover - duck-typed spec
@@ -956,5 +965,25 @@ def apply_noise(
         report.n_missing_cells = n_missing
         if n_missing:
             report.applied.append(f"missing[{mech_key}]={n_missing} cells")
+
+        # The scaled-up rate is clamped at 1, so a request near saturation
+        # cannot be met once the driver columns are held out: on a six-column
+        # frame with a three-item driver, a requested 0.90 can realise at most
+        # 0.50. The Notes document the clamp, but a caller reading only the
+        # report had no way to see that the realised rate fell short. Record
+        # it, with the numbers, rather than leaving it to be inferred.
+        # Compare against the attainable ceiling, not against a flat
+        # tolerance: ordinary sampling noise puts the realised rate a little
+        # either side of the request on every run, and a note that fires on
+        # that is a note nobody reads.
+        attainable = 1.0 - (len(cols) / p) if hold_out else 1.0
+        realised = n_missing / float(out.size) if out.size else 0.0
+        if missing_prop > attainable + 1e-9:
+            report.applied.append(
+                f"missing[{mech_key}]: requested {missing_prop:.3f} but "
+                f"realised {realised:.3f} -- holding the {len(cols)} driver "
+                f"column(s) of {p} out of the draw caps the attainable rate "
+                f"at {1.0 - len(cols) / p:.3f}. Use fewer driver items, or a "
+                f"lower missing_proportion, or MCAR.")
 
     return out, report
