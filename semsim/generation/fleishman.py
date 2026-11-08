@@ -604,10 +604,17 @@ def solve(skewness: float, kurtosis: float, *,
 
     b, c, d = (float(best_x[0]), float(best_x[1]), float(best_x[2]))
     if b < 0.0:
-        # The full-negation branch (b, c, d) -> (-b, -c, -d) preserves the
-        # variance and the kurtosis and flips the skewness twice over, so it is
-        # the same distribution; normalise to b > 0.
-        b, c, d = -b, -c, -d
+        # Substituting Z -> -Z leaves the distribution of Z alone, and turns
+        # a + b*Z + c*Z**2 + d*Z**3 into a - b*Z + c*Z**2 - d*Z**3. So the
+        # distribution-preserving symmetry is (b, c, d) -> (-b, c, -d): the
+        # ODD-powered coefficients flip and c does not.
+        #
+        # Negating c as well would flip the skewness, because the skewness
+        # equation 2c(b^2 + 24bd + 105d^2 + 2) is odd in c while the variance
+        # and kurtosis equations are even in it. A root found with b < 0 --
+        # which happens for strong skew, e.g. (3.0, 14.0) -- would then be
+        # returned as a solution for MINUS the requested skewness.
+        b, c, d = -b, c, -d
     if flip:
         c = -c
     if c == 0.0:

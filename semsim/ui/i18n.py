@@ -799,6 +799,52 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "The validation module is unavailable in this build, so no "
         "diagnostics on the model specification can be listed. Review the "
         "specification by hand, or reinstall the application."),
+
+    # ---- export dialog (appended) ------------------------------------- #
+    "dlg.export.csv": ("ملف نصي مفصول بفواصل (CSV)",
+                       "Comma-separated text file (CSV)"),
+    "dlg.export.xlsx": ("مصنف إكسل (XLSX) يضم البيانات ومواصفات النموذج",
+                        "Excel workbook (XLSX) with the data and the "
+                        "specification"),
+    "dlg.export.sav": ("ملف بيانات SPSS بصيغة sav مع تسميات المتغيرات والفئات",
+                       "SPSS data file (.sav) with variable and value labels"),
+    "dlg.export.options": ("خيارات التصدير", "Export options"),
+    "dlg.export.decimals": ("عدد المنازل العشرية", "Decimal places"),
+    "dlg.export.decimals.hint": (
+        "تُقرَّب الأعمدة المتصلة إلى هذا العدد من المنازل في الملفات النصية؛ "
+        "وأربع منازل تكفي لإعادة التحليل دون خسارة ملموسة في الدقة.",
+        "Continuous columns are rounded to this many places in the text "
+        "files; four places are enough to re-analyse the data with no "
+        "practical loss of precision."),
+    "dlg.export.stem": ("اسم الملف", "File name"),
+    "dlg.export.stem.hint": (
+        "جذر الاسم الذي تشترك فيه كل الملفات المصدَّرة، وتُضاف الامتدادات "
+        "تلقائيًا؛ اقتصر على الحروف اللاتينية والأرقام والشرطات حتى تقرأه "
+        "برامج مثل R وMplus دون مشكلات.",
+        "The name stem every exported file shares; extensions are added "
+        "automatically. Keep to Latin letters, digits, dashes and "
+        "underscores so R and Mplus read it without trouble."),
+    "dlg.export.open_folder": ("فتح مجلد الحفظ", "Open the destination folder"),
+    "dlg.export.need_format": ("اختر صيغة واحدة على الأقل قبل التصدير.",
+                               "Tick at least one format before exporting."),
+    "dlg.export.need_directory": (
+        "حدِّد مجلد الحفظ أولًا من زر الاستعراض.",
+        "Choose a destination folder first, using the Browse button."),
+    "dlg.export.ready": (
+        "عدد الملفات التي ستُكتب في المجلد المحدَّد: {n}",
+        "{n} file(s) will be written to the chosen folder."),
+    "dlg.export.running": ("جارٍ كتابة الملفات…", "Writing the files…"),
+    "dlg.export.no_data": (
+        "لا توجد بيانات مولَّدة بعد؛ شغّل المحاكاة أولًا ثم أعد التصدير.",
+        "There are no generated data yet; run the simulation first, then "
+        "export."),
+    "dlg.export.limited": (
+        "وحدة التصدير (semsim.io.exporters) غير متاحة في هذه النسخة، فلا "
+        "يمكن توليد مصنف إكسل أو ملف SPSS أو صيغتي lavaan وMplus؛ وسيُكتب "
+        "ملف CSV فقط مباشرةً عبر pandas.",
+        "The export module (semsim.io.exporters) is unavailable in this "
+        "build, so no Excel workbook, SPSS file or lavaan and Mplus syntax "
+        "can be produced; only a CSV is written, straight through pandas."),
 }
 
 

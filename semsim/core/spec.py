@@ -516,8 +516,10 @@ class SignificanceTargetSpec:
     #: Coefficient assigned to paths that must stay non-significant.
     null_coefficient: float = 0.02
     #: Re-draw the dataset until every targeted path matches its flag, up to
-    #: this many attempts.  0 disables rejection sampling.
-    max_resamples: int = 25
+    #: this many attempts.  0 disables rejection sampling.  Each attempt costs
+    #: a full re-fit, which on a large model is tens of seconds, so the loop
+    #: also gives up early on a path the sample cannot detect at all.
+    max_resamples: int = 8
     #: When rejection sampling, also require non-targeted paths to stay null.
     enforce_null_paths: bool = True
 

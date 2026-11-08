@@ -217,24 +217,45 @@ def calibrate(spec: ModelSpec, *, n: Optional[int] = None,
 # --------------------------------------------------------------------------- #
 
 
+#: After this many consecutive draws in which a path misses alpha by a wide
+#: margin, stop re-drawing: the sample does not have the power, and no number
+#: of further draws will conjure it.
+HOPELESS_AFTER = 3
+#: "A wide margin" means a p-value this many times alpha.
+HOPELESS_RATIO = 5.0
+
+
 def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
                             n: int, seed: int, injected_rmsea: float,
                             df: int, estimate: Callable[..., Any],
                             max_resamples: int,
                             warnings: List[str]) -> Tuple[Dict[str, Any], int]:
-    """Draw, fit, and re-draw while the p-value pattern is wrong."""
+    """Draw, fit, and re-draw while the p-value pattern is wrong.
+
+    Rejection sampling only helps when the requested pattern is reachable.
+    When a path flagged significant keeps landing far above alpha, the sample
+    is underpowered for it and further draws only burn time -- a complex model
+    costs tens of seconds per fit, so twenty-five futile draws is a quarter of
+    an hour of a frozen progress bar. The loop watches for that and stops,
+    saying what the actual fix is.
+    """
     sigma = _generating_matrix(compiled, injected_rmsea, df, seed, warnings)
     fallback: Optional[Dict[str, Any]] = None
     attempts = max_resamples + 1
+    alpha = working.significance_target.alpha
+    hopeless: Dict[str, int] = {}
+    used = 0
 
     for attempt_index in range(attempts):
+        used = attempt_index + 1
         dataset = generate_dataset(working, n=n, seed=seed + attempt_index,
                                    sigma_override=sigma, compiled=compiled)
         estimation, fit = _fit(dataset, working, estimate, warnings)
         ok = True
+        table = pd.DataFrame()
         if estimation is not None and max_resamples:
-            ok, _table = significance_module.check_realised(
-                estimation, working, working.significance_target.alpha)
+            ok, table = significance_module.check_realised(
+                estimation, working, alpha)
         record = {
             "dataset": dataset,
             "estimation": estimation,
@@ -244,16 +265,54 @@ def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
             "significance_ok": ok,
         }
         if ok:
-            return record, attempt_index + 1
+            return record, used
         if fallback is None:
             fallback = record
+        for label in _underpowered(table, alpha):
+            hopeless[label] = hopeless.get(label, 0) + 1
+        stuck = [label for label, count in hopeless.items()
+                 if count >= HOPELESS_AFTER]
+        if stuck:
+            _warn_once(warnings,
+                       f"UNDERPOWERED_PATH: {', '.join(sorted(stuck))} missed "
+                       f"alpha by a wide margin in {HOPELESS_AFTER} "
+                       "consecutive draws, so re-drawing was stopped. At this "
+                       "sample size the effect is not detectable; raise N (the "
+                       "power page will say by how much) or raise the "
+                       "coefficient.")
+            break
     if max_resamples:
-        warnings.append(
-            f"SIGNIFICANCE_NOT_REACHED: {attempts} draws did not reproduce the "
-            "requested pattern of significant and non-significant paths. The "
-            "closest draw was kept. Raising the sample size is usually the "
-            "fix; rejection sampling cannot create power that is not there.")
-    return (fallback if fallback is not None else record), attempts
+        _warn_once(warnings,
+                   f"SIGNIFICANCE_NOT_REACHED: {used} draw(s) did not reproduce "
+                   "the requested pattern of significant and non-significant "
+                   "paths. The closest draw was kept. Rejection sampling "
+                   "cannot create power that is not there.")
+    return (fallback if fallback is not None else record), used
+
+
+def _underpowered(table: pd.DataFrame, alpha: float) -> List[str]:
+    """Paths asked to be significant whose p-value is nowhere near alpha."""
+    if table is None or table.empty or "p" not in table.columns:
+        return []
+    out: List[str] = []
+    for _index, row in table.iterrows():
+        if row.get("requested") != "significant":
+            continue
+        try:
+            p_value = float(row.get("p"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(p_value) and p_value > alpha * HOPELESS_RATIO:
+            out.append(f"{row.get('source')} -> {row.get('target')}")
+    return out
+
+
+def _warn_once(warnings: List[str], message: str) -> None:
+    """Each round would otherwise repeat the same sentence."""
+    code = message.split(":", 1)[0]
+    if any(w.startswith(code) for w in warnings):
+        return
+    warnings.append(message)
 
 
 def _generating_matrix(compiled: CompiledModel, injected_rmsea: float,

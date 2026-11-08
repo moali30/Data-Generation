@@ -181,6 +181,11 @@ class DiagnosticCard(QFrame, Retranslatable):
         self._diag = diagnostic
         self._severity = severity_of(diagnostic)
         self.setFrameShape(QFrame.Shape.NoFrame)
+        # A stylesheet set on a widget also reaches its children, and QLabel
+        # is a QFrame, so a bare ``QFrame { ... }`` rule would paint the
+        # severity edge around every label in the card.  Name the frame and
+        # select it by that name.
+        self.setObjectName("diagnosticCard")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 10, 12, 10)
@@ -257,7 +262,7 @@ class DiagnosticCard(QFrame, Retranslatable):
         # chosen from the interface direction.
         side = "right" if translator.is_rtl else "left"
         self.setStyleSheet(
-            f"QFrame {{ background: {pal.surface_alt};"
+            f"QFrame#diagnosticCard {{ background: {pal.surface_alt};"
             f" border-{side}: 3px solid {colour}; border-radius: 6px; }}")
 
 
@@ -275,6 +280,9 @@ class DiagnosticSection(QWidget, Retranslatable):
         super().__init__(parent)
         self._heading_key = heading_key
         self._count = 0
+        #: Set once the reader folds the section away by hand, so refilling
+        #: the list (a keystroke in the filter box) does not unfold it again.
+        self._user_collapsed = False
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -290,7 +298,7 @@ class DiagnosticSection(QWidget, Retranslatable):
         self._button.setAutoRaise(True)
         self._button.setToolButtonStyle(
             Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._button.clicked.connect(self._on_click)
+        self._button.clicked.connect(self._on_user_toggle)
         header_lay.addWidget(self._button)
         self._count_label = QLabel()
         theme.set_role(self._count_label, "mono")
@@ -330,9 +338,17 @@ class DiagnosticSection(QWidget, Retranslatable):
     def count(self) -> int:
         return self._count
 
+    @property
+    def user_collapsed(self) -> bool:
+        return self._user_collapsed
+
     def set_expanded(self, expanded: bool) -> None:
         self._button.setChecked(expanded)
         self._on_click(expanded)
+
+    def _on_user_toggle(self, checked: bool) -> None:
+        self._user_collapsed = not checked
+        self._on_click(checked)
 
     def _on_click(self, checked: bool) -> None:
         self._content.setVisible(checked)
@@ -510,7 +526,8 @@ class ValidationDialog(QDialog):
         for severity, _key, _kind in SECTIONS:
             section = self._sections[severity]
             section.setVisible(section.count > 0)
-            if section.count and severity != "info":
+            if (section.count and severity != "info"
+                    and not section.user_collapsed):
                 section.set_expanded(True)
 
         unavailable = self._report is None
