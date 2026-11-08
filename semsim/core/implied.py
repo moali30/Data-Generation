@@ -536,7 +536,8 @@ def population_htmt(cm: "CompiledModel") -> Tuple[np.ndarray, List[str]]:
     evaluated on the model-implied correlation matrix.  Factors measured by
     fewer than two items have no monotrait average and are omitted.
 
-    A pair whose monotrait mean is not positive on *either* side gets ``nan``
+    A pair whose monotrait mean is not positive on *either* side gets ``nan``,
+    with the reason appended to ``cm.warnings``
     instead of a number, and the reason is recorded as a ``RuntimeWarning``
     naming the offending factors; the ratio has no meaning there, and a factor
     built mostly from reverse-worded items is the common way to land in it.
@@ -589,7 +590,14 @@ def population_htmt(cm: "CompiledModel") -> Tuple[np.ndarray, List[str]]:
                 named = ", ".join(f"{ids[i]} ({mono[i]:.4f})" for i in offending)
                 named_ar = "، ".join(f"«{ids[i]}» ({mono[i]:.4f})"
                                      for i in offending)
-                _warnings.warn(
+                # Recorded on the compiled model rather than raised as a
+                # Python warning. This is a documented, expected outcome for
+                # a model with reverse-worded items, not an exceptional
+                # condition: raising RuntimeWarning printed to stderr behind
+                # a desktop window where nobody sees it, and turned into an
+                # error under the project's filterwarnings setting. Every
+                # other diagnostic in the engine travels through this list.
+                note = (
                     "HTMT_MONOTRAIT_NOT_POSITIVE: the HTMT ratio between "
                     f"{ids[a]!r} and {ids[b]!r} is undefined because the mean "
                     "within-factor (monotrait) correlation is not positive "
@@ -600,10 +608,10 @@ def population_htmt(cm: "CompiledModel") -> Tuple[np.ndarray, List[str]]:
                     f"(أحادية السمة) غير موجب لدى {named_ar}؛ وقد أُعيدت القيمة "
                     "NaN لأن الجذر التربيعي لحاصل ضرب متوسطين سالبين لا يحمل "
                     "أي معنى قياسي. والسبب الأغلب هو وجود بنود معكوسة الصياغة "
-                    "لم يُعَد ترميزها.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+                    "لم يُعَد ترميزها.")
+                recorded = getattr(cm, "warnings", None)
+                if isinstance(recorded, list) and note not in recorded:
+                    recorded.append(note)
                 continue
             htmt[a, b] = htmt[b, a] = hetero / float(np.sqrt(mono[a] * mono[b]))
     return htmt, ids
