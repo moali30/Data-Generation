@@ -61,6 +61,21 @@ METHOD_KEYS: Tuple[Tuple[PowerMethod, str], ...] = (
     (PowerMethod.RULE_OF_THUMB, "p.method.rule"),
 )
 
+def _as_method(value: Any) -> PowerMethod:
+    """Coerce whatever the combo handed back into a real enum member.
+
+    ``PowerMethod`` mixes in :class:`str`, and Qt stores a ``str`` subclass in
+    item data as a plain string, so ``currentData()`` comes back as
+    ``"monte_carlo"`` rather than the member.  The analysis module compares its
+    method with ``is``, so the member has to be restored before it is written
+    into the spec.
+    """
+    try:
+        return PowerMethod(getattr(value, "value", value))
+    except (ValueError, TypeError):
+        return PowerMethod.RMSEA_CLOSE_FIT
+
+
 def _fit_table(panel: TablePanel, max_rows: int) -> None:
     """Make one table exactly as tall and as wide as it needs to be.
 
@@ -347,6 +362,7 @@ class PowerPage(StagePage):
         self._thread: Optional[QThread] = None
         self._worker: Optional[_PowerWorker] = None
         self._result: Any = None
+        self._stale = False
         self._error: Tuple[str, str] = ("", "")
 
         self.add_banner("p.explain")
@@ -357,8 +373,19 @@ class PowerPage(StagePage):
 
         # The complexity strip describes the model as it is *now*, so it
         # follows every value edit, not only structural ones.
-        self.state.spec_changed.connect(self._refresh_complexity)
+        self.state.spec_changed.connect(self._on_spec_changed)
         self.refresh()
+
+    def _on_spec_changed(self) -> None:
+        self._refresh_complexity()
+        # A recommendation computed from an earlier version of the model is
+        # not a recommendation for this one.  The numbers stay on screen --
+        # throwing them away mid-edit helps nobody -- but they stop claiming
+        # to be current.
+        if self._result is not None and not self._stale:
+            self._stale = True
+            self._status.set_key("p.stale")
+            self._status.setVisible(True)
 
     # ------------------------------------------------------------------ #
     # Section 1 -- model complexity
@@ -413,6 +440,9 @@ class PowerPage(StagePage):
         self._mode_group.addButton(self._mode_suggest)
         self._mode_group.addButton(self._mode_fixed)
         mode_host = QWidget()
+        # A bare QWidget picks up the window colour from the global stylesheet,
+        # which would paint a grey strip across the white card behind it.
+        mode_host.setStyleSheet("background: transparent;")
         mode_row = QHBoxLayout(mode_host)
         mode_row.setContentsMargins(0, 0, 0, 0)
         mode_row.setSpacing(18)
@@ -455,7 +485,7 @@ class PowerPage(StagePage):
         card.add(self._mc_field)
 
     def _update_method_visibility(self, method: Any) -> None:
-        self._mc_field.setVisible(method is PowerMethod.MONTE_CARLO)
+        self._mc_field.setVisible(_as_method(method) is PowerMethod.MONTE_CARLO)
 
     # -- handlers -------------------------------------------------------- #
 
@@ -478,8 +508,9 @@ class PowerPage(StagePage):
             return
         if method is None:
             return
-        self.spec.power.method = method
-        self._update_method_visibility(method)
+        resolved = _as_method(method)
+        self.spec.power.method = resolved
+        self._update_method_visibility(resolved)
         self.edit()
 
     def _on_values(self) -> None:
@@ -568,6 +599,7 @@ class PowerPage(StagePage):
         if self._thread is not None:
             return
         self._error = ("", "")
+        self._stale = False
         self._error_label.setVisible(False)
         self._compute.setEnabled(False)
         self._progress.setVisible(True)
@@ -594,12 +626,14 @@ class PowerPage(StagePage):
     def _on_computed(self, result: Any) -> None:
         self._teardown_thread()
         self._result = result
+        self._stale = False
         self._status.setVisible(False)
         self._apply_results()
 
     def _on_unavailable(self) -> None:
         self._teardown_thread()
         self._result = None
+        self._stale = False
         self._status.setVisible(True)
         self._status.set_key("p.unavailable")
         self._apply_results()
@@ -607,6 +641,7 @@ class PowerPage(StagePage):
     def _on_failed(self, message_ar: str, message_en: str) -> None:
         self._teardown_thread()
         self._result = None
+        self._stale = False
         self._status.setVisible(True)
         self._status.set_key("p.failed")
         self._error = (message_ar, message_en)
@@ -740,7 +775,13 @@ class PowerPage(StagePage):
     # ------------------------------------------------------------------ #
 
     def rebuild(self) -> None:
-        """Nothing here mirrors the model's structure, only its numbers."""
+        """The model was replaced; an analysis of the old one means nothing."""
+        self._result = None
+        self._stale = False
+        self._error = ("", "")
+        self._error_label.setVisible(False)
+        self._status.set_key("p.not_computed")
+        self._status.setVisible(True)
         self.refresh()
 
     def refresh(self) -> None:
@@ -773,6 +814,7 @@ class PowerPage(StagePage):
         result = getattr(self.state.results, "power", None)
         if result is not None and result is not self._result:
             self._result = result
+            self._stale = False
             self._error = ("", "")
             self._error_label.setVisible(False)
             self._status.setVisible(False)

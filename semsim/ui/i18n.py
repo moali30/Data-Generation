@@ -757,6 +757,12 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "per item, and Kline's minimum of 200) with no power curve."),
     "p.failed": ("تعذّر إكمال تحليل القوة الإحصائية",
                  "The power analysis could not be completed"),
+    "p.stale": (
+        "تغيّر النموذج بعد إجراء هذا الحساب، والأرقام المعروضة تخص صيغته "
+        "السابقة؛ أعد الحساب لتحديث الحجم الموصى به.",
+        "The model has changed since this was computed, so the figures below "
+        "describe its earlier form; run the calculation again to refresh the "
+        "recommendation."),
 }
 
 

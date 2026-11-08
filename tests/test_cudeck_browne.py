@@ -37,7 +37,7 @@ from __future__ import annotations
 import math
 import os
 import sys
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -377,6 +377,35 @@ def test_more_misfit_needs_a_bigger_step_along_the_same_direction() -> None:
     assert all(b > a for a, b in zip(scales, scales[1:])), scales
     _say(f"k for targets {TARGETS} = "
          + ", ".join(f"{s:.6f}" for s in scales))
+
+
+def test_sigma_0_keeps_a_unit_diagonal_because_theta_is_free() -> None:
+    """A closed-form consequence of the projection, worth pinning down.
+
+    Every residual variance is a free parameter, so ``dSigma/dTheta_jj = E_jj``
+    and the tangent space contains all ``p`` diagonal directions.  The
+    projection therefore removes the whole diagonal component of the random
+    direction: ``diag(E) == 0`` and ``Sigma_0`` stays a correlation matrix with
+    a unit diagonal, which is what the Vale-Maurelli generator downstream
+    assumes.  (The unprojected ``'residual'`` method has no such property.)
+    """
+    for name, _ in MODELS:
+        cm = _compiled(name)
+        out = cb.inject_model_error(cm, 0.10, rng=np.random.default_rng(13))
+        diag_e = float(np.max(np.abs(np.diag(out.direction))))
+        off_e = float(np.max(np.abs(out.direction - np.diag(np.diag(
+            out.direction)))))
+        diag_gap = float(np.max(np.abs(np.diag(out.sigma_0) - 1.0)))
+        _say(f"{name:24s} max |diag(E)| = {diag_e:.3e} "
+             f"(max |offdiag(E)| = {off_e:.3e}), "
+             f"max |diag(Sigma_0) - 1| = {diag_gap:.3e}")
+        assert diag_e < 1e-9, (name, diag_e)
+        assert diag_gap < 1e-9, (name, diag_gap)
+    plain = cb.inject_model_error(_compiled("minimal_cfa"), 0.10,
+                                 rng=np.random.default_rng(13),
+                                 method="residual")
+    assert float(np.max(np.abs(np.diag(plain.direction)))) > 1e-3
+    _say("the unprojected 'residual' direction does perturb the diagonal")
 
 
 # --------------------------------------------------------------------------- #

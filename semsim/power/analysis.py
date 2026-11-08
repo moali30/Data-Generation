@@ -69,15 +69,9 @@ from semsim.core.errors import (
     SpecificationError,
 )
 from semsim.core.implied import implied_covariance, is_positive_definite
-from semsim.core.spec import (
-    LatentCovariance,
-    ModelSpec,
-    Path,
-    PowerMethod,
-)
+from semsim.core.spec import ModelSpec, Path, PowerMethod
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from semsim.analysis.estimator import EstimationResult
     from semsim.core.compile import CompiledModel
 
 
@@ -499,9 +493,9 @@ def power_close_fit(df: int, n: int, *,
     Examples
     --------
     >>> round(power_close_fit(100, 132), 3)
-    0.801
+    0.802
     >>> round(power_close_fit(8, 100), 3)
-    0.165
+    0.153
 
     References
     ----------
@@ -566,7 +560,7 @@ def power_not_close_fit(df: int, n: int, *,
     Examples
     --------
     >>> round(power_not_close_fit(100, 178), 3)
-    0.8
+    0.802
 
     References
     ----------
@@ -1642,7 +1636,17 @@ def monte_carlo_power(spec: ModelSpec, *, n: int, replications: int = 200,
     if not targets:
         return pd.DataFrame(columns=list(MONTE_CARLO_COLUMNS))
 
-    from semsim.analysis import estimator as _estimator  # lazy: no cycle
+    try:  # lazy, so a circular import can never occur
+        from semsim.analysis import estimator as _estimator  # type: ignore
+    except Exception as exc:  # pragma: no cover - module exists in-tree
+        raise ConvergenceError(
+            f"A Monte Carlo power study needs the SEM estimator, which could "
+            f"not be loaded ({type(exc).__name__}). Use the analytic power "
+            f"methods instead.",
+            f"تحتاج محاكاة مونت كارلو إلى وحدة تقدير النماذج، وقد تعذّر "
+            f"تحميلها ({type(exc).__name__}). استخدم طرق القوة التحليلية "
+            f"بدلًا منها.",
+        ) from exc
 
     rng = np.random.default_rng(seed)
     distribution = multivariate_normal(mean=np.zeros(cm.n_items), cov=sigma,

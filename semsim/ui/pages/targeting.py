@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QHeaderView, QLabel, QWidget
 
 from semsim.core.spec import FitLevel, Interaction, Path
 from semsim.ui import theme
@@ -103,15 +103,33 @@ def enum_value(combo: EnumCombo, enum_cls: Any, default: Any) -> Any:
         return default
 
 
-def _size_to_content(panel: TablePanel, max_rows: int) -> None:
-    """Keep a short table from claiming a scroll area's default height.
+def _size_to_content(panel: TablePanel, max_rows: int, *,
+                     stretch_last: bool = True) -> None:
+    """Make one table exactly as tall, and as wide, as it needs to be.
 
-    :class:`TablePanel` sets a minimum; the view's own size hint is a good
-    deal taller than five rows, which leaves a band of empty table under the
-    last row.  Capping the height at the same ideal removes it.
+    :class:`TablePanel` only sets a minimum height, and a table view's own
+    size hint is far taller than five rows, so a short table ends up with a
+    band of empty grid under its last row.  Pinning both bounds removes it --
+    and pinning them together matters, because a height that is a pixel short
+    raises a vertical scrollbar, which narrows the viewport, which raises a
+    horizontal one and pushes a stretched final column out of sight.
+
+    ``stretch_last`` suits a table whose final column is prose; a log of
+    numbers reads better with every column at its natural width.
     """
     table = panel.table
-    table.setMaximumHeight(table.ideal_height(max_rows))
+    header = table.horizontalHeader()
+    if header.count():
+        # stretchLastSection only ever *grows* the final column, so it has to
+        # come off before the stretch resize mode can shrink one.
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(
+            header.count() - 1,
+            QHeaderView.ResizeMode.Stretch if stretch_last
+            else QHeaderView.ResizeMode.Interactive)
+    height = table.ideal_height(max_rows)
+    table.setMinimumHeight(height)
+    table.setMaximumHeight(height)
 
 
 def _mono(text: str, *, role: str = "mono") -> QLabel:
@@ -141,6 +159,10 @@ class TargetingPage(StagePage):
     # ------------------------------------------------------------------ #
 
     def build(self) -> None:
+        #: Every banner with the kind it was built with.  An InfoBanner paints
+        #: its own accent from the theme that was current when it was made and
+        #: has no theme hook of its own, so the page re-applies them itself.
+        self._banners: List[Tuple[InfoBanner, str]] = []
         self._build_fit_card()
         self._build_thresholds_panel()
         self._build_significance_card()
@@ -153,11 +175,14 @@ class TargetingPage(StagePage):
 
     def _build_fit_card(self) -> None:
         card = self.add_card("t.fit_target")
-        card.add(InfoBanner("t.fit_target.explain"))
+        banner = InfoBanner("t.fit_target.explain")
+        card.add(banner)
+        self._banners.append((banner, "info"))
 
         self._saturated_banner = InfoBanner("t.saturated", kind="warning")
         self._saturated_banner.setVisible(False)
         card.add(self._saturated_banner)
+        self._banners.append((self._saturated_banner, "warning"))
 
         self.enable_fit = TCheckBox("t.enable_fit")
         self.enable_fit.toggled.connect(self._on_enable_fit)
@@ -222,7 +247,9 @@ class TargetingPage(StagePage):
 
     def _build_significance_card(self) -> None:
         card = self.add_card("t.significance")
-        card.add(InfoBanner("t.significance.explain"))
+        banner = InfoBanner("t.significance.explain")
+        card.add(banner)
+        self._banners.append((banner, "info"))
 
         self.enable_significance = TCheckBox("t.enable_significance")
         self.enable_significance.toggled.connect(self._on_enable_significance)
@@ -417,7 +444,7 @@ class TargetingPage(StagePage):
                              else "t.paths_unmatched"))
 
         self._calibration_table.set_frame(self._history_frame(calibration))
-        _size_to_content(self._calibration_table, 14)
+        _size_to_content(self._calibration_table, 14, stretch_last=False)
 
     def _history_frame(self, calibration: Any) -> pd.DataFrame:
         """The calibration log as a frame, whatever shape it arrives in.
@@ -508,6 +535,11 @@ class TargetingPage(StagePage):
         super().set_theme(name)
         self._thresholds.set_theme(name)
         self._calibration_table.set_theme(name)
+        for banner, kind in self._banners:
+            banner.set_kind(kind)
+        # The chips and the badges colour themselves from the active theme at
+        # the moment they are filled, so they are filled again.
+        self._update_calibration()
 
     # ------------------------------------------------------------------ #
     # Loading the spec into the widgets
@@ -552,8 +584,14 @@ class TargetingPage(StagePage):
         self.enforce_null.setChecked(bool(target.enforce_null_paths))
 
     def _update_level_hint(self, level: FitLevel) -> None:
+        """Say what the chosen level implies, read off the enum.
+
+        A custom level has no conventional RMSEA of its own, so the hint
+        quotes the number actually in the spec rather than the enum's
+        placeholder, which would contradict the spin box beside it.
+        """
         self.level_hint.set_key("t.level.implies",
-                                rmsea=f"{level.target_rmsea:.3f}",
+                                rmsea=f"{self._target_rmsea():.3f}",
                                 cfi=f"{level.expected_cfi_floor:.3f}")
 
     def _degrees_of_freedom(self) -> Optional[int]:

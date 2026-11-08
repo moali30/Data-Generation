@@ -63,6 +63,11 @@ minimum and ``F(k)`` is strictly increasing in ``k > 0``; the scalar ``k`` is
 therefore found by a one-dimensional root solve (Brent's method), with the
 upper bracket shrunk whenever ``Sigma + k E`` loses positive definiteness.
 
+Because every residual variance is a free parameter, the tangent space spans
+all ``p`` diagonal directions of moment space; the projection therefore strips
+the diagonal out of ``E`` and ``Sigma_0`` keeps the unit diagonal that the rest
+of the engine relies on.
+
 What this module does *not* do
 ------------------------------
 It works entirely in the population.  The realised sample RMSEA of a finite
@@ -89,8 +94,8 @@ from __future__ import annotations
 import warnings as _warnings
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import (TYPE_CHECKING, Any, Callable, Dict, Iterator, List,
-                    Optional, Sequence, Tuple)
+from typing import (TYPE_CHECKING, Callable, Dict, Iterator, List, Optional,
+                    Tuple)
 
 import numpy as np
 from scipy import optimize as _opt
@@ -436,11 +441,9 @@ def population_discrepancy(sigma_0: np.ndarray, sigma: np.ndarray) -> float:
         if not np.isfinite(logdet_sigma) or not np.isfinite(logdet_s0):
             return float("inf")
         try:
-            chol = np.linalg.cholesky(s)
             solved = np.linalg.solve(s, s0)
         except np.linalg.LinAlgError:
             return float("inf")
-        del chol
         value = logdet_sigma - logdet_s0 + float(np.trace(solved)) - p
     return float(value) if np.isfinite(value) else float("inf")
 
@@ -1343,11 +1346,14 @@ def inject_model_error(cm: "CompiledModel", target_rmsea: float, *,
     achieved RMSEA, which is exactly the right behaviour: "RMSEA = 0.05" does
     not pin down a unique population.
 
-    Note that ``diag(Sigma_0)`` departs slightly from ``diag(Sigma(theta))``.
-    That is intrinsic to the method -- the tangent space contains variance
-    directions, so forcing the diagonal back to one would destroy the
-    orthogonality that makes ``theta`` the minimiser -- and it means
-    ``Sigma_0`` is a covariance matrix rather than a correlation matrix.
+    A useful side effect of the projection: because every residual variance is
+    a free parameter, ``dSigma / dTheta_jj = E_jj`` and the tangent space
+    contains all ``p`` diagonal directions, so the projection removes the
+    whole diagonal component of the random direction.  ``diag(E)`` is zero to
+    the accuracy of the numerical Jacobian (around ``1e-11``) and ``Sigma_0``
+    therefore stays a correlation matrix with a unit diagonal, which is what
+    the downstream Vale-Maurelli generator assumes.  The unprojected
+    ``'residual'`` method has no such property and does move the variances.
 
     Parameters
     ----------
@@ -1580,7 +1586,6 @@ def _solve_scale(sigma: np.ndarray, direction: np.ndarray, f_target: float, *,
     """
     s = _symmetrise(sigma)
     e = _symmetrise(direction)
-    p = s.shape[0]
     floor = float(min_eigenvalue) * float(np.mean(np.diag(s)))
     budget = {"n": 0}
 
@@ -1702,6 +1707,5 @@ def _solve_scale(sigma: np.ndarray, direction: np.ndarray, f_target: float, *,
             break
         k, value = candidate, new_value
 
-    del p
     converged = bool(abs(value - f_target) <= tol * max(1.0, abs(f_target)))
     return k, float(value), converged, int(budget["n"])
