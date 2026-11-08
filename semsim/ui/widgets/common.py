@@ -392,7 +392,15 @@ class Field(QWidget, Retranslatable):
         self.retranslate()
 
     def set_error(self, message: str = "") -> None:
-        """Show a red message under the field, or clear it."""
+        """Show a red message under the field, or clear it.
+
+        Clearing used to delegate to :meth:`retranslate`, which only rewrites
+        the hint when the field was built with a ``hint_key``. A field without
+        one therefore kept its red error text on screen after the problem was
+        fixed -- the worst kind of stale UI, because it says the input is
+        still wrong when it is not. The label is now emptied explicitly and
+        the standing hint restored only if there is one.
+        """
         if message:
             theme.set_role(self._hint, "error")
             self._hint.setText(message)
@@ -401,7 +409,12 @@ class Field(QWidget, Retranslatable):
         else:
             theme.set_role(self._hint, "hint")
             self.editor.setProperty("invalid", False)
-            self.retranslate()
+            if self._hint_key:
+                self._hint.setText(translator.t(self._hint_key))
+                self._hint.setVisible(True)
+            else:
+                self._hint.clear()
+                self._hint.setVisible(False)
         style = self.editor.style()
         if style is not None:
             style.unpolish(self.editor)
