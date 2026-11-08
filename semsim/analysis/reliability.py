@@ -159,6 +159,7 @@ __all__ = [
     "average_variance_extracted",
     "composite_reliability",
     "cronbach_alpha",
+    "heywood_items",
     "htmt_matrix",
     "omega_total",
     "principal_axis_loadings",
@@ -523,6 +524,14 @@ def composite_reliability(
     :func:`omega_total` it reconstructs the total variance from the model and
     therefore ignores correlated residuals.
 
+    A negative ``error_variances`` entry -- a Heywood case -- is clipped to
+    zero so the denominator stays usable, which flatters the coefficient and,
+    when every entry is negative, returns exactly ``1.0``.  The clip is
+    therefore never the whole story: pair the call with
+    :func:`heywood_items`, which reports the offending positions, and say so
+    in the output.  :func:`analyse` does this and raises a flag naming the
+    factor and the item.
+
     References
     ----------
     Joreskog, K. G. (1971). Statistical analysis of sets of congeneric tests.
@@ -547,6 +556,18 @@ def composite_reliability(
                 "Composite reliability received a non-finite error variance.",
                 "تمّ تمرير تباين خطأ غير منتهٍ إلى حساب الثبات المركّب.",
             )
+        # A negative standardised unique variance is a Heywood case: the model
+        # claims to explain more than the whole of an item's variance, which
+        # cannot happen in a population and always means the solution is
+        # improper.  The clip is kept, because without it ``(sum lambda)^2 +
+        # sum theta`` can reach zero or turn negative and the ratio becomes
+        # meaningless -- but clipping *silently* was the defect.  With every
+        # theta negative the clip returns exactly 1.0, i.e. the scale is
+        # reported as perfectly reliable precisely when the estimates are
+        # inadmissible, which is the opposite of what the researcher needs to
+        # hear.  The clipped value is still returned; :func:`heywood_items`
+        # exposes which items were clipped so a caller -- :func:`analyse`
+        # does it -- can name them in the report instead of hiding them.
         theta = np.clip(theta, 0.0, None)
     numerator = float(lam.sum()) ** 2
     denominator = numerator + float(theta.sum())
@@ -558,6 +579,80 @@ def composite_reliability(
             "الثبات المركّب.",
         )
     return float(numerator / denominator)
+
+
+def heywood_items(
+    loadings: Sequence[float] | np.ndarray,
+    error_variances: Optional[Sequence[float] | np.ndarray] = None,
+    *, tol: float = 1e-10,
+) -> List[int]:
+    """Positions of the items whose standardised unique variance is negative.
+
+    Parameters
+    ----------
+    loadings : sequence of float
+        Completely standardised loadings, exactly as handed to
+        :func:`composite_reliability` -- *not* clipped, since the clipping is
+        what this function is meant to see through.
+    error_variances : sequence of float, optional
+        Standardised unique variances.  ``None`` (the default) substitutes
+        ``theta_i = 1 - lambda_i**2``, so an item is flagged whenever
+        ``|lambda_i| > 1``.
+    tol : float, default 1e-10
+        Only variances below ``-tol`` count, so that the exact zero a
+        single-indicator factor produces is not mistaken for a Heywood case.
+
+    Returns
+    -------
+    list of int
+        The offending positions, in order; empty when the solution is proper.
+
+    Raises
+    ------
+    semsim.core.errors.SpecificationError
+        If the two vectors have different lengths.
+
+    Notes
+    -----
+    :func:`composite_reliability` and :func:`omega_total` have to clip a
+    negative ``theta`` to keep their denominators usable, which makes an
+    improper solution look like a flawless one.  This function is the
+    companion that recovers the fact, so a report can state it.  A Heywood
+    case is the single most diagnostic thing an estimator can report: it
+    usually means an empirically under-identified factor, too small a sample,
+    a misspecified model, or an item that is a near-duplicate of another
+    (Bollen, 1989, pp. 281-284).
+
+    Examples
+    --------
+    >>> heywood_items([1.04, 0.8, 0.8])
+    [0]
+    >>> heywood_items([0.8, 0.8], [-0.2, 0.36])
+    [0]
+    >>> heywood_items([1.0])
+    []
+
+    References
+    ----------
+    Heywood, H. B. (1931). On finite sequences of real numbers. *Proceedings
+        of the Royal Society A*, 134, 486-501.
+    Bollen, K. A. (1989). *Structural Equations with Latent Variables*. Wiley.
+    """
+    lam = np.asarray(loadings, dtype=float).ravel()
+    if error_variances is None:
+        theta = 1.0 - lam ** 2
+    else:
+        theta = np.asarray(error_variances, dtype=float).ravel()
+        if theta.size != lam.size:
+            raise SpecificationError(
+                f"There must be one error variance per loading; got "
+                f"{lam.size} loadings and {theta.size} error variances.",
+                f"يجب أن يقابل كل تشبُّع تباينُ خطأٍ واحد، وقد ورد "
+                f"{lam.size} تشبُّعًا مقابل {theta.size} تباينًا للخطأ.",
+            )
+    limit = -abs(float(tol))
+    flagged = np.isfinite(theta) & (theta < limit)
+    return [int(position) for position in np.flatnonzero(flagged)]
 
 
 def omega_total(loadings: Sequence[float] | np.ndarray,
@@ -791,9 +886,11 @@ def htmt_matrix(data: pd.DataFrame, factor_items: Mapping[str, Sequence[str]],
         Items in columns, cases in rows.  Ignored when ``correlations`` is
         supplied, but still required so the published signature is honoured.
     factor_items : mapping of str to sequence of str
-        Factor id (or name) to the column names of its items.  A factor with
-        fewer than two items has no monotrait average and its row and column
-        are ``nan``.
+        Factor key to the column names of its items; the keys become the
+        index and columns of the result.  Key by factor **id**: display
+        labels are free text and two factors may share one, in which case the
+        mapping collapses and the call fails.  A factor with fewer than two
+        items has no monotrait average and its row and column are ``nan``.
     correlations : pandas.DataFrame, optional
         A pre-computed item correlation matrix to use instead of Pearson's
         ``r`` on ``data`` -- a polychoric matrix, typically, so the ratio is
@@ -805,7 +902,9 @@ def htmt_matrix(data: pd.DataFrame, factor_items: Mapping[str, Sequence[str]],
         Symmetric matrix indexed by factor key with ``1.0`` on the diagonal
         and ``HTMT_ij = mean(r_between) / sqrt(mean(r_within_i) *
         mean(r_within_j))`` off it, the within-factor means excluding the
-        diagonal.
+        diagonal.  The entries are **signed**, so the direction of the
+        relation stays readable; a threshold comparison must therefore be
+        made on ``abs()``, which is what :func:`analyse` does.
 
     Raises
     ------
@@ -817,8 +916,10 @@ def htmt_matrix(data: pd.DataFrame, factor_items: Mapping[str, Sequence[str]],
     -----
     For a congeneric population HTMT estimates the disattenuated correlation
     between the two constructs, which is the construct correlation itself;
-    values at or below ``0.85`` (``0.90`` for conceptually close constructs)
-    are taken as evidence of discriminant validity.  Note that the
+    *absolute* values at or below ``0.85`` (``0.90`` for conceptually close
+    constructs) are taken as evidence of discriminant validity -- the
+    criterion is about how strongly two constructs are related, not about the
+    sign, so a ratio of ``-0.94`` fails it exactly as ``+0.94`` does.  Note that the
     denominator is the *geometric* mean of the two monotrait averages, so with
     equal loadings ``lambda`` and factor correlation ``phi`` the ratio returns
     ``phi`` exactly and not ``phi / lambda^2``.
@@ -853,7 +954,14 @@ def htmt_matrix(data: pd.DataFrame, factor_items: Mapping[str, Sequence[str]],
                 ) from exc
         corr = data.apply(pd.to_numeric, errors="coerce").corr()
     else:
-        corr = correlations
+        # ``.copy()`` is not defensive book-keeping: the two lines below
+        # stringify the axis labels, and doing that to the caller's own object
+        # silently rewrites the index of a correlation matrix it may still be
+        # using (and which it will then no longer be able to index with the
+        # original, non-string labels).  A function that is handed a matrix to
+        # read must not rewrite it.
+        corr = (correlations.copy() if isinstance(correlations, pd.DataFrame)
+                else pd.DataFrame(correlations))
 
     corr.index = [str(i) for i in corr.index]
     corr.columns = [str(c) for c in corr.columns]
@@ -1027,6 +1135,11 @@ def _loadings_from_estimation(
     or ids.  ``None`` is returned whenever the table is absent, malformed, or
     does not cover every item of this factor, which makes the caller fall
     back on principal axis factoring for that factor alone.
+
+    The loadings come back **unclipped**.  An estimate with ``|lambda| > 1``
+    is a Heywood case, and clipping it here would destroy the only evidence
+    of it; the caller inspects the raw vector with :func:`heywood_items`,
+    reports what it finds, and clips afterwards.
     """
     table = getattr(estimation, "loadings", None)
     if table is None:
@@ -1066,8 +1179,7 @@ def _loadings_from_estimation(
             out.append(by_key[name_to_id[column]])
         else:
             return None
-    return np.clip(np.asarray(out, dtype=float),
-                   -_MAX_ABS_LOADING, _MAX_ABS_LOADING)
+    return np.asarray(out, dtype=float)
 
 
 def analyse(data: pd.DataFrame, spec: ModelSpec,
@@ -1104,7 +1216,10 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
         Gadermann and Zeisser (2007), and every loading-based coefficient is
         computed on the disattenuated matrix.
     htmt_threshold : float, default 0.85
-        The HTMT value above which a pair of factors is flagged.
+        The *absolute* HTMT value above which a pair of factors is flagged.
+        The reported matrix keeps the signed ratio; the comparison is made on
+        its magnitude, because discriminant validity concerns the strength of
+        the relation between two constructs and not its direction.
 
     Returns
     -------
@@ -1112,6 +1227,17 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
         Per-factor reliability, the factor correlation matrix, the
         Fornell-Larcker and HTMT tables with their verdicts, a cross-loading
         table and a list of bilingual flags.
+
+        ``cross_loading_table`` carries one row per item: its correlation
+        with every factor's remaining items, ``home_correlation``,
+        ``max_cross_correlation`` (a magnitude), ``flagged`` -- true when
+        that magnitude comes within ``CROSS_LOADING_MARGIN`` of the magnitude
+        of the home correlation -- and ``negative_home_correlation``.  The
+        last is deliberately a separate verdict: an item that correlates
+        *negatively* with its own factor is a serious problem, almost always
+        a reverse-worded item nobody recoded, but it is not a cross-loading
+        and must not be reported as one.  Both conditions raise their own
+        flag.
 
     Raises
     ------
@@ -1128,9 +1254,19 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
     ``use_polychoric`` is set, which adds one bounded optimisation per item
     pair.
 
-    Single-item factors are reported with ``lambda = 1``, ``AVE = 1`` and
-    ``alpha = nan`` -- there is no information in one indicator with which to
-    separate common from unique variance -- and are flagged.
+    Single-item factors are reported with ``lambda = 1``, ``AVE = 1``,
+    ``CR = 1``, ``omega = 1`` and ``alpha = nan`` -- there is no information
+    in one indicator with which to separate common from unique variance, so
+    these are the values of the standard single-indicator specification
+    (loading fixed at one, error variance fixed at zero) rather than
+    estimates -- and are flagged.
+
+    A standardised loading above unity implies a negative error variance: a
+    Heywood case.  Such a loading is clipped to ``+/- 0.999`` so the
+    coefficients stay computable, but every clipped item raises a flag naming
+    the factor and the item first, because an improper solution is the most
+    important thing in the report and the clip alone would make it look like
+    an unusually good one.
 
     References
     ----------
@@ -1241,7 +1377,36 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
         if lam is None:
             block = correlation[np.ix_(rows, rows)]
             lam = principal_axis_loadings(block)
-        loadings_of[factor_id] = np.asarray(lam, dtype=float)
+        lam = np.asarray(lam, dtype=float)
+
+        # The clip below keeps every downstream coefficient defined, but it
+        # also turns an inadmissible estimate into a merely excellent-looking
+        # one: a standardised loading above unity implies a negative unique
+        # variance, and after clipping it reads as 0.999 with nothing to show
+        # that anything was wrong.  Heywood cases are the most informative
+        # thing a measurement model can report, so they are recorded here --
+        # naming the factor and the item -- *before* the clip is applied.
+        factor_label = factor_name or factor_id
+        for position in heywood_items(lam):
+            raw = float(lam[position])
+            flags.append(_bilingual(
+                f"Heywood case: item '{columns[position]}' on factor "
+                f"'{factor_label}' has a standardised loading of {raw:.3f}, "
+                f"which implies a negative error variance of "
+                f"{1.0 - raw ** 2:.3f}. The solution is inadmissible and the "
+                f"reliability of this factor is overstated; the loading was "
+                f"clipped to {_MAX_ABS_LOADING:.3f} only so the coefficients "
+                f"below remain computable.",
+                f"حالة هيوود: البند '{columns[position]}' على العامل "
+                f"'{factor_label}' يحمل تشبُّعًا معياريًا مقداره {raw:.3f}، "
+                f"وهو ما يستلزم تباينًا سالبًا لخطأ القياس مقداره "
+                f"{1.0 - raw ** 2:.3f}. والحل بهذه الصورة غير مقبول إحصائيًا، "
+                f"وثبات هذا العامل مُبالَغ فيه؛ ولم يُقصَر التشبُّع عند "
+                f"{_MAX_ABS_LOADING:.3f} إلا لكي تبقى المعاملات التالية "
+                f"قابلة للحساب."))
+
+        loadings_of[factor_id] = np.clip(
+            lam, -_MAX_ABS_LOADING, _MAX_ABS_LOADING)
 
     # ------------------------------------------------------------------ #
     # Per-factor reliability
@@ -1270,8 +1435,23 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
                 f"العامل '{factor_name or factor_id}' يتكوّن من بند واحد، "
                 f"ولذلك يتعذّر تقدير ثباته من البيانات."))
 
-        cr = composite_reliability(lam)
-        ave = average_variance_extracted(lam)
+        if k >= 2:
+            cr = composite_reliability(lam)
+            ave = average_variance_extracted(lam)
+        else:
+            # A single indicator is not *estimated* at all: the standard
+            # single-indicator specification fixes lambda = 1 and theta = 0,
+            # which makes AVE, CR and omega exactly one by definition -- and
+            # that is what this function's docstring promises and what the
+            # omega branch above already reports.  Running the general
+            # coefficients instead returned 0.998001, because
+            # ``_clean_loadings`` clips every loading to +/- 0.999 to stop the
+            # *estimated* case from dividing by zero.  Here nothing can divide
+            # by zero (the denominator is exactly one), so the guard bought
+            # nothing and merely produced a number that matched neither the
+            # documentation, the convention, nor the omega printed beside it.
+            cr = 1.0
+            ave = 1.0
         item_total = {columns[position]:
                       _corrected_item_total(block_alpha, position,
                                             range(k))
@@ -1378,30 +1558,49 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
                 f"ارتباطه بالعامل '{partner}' ({largest:.3f})."))
 
     if f >= 2:
+        # Keyed by factor *id*, never by display label.  Labels are free text
+        # the user types, so two constructs can perfectly well share one; the
+        # dict then collapsed to a single entry and HTMT refused to run at
+        # all ("at least two factors are needed").  Ids are unique by
+        # construction, and the labels are put back on the axes afterwards so
+        # the printed table still reads the way the rest of the report does.
         htmt = htmt_matrix(
             numeric,
-            {primary_labels[a]: primary[a][2] for a in range(f)},
+            {primary_ids[a]: primary[a][2] for a in range(f)},
             correlations=pd.DataFrame(correlation, index=used_columns,
                                       columns=used_columns),
         )
+        htmt.index = list(primary_labels)
+        htmt.columns = list(primary_labels)
         htmt_values = htmt.to_numpy(dtype=float)
         offdiag = ~np.eye(f, dtype=bool)
         finite = np.isfinite(htmt_values) & offdiag
+        # Discriminant validity is a statement about the *strength* of the
+        # relation between two constructs, not its direction -- exactly as
+        # Fornell-Larcker above compares ``abs(phi)``.  Testing the signed
+        # ratio let the worst possible case through: two constructs
+        # correlated -0.95 give HTMT = -0.944, which is not "below 0.85" in
+        # any meaningful sense, yet ``-0.944 > 0.85`` is False and the pair
+        # passed.  The matrix keeps the signed value so the direction stays
+        # visible to the reader; only the comparison is made on the magnitude.
         htmt_passed = bool(
-            not np.any(htmt_values[finite] > float(htmt_threshold)))
+            not np.any(np.abs(htmt_values[finite]) > float(htmt_threshold)))
         for a in range(f):
             for b in range(a + 1, f):
                 value = htmt_values[a, b]
-                if np.isfinite(value) and value > float(htmt_threshold):
+                if (np.isfinite(value)
+                        and abs(value) > float(htmt_threshold)):
                     flags.append(_bilingual(
                         f"HTMT between '{primary_labels[a]}' and "
-                        f"'{primary_labels[b]}' is {value:.3f}, above the "
+                        f"'{primary_labels[b]}' is {value:.3f} (magnitude "
+                        f"{abs(value):.3f}), above the "
                         f"{float(htmt_threshold):.2f} threshold: the two "
                         f"constructs are not empirically distinct.",
                         f"قيمة مؤشّر HTMT بين '{primary_labels[a]}' و "
-                        f"'{primary_labels[b]}' تساوي {value:.3f}، وهي أعلى من "
-                        f"الحد الفاصل ({float(htmt_threshold):.2f})؛ أي أن "
-                        f"المفهومين غير متمايزين تجريبيًا."))
+                        f"'{primary_labels[b]}' تساوي {value:.3f} (وقيمتها "
+                        f"المطلقة {abs(value):.3f})، وهي أعلى من الحد الفاصل "
+                        f"({float(htmt_threshold):.2f})؛ أي أن المفهومين غير "
+                        f"متمايزين تجريبيًا."))
     else:
         htmt = pd.DataFrame(np.ones((f, f)), index=primary_labels,
                             columns=primary_labels)
@@ -1425,27 +1624,58 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
                 row[primary_labels[b]] = _structure_coefficient(
                     alpha_source, item_row, rows_of[other_id])
             home = row[primary_labels[a]]
+            home_value = float(home)
             foreign = [float(row[primary_labels[b]]) for b in range(f)
                        if b != a and np.isfinite(float(row[primary_labels[b]]))]
             largest = max((abs(v) for v in foreign), default=float("nan"))
             row["home_correlation"] = home
             row["max_cross_correlation"] = largest
-            flagged = bool(np.isfinite(largest) and np.isfinite(float(home))
-                           and largest > float(home) - CROSS_LOADING_MARGIN)
+
+            # ``largest`` is a magnitude (it is a max over absolute values),
+            # so the home coefficient must be compared as a magnitude too.
+            # Testing it signed mixed two scales: any reverse-keyed item,
+            # whose home correlation is negative until the item is recoded,
+            # satisfied ``largest > home - 0.10`` automatically and was
+            # reported as cross-loading on a factor it may hardly touch.  A
+            # negative home correlation is a real and serious problem, but it
+            # is a different one, so it gets its own column and its own flag
+            # below instead of being disguised as poor discriminant validity.
+            negative_home = bool(np.isfinite(home_value) and home_value < 0.0)
+            flagged = bool(np.isfinite(largest) and np.isfinite(home_value)
+                           and largest > abs(home_value)
+                           - CROSS_LOADING_MARGIN)
+            row["negative_home_correlation"] = negative_home
             row["flagged"] = flagged
             if flagged:
                 flags.append(_bilingual(
                     f"Item '{column}' correlates with a factor other than "
                     f"'{primary_labels[a]}' almost as strongly as with its "
-                    f"own ({largest:.3f} against {float(home):.3f}).",
+                    f"own ({largest:.3f} against a magnitude of "
+                    f"{abs(home_value):.3f}).",
                     f"البند '{column}' يرتبط بعامل آخر غير "
                     f"'{primary_labels[a]}' بقوة تكاد تماثل ارتباطه بعامله "
-                    f"الأصلي ({largest:.3f} مقابل {float(home):.3f})."))
+                    f"الأصلي ({largest:.3f} مقابل قيمة مطلقة مقدارها "
+                    f"{abs(home_value):.3f})."))
+            if negative_home:
+                flags.append(_bilingual(
+                    f"Item '{column}' correlates negatively with its own "
+                    f"factor '{primary_labels[a]}' ({home_value:.3f}): the "
+                    f"item runs against the construct it is meant to measure, "
+                    f"which is what a reverse-worded item that has not been "
+                    f"recoded looks like. It depresses alpha and the AVE of "
+                    f"the whole scale until it is recoded.",
+                    f"البند '{column}' يرتبط ارتباطًا سالبًا بعامله الأصلي "
+                    f"'{primary_labels[a]}' ({home_value:.3f})؛ أي أن اتجاه "
+                    f"البند معاكس للمفهوم الذي يُفترض أن يقيسه، وهذا هو ما "
+                    f"يحدث عادةً مع البند المعكوس الصياغة الذي لم يُعَد "
+                    f"ترميزه. وهو يخفض معامل ألفا ومتوسط التباين المُستخلَص "
+                    f"للمقياس بأكمله إلى أن يُعاد ترميزه."))
             cross_rows.append(row)
     cross_loading_table = pd.DataFrame(cross_rows)
     if not cross_loading_table.empty:
         ordered = (["item", "home_factor"] + primary_labels
-                   + ["home_correlation", "max_cross_correlation", "flagged"])
+                   + ["home_correlation", "max_cross_correlation",
+                      "negative_home_correlation", "flagged"])
         seen: List[str] = []
         for name in ordered:
             if name in cross_loading_table.columns and name not in seen:

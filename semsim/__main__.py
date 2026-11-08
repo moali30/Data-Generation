@@ -32,10 +32,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     translator.set_language(args.lang)
 
     from PySide6.QtWidgets import QApplication
-    from semsim.ui.app import MainWindow
+    from semsim.ui.app import MainWindow, application_icon
     from semsim.ui.widgets.common import set_current_theme
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    app.setApplicationName("SEM Data Simulation Engine")
+    app.setOrganizationName("semsim")
+    app.setWindowIcon(application_icon())
     set_current_theme(args.theme)
     theme_module.apply(app, args.theme, rtl=translator.is_rtl)
 

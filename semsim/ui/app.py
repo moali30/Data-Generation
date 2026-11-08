@@ -188,6 +188,7 @@ class MainWindow(QMainWindow):
         self._page_errors: Dict[int, str] = {}
 
         self.setMinimumSize(1120, 740)
+        self.setWindowIcon(application_icon())
         self._build_ui()
         self._build_menu()
         self._connect()
@@ -761,12 +762,34 @@ class _PlaceholderPage(QWidget):
         title.setText(translator.t(title_key))
 
 
+def application_icon() -> "QIcon":
+    """The window and taskbar icon, loaded from the bundled resource.
+
+    Falls back on an empty icon rather than raising: a missing icon is a
+    cosmetic problem, not a reason the application cannot start. The path is
+    resolved relative to this module so it works both from a source checkout
+    and from inside a PyInstaller one-file bundle, where ``__file__`` points
+    into the extracted temporary tree.
+    """
+    from PySide6.QtGui import QIcon
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("icon.png", "semsim.ico"):
+        candidate = os.path.join(here, "resources", name)
+        if os.path.exists(candidate):
+            return QIcon(candidate)
+    return QIcon()
+
+
 def create_app(argv: Optional[List[str]] = None) -> Tuple[QApplication, MainWindow]:
     app = QApplication.instance() or QApplication(argv or sys.argv)
+    app.setApplicationName("SEM Data Simulation Engine")
+    app.setOrganizationName("semsim")
+    app.setWindowIcon(application_icon())
     set_current_theme(theme.LIGHT)
     theme.apply(app, theme.LIGHT, rtl=translator.is_rtl)
     window = MainWindow()
     return app, window
 
 
-__all__ = ["MainWindow", "SimulationWorker", "create_app", "PAGE_SPECS"]
+__all__ = ["MainWindow", "SimulationWorker", "create_app",
+           "application_icon", "PAGE_SPECS"]

@@ -186,7 +186,10 @@ class ExportWorker(QObject):
         try:
             written = self._write()
         except Exception as exc:  # every failure is reported, never raised out
-            self.failed.emit(*failure_messages(exc))
+            # A cancellation is not a failure: the dialog asked for it, and an
+            # error box over a window the user has just closed is noise.
+            if not self._cancelled:
+                self.failed.emit(*failure_messages(exc))
             return
         if not self._cancelled:
             self.finished.emit(written)
@@ -366,6 +369,7 @@ class ExportDialog(QDialog):
         self._thread: Optional[QThread] = None
         self._worker: Optional[ExportWorker] = None
         self._boxes: Dict[str, TCheckBox] = {}
+        self._aborted = False
         self._have_exporters = exporters_available()
 
         self.setModal(True)
@@ -579,7 +583,13 @@ class ExportDialog(QDialog):
         self._update_actions()
 
     def _default_stem(self) -> str:
-        """The project's own name, or a neutral fallback."""
+        """The saved project's own file name, or a neutral fallback.
+
+        Naming the output after the project is what makes a folder of exports
+        readable months later; an unsaved project has no name to borrow, so it
+        falls back to ``"simulation"`` rather than to the model title, which
+        is a sentence and would make an unwieldy file name.
+        """
         name = ""
         try:
             name = str(getattr(self.state, "display_name", "") or "")
@@ -587,9 +597,6 @@ class ExportDialog(QDialog):
             name = ""
         if name:
             name = os.path.splitext(name)[0]
-        if not name:
-            title = getattr(self.spec, "title", None)
-            name = str(getattr(title, "en", "") or "")
         return safe_stem(name)
 
     # ------------------------------------------------------------------ #
@@ -737,6 +744,7 @@ class ExportDialog(QDialog):
             self._update_actions()
             return
 
+        self._aborted = False
         self._normalise_stem()
         self._result.setVisible(False)
         self._progress.setRange(0, 100)
@@ -763,8 +771,9 @@ class ExportDialog(QDialog):
         if fraction >= 0:
             self._progress.setValue(int(round(fraction * 100)))
 
-    def _teardown(self) -> None:
-        if self._worker is not None:
+    def _teardown(self, *, cancel: bool = False) -> None:
+        if cancel and self._worker is not None:
+            self._aborted = True
             self._worker.cancel()
         if self._thread is not None:
             self._thread.quit()
@@ -782,6 +791,8 @@ class ExportDialog(QDialog):
     def _on_failed(self, message_ar: str, message_en: str) -> None:
         self._teardown()
         self._update_actions()
+        if self._aborted or not self.isVisible():
+            return          # the dialog is gone; there is nobody to tell
         QMessageBox.warning(
             self, translator.t("status.failed"),
             message_ar if translator.is_rtl else message_en)
@@ -820,11 +831,11 @@ class ExportDialog(QDialog):
         self.setWindowTitle(translator.t("dlg.export.title"))
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        self._teardown()
+        self._teardown(cancel=True)
         super().closeEvent(event)
 
     def reject(self) -> None:
-        self._teardown()
+        self._teardown(cancel=True)
         super().reject()
 
 

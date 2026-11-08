@@ -146,6 +146,7 @@ def calibrate(spec: ModelSpec, *, n: Optional[int] = None,
                      if spec.significance_target.enabled else 0)
 
     history: List[Dict[str, Any]] = []
+    hopeless: Dict[str, int] = {}
     injected = target_rmsea
     best: Optional[Tuple[float, Dict[str, Any]]] = None
     draws = 0
@@ -153,10 +154,14 @@ def calibrate(spec: ModelSpec, *, n: Optional[int] = None,
 
     for round_index in range(1, max_rounds + 1):
         report("status.calibrating", 0.1 + 0.8 * (round_index - 1) / max_rounds)
+        # Once a path is known to be out of reach, rejection sampling has
+        # nothing left to try, so later rounds draw once and move on.
+        resamples = 0 if any(c >= HOPELESS_AFTER for c in hopeless.values()) \
+            else max_resamples
         attempt, draws_used = _draw_until_significant(
             working, compiled, n_cases, base_seed + 1000 * round_index,
             injected if targeting_fit else 0.0, df, estimate,
-            max_resamples, warnings)
+            resamples, warnings, hopeless)
         draws += draws_used
         realised = attempt["rmsea"]
         history.append({
@@ -229,7 +234,9 @@ def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
                             n: int, seed: int, injected_rmsea: float,
                             df: int, estimate: Callable[..., Any],
                             max_resamples: int,
-                            warnings: List[str]) -> Tuple[Dict[str, Any], int]:
+                            warnings: List[str],
+                            hopeless: Optional[Dict[str, int]] = None
+                            ) -> Tuple[Dict[str, Any], int]:
     """Draw, fit, and re-draw while the p-value pattern is wrong.
 
     Rejection sampling only helps when the requested pattern is reachable.
@@ -243,7 +250,11 @@ def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
     fallback: Optional[Dict[str, Any]] = None
     attempts = max_resamples + 1
     alpha = working.significance_target.alpha
-    hopeless: Dict[str, int] = {}
+    # Shared across calibration rounds: a path the sample cannot detect in
+    # round one cannot detect it in round four either, and re-learning that
+    # every round costs three full re-fits each time.
+    if hopeless is None:
+        hopeless = {}
     used = 0
 
     for attempt_index in range(attempts):
