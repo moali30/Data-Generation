@@ -1,0 +1,494 @@
+"""
+semsim.generation.engine
+========================
+Turn a :class:`~semsim.core.spec.ModelSpec` into a dataset.
+
+Two generators, because no single one covers the ground:
+
+**Covariance engine** (the default).  Build the model-implied covariance
+matrix, optionally perturb it to the requested amount of model error, then draw
+from it with Vale & Maurelli's (1983) method so each column lands on its target
+skewness and kurtosis while the whole matrix lands on its target correlations.
+This is what the simulation literature does and it gives the tightest control
+over the distributions.
+
+**Score engine.**  Draw the latent variables themselves and push them through
+the structural equations.  Slower and slightly looser on the marginals, but it
+is the only way to produce a *latent interaction*: the product of two latent
+variables has no expression in a covariance matrix, so a moderation hypothesis
+cannot be simulated any other way.
+
+Non-normality under the score engine uses an exact result rather than an
+approximation.  For an item ``y = sum_k lambda_k eta_k + e`` with normal
+latents, independent error and unit total variance,
+
+    skew(y)     = skew(e) * theta ** 1.5
+    kurtosis(y) = kurt(e) * theta ** 2
+
+so the error term is given the shape that makes the *item* land on target:
+``skew(e) = target_skew / theta ** 1.5``.  Where that is outside Fleishman's
+feasible region the request is clamped and a warning is recorded, never
+silently dropped.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+
+from semsim.core.compile import CompiledModel, compile_model
+from semsim.core.errors import SemSimError, SpecificationError
+from semsim.core import implied as implied_module
+from semsim.core.spec import (
+    GenerationEngine, Item, ModelSpec, ScaleKind,
+)
+
+ProgressFn = Optional[Callable[[str, float], None]]
+
+
+@dataclass
+class GeneratedDataset:
+    """Everything one simulation run produced."""
+
+    data: pd.DataFrame
+    compiled: CompiledModel
+    sigma_population: np.ndarray
+    sigma_generating: np.ndarray
+    n: int
+    seed: int
+    engine_used: GenerationEngine
+    latent_scores: Optional[pd.DataFrame] = None
+    continuous_shadow: Optional[pd.DataFrame] = None
+    noise_report: object = None
+    model_error: object = None
+    warnings: List[str] = field(default_factory=list)
+
+    @property
+    def item_names(self) -> List[str]:
+        return list(self.data.columns)
+
+    @property
+    def has_missing(self) -> bool:
+        return bool(self.data.isna().to_numpy().any())
+
+    def summary(self) -> Dict[str, object]:
+        return {
+            "n": self.n,
+            "items": self.data.shape[1],
+            "seed": self.seed,
+            "engine": self.engine_used.value,
+            "missing_cells": int(self.data.isna().to_numpy().sum()),
+            "warnings": len(self.warnings),
+        }
+
+
+# --------------------------------------------------------------------------- #
+# Entry point
+# --------------------------------------------------------------------------- #
+
+
+def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
+                     seed: Optional[int] = None,
+                     progress: ProgressFn = None,
+                     sigma_override: Optional[np.ndarray] = None,
+                     compiled: Optional[CompiledModel] = None
+                     ) -> GeneratedDataset:
+    """Simulate one dataset.
+
+    Parameters
+    ----------
+    spec
+        The model to simulate.
+    n
+        Sample size; defaults to ``spec.power.n``.
+    seed
+        Overrides ``spec.seed``.  The same seed always reproduces the same
+        dataset, which is the point of carrying one at all.
+    progress
+        Called as ``progress(message_key, fraction)`` so a GUI can show where
+        the run has got to.
+    sigma_override
+        Generate from this matrix instead of the model-implied one.  The
+        calibration loop uses it to hand back a perturbed matrix without
+        recompiling.
+    compiled
+        A pre-compiled model, to avoid compiling twice in a calibration loop.
+    """
+    def report(key: str, fraction: float) -> None:
+        if progress is not None:
+            progress(key, fraction)
+
+    warnings: List[str] = []
+    n_cases = int(n if n is not None else spec.power.n)
+    if n_cases < 5:
+        raise SpecificationError(
+            f"A sample of {n_cases} cases is too small to simulate.",
+            f"حجم العينة ({n_cases}) أصغر من أن يُحاكى.",
+            n=n_cases)
+    actual_seed = int(seed if seed is not None
+                      else (spec.seed if spec.seed is not None else 0))
+    rng = np.random.default_rng(actual_seed)
+
+    report("status.compiling", 0.05)
+    cm = compiled if compiled is not None else compile_model(spec)
+    warnings.extend(cm.warnings)
+
+    sigma_population = implied_module.implied_covariance(cm)
+    sigma_generating = sigma_population
+    model_error = None
+
+    if sigma_override is not None:
+        sigma_generating = np.asarray(sigma_override, dtype=float)
+    elif _wants_model_error(spec):
+        report("status.calibrating", 0.15)
+        sigma_generating, model_error, note = _inject_model_error(
+            spec, cm, rng, warnings)
+        if note:
+            warnings.append(note)
+
+    engine = spec.resolved_engine()
+    report("status.generating", 0.30)
+
+    if engine is GenerationEngine.SCORES:
+        y_star, eta = _generate_from_scores(spec, cm, n_cases, rng, warnings)
+    else:
+        y_star = _generate_from_covariance(spec, cm, sigma_generating,
+                                           n_cases, rng, warnings)
+        eta = None
+
+    report("status.generating", 0.55)
+    observed = _apply_scales(spec, cm, y_star, warnings)
+
+    report("status.generating", 0.70)
+    noise_report = None
+    if spec.noise.enabled:
+        try:
+            from semsim.generation.noise import apply_noise
+            observed, noise_report = apply_noise(observed, spec, cm, rng)
+        except ImportError:
+            warnings.append("NOISE_UNAVAILABLE: the noise module is not "
+                            "installed; the dataset carries no contamination.")
+
+    data = pd.DataFrame(observed, columns=cm.item_names)
+    shadow = (pd.DataFrame(y_star, columns=[f"{c}_star" for c in cm.item_names])
+              if spec.export.include_continuous_shadow else None)
+    latent = None
+    if eta is not None and spec.export.include_latent_scores:
+        latent = pd.DataFrame(eta, columns=cm.factor_names)
+    elif spec.export.include_latent_scores:
+        latent = _factor_score_estimates(cm, y_star)
+
+    report("status.done", 1.0)
+    return GeneratedDataset(
+        data=data, compiled=cm,
+        sigma_population=sigma_population,
+        sigma_generating=sigma_generating,
+        n=n_cases, seed=actual_seed, engine_used=engine,
+        latent_scores=latent, continuous_shadow=shadow,
+        noise_report=noise_report, model_error=model_error,
+        warnings=warnings,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Model error
+# --------------------------------------------------------------------------- #
+
+
+def _wants_model_error(spec: ModelSpec) -> bool:
+    target = spec.fit_target
+    return bool(target.enabled
+                and target.method not in ("none", "")
+                and _target_rmsea(spec) > 0.0
+                and spec.degrees_of_freedom() > 0)
+
+
+def _target_rmsea(spec: ModelSpec) -> float:
+    target = spec.fit_target
+    if target.level.value == "custom":
+        return float(target.rmsea)
+    return float(target.level.target_rmsea)
+
+
+def _inject_model_error(spec: ModelSpec, cm: CompiledModel,
+                        rng: np.random.Generator, warnings: List[str]):
+    """Perturb the implied matrix to the requested amount of misfit."""
+    try:
+        from semsim.targeting.cudeck_browne import inject_model_error
+    except ImportError:
+        return (implied_module.implied_covariance(cm), None,
+                "MODEL_ERROR_UNAVAILABLE: the model-error module is not "
+                "installed; the data will fit the model perfectly.")
+    try:
+        result = inject_model_error(
+            cm, _target_rmsea(spec),
+            df=spec.degrees_of_freedom(cm),
+            rng=rng, method=spec.fit_target.method)
+    except SemSimError as exc:
+        return (implied_module.implied_covariance(cm), None,
+                f"MODEL_ERROR_SKIPPED: {exc.message_en}")
+    return result.sigma_0, result, ""
+
+
+# --------------------------------------------------------------------------- #
+# Covariance engine
+# --------------------------------------------------------------------------- #
+
+
+def _generate_from_covariance(spec: ModelSpec, cm: CompiledModel,
+                              sigma: np.ndarray, n: int,
+                              rng: np.random.Generator,
+                              warnings: List[str]) -> np.ndarray:
+    skewness, kurtosis = _marginal_targets(spec, cm)
+    use_non_normal = (spec.distribution.use_non_normal_engine
+                      and (np.any(np.abs(skewness) > 1e-9)
+                           or np.any(np.abs(kurtosis) > 1e-9)))
+    from semsim.generation import vale_maurelli as vm
+    if not use_non_normal:
+        return vm.generate_normal(n, sigma, rng)
+    try:
+        return vm.generate(n, sigma, skewness, kurtosis, rng)
+    except SemSimError as exc:
+        warnings.append(
+            f"NON_NORMAL_FALLBACK: {exc.message_en} Falling back on a normal "
+            "draw, so the requested skewness and kurtosis were not applied.")
+        return vm.generate_normal(n, sigma, rng)
+
+
+def _marginal_targets(spec: ModelSpec,
+                      cm: CompiledModel) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-item skewness and excess kurtosis for the continuous draw.
+
+    An ordinal item takes its shape from its thresholds, so asking for a
+    skewed *latent* response as well would double-count the asymmetry and
+    break the normality the polychoric estimator assumes.  Those items are
+    drawn normal and shaped by :func:`_apply_scales`.
+    """
+    distribution = spec.distribution
+    skew = np.zeros(len(cm.item_ids))
+    kurt = np.zeros(len(cm.item_ids))
+    for item in spec.all_items():
+        index = cm.item_index.get(item.id)
+        if index is None:
+            continue
+        if item.scale.kind is ScaleKind.LIKERT:
+            continue
+        skew[index] = (item.skewness if abs(item.skewness) > 1e-12
+                       else distribution.default_skewness)
+        kurt[index] = (item.kurtosis if abs(item.kurtosis) > 1e-12
+                       else distribution.default_kurtosis)
+    if distribution.clamp_to_feasible_region:
+        skew, kurt = _clamp_feasible(skew, kurt)
+    return skew, kurt
+
+
+def _clamp_feasible(skew: np.ndarray,
+                    kurt: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Fleishman has no real solution below ``kurtosis = skew**2 - 2``."""
+    floor = skew ** 2 - 2.0 + 0.05
+    return skew, np.maximum(kurt, floor)
+
+
+# --------------------------------------------------------------------------- #
+# Score engine
+# --------------------------------------------------------------------------- #
+
+
+def _generate_from_scores(spec: ModelSpec, cm: CompiledModel, n: int,
+                          rng: np.random.Generator,
+                          warnings: List[str]) -> Tuple[np.ndarray, np.ndarray]:
+    """Draw the latents and push them through the structural equations."""
+    m = len(cm.factor_ids)
+    eta = np.zeros((n, m))
+
+    exogenous = [i for i in range(m) if not bool(cm.endogenous[i])]
+    endogenous = [i for i in range(m) if bool(cm.endogenous[i])]
+
+    if exogenous:
+        psi_exo = cm.Psi[np.ix_(exogenous, exogenous)]
+        psi_exo = implied_module.nearest_positive_definite(psi_exo) \
+            if not implied_module.is_positive_definite(psi_exo) else psi_exo
+        chol = np.linalg.cholesky(psi_exo)
+        eta[:, exogenous] = rng.standard_normal((n, len(exogenous))) @ chol.T
+
+    interactions = _interaction_terms(spec, cm)
+    order = _topological_order(cm, endogenous)
+    for index in order:
+        predictors = np.nonzero(np.abs(cm.B[index]) > 1e-12)[0]
+        linear = (eta[:, predictors] @ cm.B[index, predictors]
+                  if predictors.size else np.zeros(n))
+        product = np.zeros(n)
+        extra_variance = 0.0
+        for predictor, moderator, coefficient in interactions.get(index, []):
+            term = eta[:, predictor] * eta[:, moderator]
+            product += coefficient * term
+            # For jointly normal standardised X and M with correlation r,
+            # Var(X*M) = 1 + r**2 and Cov(X, X*M) = 0, so the product adds
+            # variance without covarying with its own constituents.
+            r = float(cm.Phi[predictor, moderator])
+            extra_variance += coefficient ** 2 * (1.0 + r ** 2)
+        explained = float(cm.B[index, predictors] @ cm.Phi[np.ix_(predictors, predictors)]
+                          @ cm.B[index, predictors]) if predictors.size else 0.0
+        disturbance = 1.0 - explained - extra_variance
+        if disturbance <= 1e-6:
+            warnings.append(
+                f"INTERACTION_HEYWOOD: the predictors of "
+                f"'{cm.factor_names[index]}' explain more than its total "
+                f"variance once the interaction term is included; the "
+                f"disturbance variance was floored.")
+            disturbance = 1e-6
+        eta[:, index] = (linear + product
+                         + rng.standard_normal(n) * math.sqrt(disturbance))
+
+    y_star = eta @ cm.Lambda.T + _draw_errors(spec, cm, n, rng, warnings)
+    # Unit variance is only guaranteed in expectation here; rescale so the
+    # thresholds downstream see the metric they were computed for.
+    sd = y_star.std(axis=0, ddof=1)
+    sd[sd < 1e-9] = 1.0
+    y_star = (y_star - y_star.mean(axis=0)) / sd
+    return y_star, eta
+
+
+def _interaction_terms(spec: ModelSpec, cm: CompiledModel
+                       ) -> Dict[int, List[Tuple[int, int, float]]]:
+    out: Dict[int, List[Tuple[int, int, float]]] = {}
+    for interaction in spec.interactions:
+        target = cm.factor_index.get(interaction.target)
+        predictor = cm.factor_index.get(interaction.predictor)
+        moderator = cm.factor_index.get(interaction.moderator)
+        if None in (target, predictor, moderator):
+            continue
+        out.setdefault(target, []).append(
+            (predictor, moderator, interaction.resolved_coefficient()))
+    return out
+
+
+def _topological_order(cm: CompiledModel, endogenous: Sequence[int]) -> List[int]:
+    """Endogenous latents ordered so every predictor is drawn first."""
+    remaining = list(endogenous)
+    done = {i for i in range(len(cm.factor_ids)) if i not in set(endogenous)}
+    order: List[int] = []
+    for _ in range(len(remaining) + 1):
+        progressed = False
+        for index in list(remaining):
+            predictors = np.nonzero(np.abs(cm.B[index]) > 1e-12)[0]
+            if all(p in done for p in predictors):
+                order.append(index)
+                done.add(index)
+                remaining.remove(index)
+                progressed = True
+        if not remaining:
+            break
+        if not progressed:
+            # A feedback loop: no ordering exists. Emit the rest in index
+            # order so something is produced rather than nothing.
+            order.extend(remaining)
+            break
+    return order
+
+
+def _draw_errors(spec: ModelSpec, cm: CompiledModel, n: int,
+                 rng: np.random.Generator,
+                 warnings: List[str]) -> np.ndarray:
+    """Unique errors, shaped so each ITEM lands on its target moments."""
+    theta = cm.Theta
+    p = theta.shape[0]
+    sd = np.sqrt(np.clip(np.diag(theta), 1e-12, None))
+    correlation = theta / np.outer(sd, sd)
+    np.fill_diagonal(correlation, 1.0)
+    if not implied_module.is_positive_definite(correlation):
+        correlation = implied_module.nearest_positive_definite(correlation)
+    chol = np.linalg.cholesky(correlation)
+    z = rng.standard_normal((n, p)) @ chol.T
+
+    skew_target, kurt_target = _marginal_targets(spec, cm)
+    if not (spec.distribution.use_non_normal_engine
+            and (np.any(np.abs(skew_target) > 1e-9)
+                 or np.any(np.abs(kurt_target) > 1e-9))):
+        return z * sd
+
+    from semsim.generation import fleishman
+    for j in range(p):
+        if abs(skew_target[j]) < 1e-9 and abs(kurt_target[j]) < 1e-9:
+            continue
+        theta_jj = float(theta[j, j])
+        if theta_jj < 1e-6:
+            continue
+        # skew(y) = skew(e) * theta**1.5 and kurt(y) = kurt(e) * theta**2 when
+        # the latent part is normal and independent of the error.
+        need_skew = skew_target[j] / theta_jj ** 1.5
+        need_kurt = kurt_target[j] / theta_jj ** 2
+        if not fleishman.is_feasible(need_skew, need_kurt):
+            warnings.append(
+                f"SHAPE_INFEASIBLE: item '{cm.item_names[j]}' would need an "
+                f"error skewness of {need_skew:.2f} to reach the requested "
+                f"item skewness of {skew_target[j]:.2f}; that is outside "
+                "Fleishman's feasible region, so the shape was reduced.")
+            need_kurt = max(need_kurt, need_skew ** 2 - 2.0 + 0.05)
+            if not fleishman.is_feasible(need_skew, need_kurt):
+                continue
+        try:
+            coefficients = fleishman.solve(need_skew, need_kurt)
+        except SemSimError:
+            continue
+        z[:, j] = fleishman.transform(z[:, j], coefficients)
+        column = z[:, j]
+        spread = column.std(ddof=1)
+        if spread > 1e-9:
+            z[:, j] = (column - column.mean()) / spread
+    return z * sd
+
+
+def _factor_score_estimates(cm: CompiledModel, y_star: np.ndarray
+                            ) -> Optional[pd.DataFrame]:
+    """Thurstone regression factor scores, for the covariance engine.
+
+    The covariance engine never draws the latents, so there are no true scores
+    to export.  These are estimates and are labelled as such.
+    """
+    try:
+        sigma = cm.Lambda @ cm.Phi @ cm.Lambda.T + cm.Theta
+        weights = np.linalg.solve(sigma, cm.Lambda @ cm.Phi)
+        scores = y_star @ weights
+    except np.linalg.LinAlgError:
+        return None
+    return pd.DataFrame(scores, columns=[f"{name}_hat"
+                                         for name in cm.factor_names])
+
+
+# --------------------------------------------------------------------------- #
+# Scales
+# --------------------------------------------------------------------------- #
+
+
+def _apply_scales(spec: ModelSpec, cm: CompiledModel, y_star: np.ndarray,
+                  warnings: List[str]) -> np.ndarray:
+    """Turn the continuous responses into the scores a respondent would give."""
+    from semsim.generation import thresholds as th
+    n, p = y_star.shape
+    any_ordinal = any(item.scale.kind is ScaleKind.LIKERT
+                      for item in spec.all_items())
+    out = np.empty((n, p), dtype=int if any_ordinal else float)
+    if any_ordinal:
+        out = np.empty((n, p), dtype=float)
+
+    for item in spec.all_items():
+        index = cm.item_index.get(item.id)
+        if index is None:
+            continue
+        # No explicit flip here: the compiler already gave a reverse-worded
+        # item a negative loading, so its continuous response already runs
+        # the other way and the thresholds map it correctly.
+        out[:, index] = th.apply_scale(y_star[:, index], item.scale)
+
+    if any_ordinal and all(item.scale.kind is ScaleKind.LIKERT
+                           for item in spec.all_items()):
+        out = out.astype(int)
+    return out
+
+
+__all__ = ["GeneratedDataset", "generate_dataset"]

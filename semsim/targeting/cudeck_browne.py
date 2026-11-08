@@ -1195,3 +1195,513 @@ class ModelErrorResult:
     def perturbed(self) -> bool:
         """Whether anything was actually injected."""
         return bool(self.scale != 0.0)
+
+
+# --------------------------------------------------------------------------- #
+# Internals of the scalar solve
+# --------------------------------------------------------------------------- #
+
+
+def _resolve_method(method: Optional[str]) -> str:
+    """Normalise the free-text ``FitTargetSpec.method`` to a known constant."""
+    key = str(method or "").strip().lower().replace(" ", "_")
+    resolved = _METHOD_ALIASES.get(key)
+    if resolved is None:
+        raise SpecificationError(
+            f"Unknown model-error method {method!r}. Choose "
+            "'cudeck_browne' (keeps the specified parameters as the exact "
+            "minimiser), 'residual' (a plain perturbation, slightly biased) "
+            "or 'none'.",
+            f"طريقة إدخال خطأ النموذج «{method}» غير معروفة. اختر "
+            "«cudeck_browne» وهي التي تُبقي المعالم المحددة هي المُصغِّر التام "
+            "لدالة التباعد، أو «residual» وهي اضطراب بسيط متحيّز قليلًا، أو "
+            "«none» لتعطيل إدخال الخطأ.",
+            method=method, allowed=list(METHODS),
+        )
+    return resolved
+
+
+def _resolve_rng(cm: "CompiledModel",
+                 rng: Optional[np.random.Generator],
+                 warnings_out: List[str]) -> np.random.Generator:
+    """Return the caller's Generator, or build one from ``spec.seed``.
+
+    Reproducibility is a product feature, so the generator is always explicit:
+    when the caller passes none, the seed recorded in the model specification
+    is used, and only a specification with no seed at all falls back on fresh
+    operating-system entropy (with a warning, because that run cannot be
+    repeated).
+    """
+    if rng is not None:
+        return rng
+    seed = getattr(getattr(cm, "spec", None), "seed", None)
+    if seed is None:
+        warnings_out.append(_bilingual(
+            "NO_SEED: neither a random generator nor a seed was supplied, so "
+            "the shape of the injected model error cannot be reproduced. Set "
+            "ModelSpec.seed to make this run repeatable.",
+            "لم يُمرَّر مُولِّد أرقام عشوائية ولا بذرة، لذلك لا يمكن تكرار شكل "
+            "خطأ النموذج المُدخَل. اضبط الحقل ModelSpec.seed لتصبح هذه النتيجة "
+            "قابلة للتكرار.",
+        ))
+        return np.random.default_rng()
+    return np.random.default_rng(int(seed))
+
+
+def _resolve_df(cm: "CompiledModel", df: Optional[int], n_free: int,
+                warnings_out: List[str]) -> int:
+    """Degrees of freedom used to translate ``target_rmsea`` into ``F_0``.
+
+    The default is ``p (p + 1) / 2 - q`` for the very parameterisation whose
+    tangent space is projected out, which is both the dimension of the space
+    the perturbation lives in and the ``df`` the estimator will report.  When
+    ``ModelSpec.degrees_of_freedom`` disagrees -- different identification
+    bookkeeping -- the discrepancy is reported rather than silently resolved.
+    """
+    p = int(getattr(cm, "n_items", 0) or np.asarray(cm.Lambda).shape[0])
+    p_star = p * (p + 1) // 2
+    if df is not None:
+        return int(df)
+    derived = p_star - int(n_free)
+    spec_df: Optional[int] = None
+    spec = getattr(cm, "spec", None)
+    try:
+        if spec is not None:
+            spec_df = int(spec.degrees_of_freedom())
+    except Exception:
+        spec_df = None
+    if spec_df is not None and spec_df != derived:
+        warnings_out.append(_bilingual(
+            f"DF_MISMATCH: the model specification reports df = {spec_df} "
+            f"while the fitted parameterisation has df = {derived} "
+            f"({p_star} moments minus {int(n_free)} free parameters). The "
+            "fitted value was used, because that is the df the estimator will "
+            "divide the chi-square by.",
+            f"تقرير مواصفات النموذج يفيد بأن درجات الحرية {spec_df}، في حين أن "
+            f"التشكيل المعلمي المُقدَّر لديه {derived} درجة حرية "
+            f"({p_star} عزمًا مطروحًا منها {int(n_free)} معلمة حرة). استُخدمت "
+            "القيمة المُقدَّرة لأنها القيمة التي سيقسم عليها المُقدِّر مربع كاي.",
+        ))
+    return derived
+
+
+def _unperturbed(sigma: np.ndarray, target_rmsea: float, df: int,
+                 method: str, warnings_out: List[str],
+                 n_free: int = 0, source: str = "") -> ModelErrorResult:
+    """The no-op outcome: ``Sigma(theta)`` returned bit-identically."""
+    with _quiet():
+        try:
+            min_eig = float(np.linalg.eigvalsh(sigma).min())
+        except np.linalg.LinAlgError:  # pragma: no cover - defensive
+            min_eig = float("nan")
+    return ModelErrorResult(
+        sigma_0=sigma,
+        achieved_rmsea=0.0,
+        achieved_fmin=0.0,
+        target_rmsea=float(target_rmsea),
+        scale=0.0,
+        converged=True,
+        warnings=warnings_out,
+        df=int(df),
+        n_free=int(n_free),
+        method=method,
+        parameterisation=source,
+        direction=None,
+        min_eigenvalue=min_eig,
+        iterations=0,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The public entry point
+# --------------------------------------------------------------------------- #
+
+
+def inject_model_error(cm: "CompiledModel", target_rmsea: float, *,
+                       df: Optional[int] = None,
+                       rng: Optional[np.random.Generator] = None,
+                       method: str = METHOD_CUDECK_BROWNE,
+                       tol: float = 1e-8,
+                       max_iter: int = 200,
+                       min_eigenvalue: float = DEFAULT_MIN_EIGENVALUE
+                       ) -> ModelErrorResult:
+    """Build a generating matrix with a specified population RMSEA.
+
+    Implements Cudeck & Browne (1992).  Returns
+    ``Sigma_0 = Sigma(theta) + k E`` where
+
+    * ``F_ML(Sigma_0, Sigma(theta)) = df * target_rmsea**2`` exactly, so the
+      population RMSEA of the model in this population is ``target_rmsea``;
+    * ``theta`` is still the **exact minimiser** of
+      ``F_ML(Sigma_0, Sigma(.))``, because ``E`` is orthogonal to the model's
+      tangent space in the ML metric ``W = 0.5 D'(Sigma^-1 (x) Sigma^-1) D``.
+
+    The direction ``E`` is a random symmetric matrix drawn from ``rng`` and
+    then projected; the caller therefore controls the *shape* of the misfit
+    through the generator and its *amount* through ``target_rmsea``.  Two
+    different seeds give two different generating matrices with the same
+    achieved RMSEA, which is exactly the right behaviour: "RMSEA = 0.05" does
+    not pin down a unique population.
+
+    Note that ``diag(Sigma_0)`` departs slightly from ``diag(Sigma(theta))``.
+    That is intrinsic to the method -- the tangent space contains variance
+    directions, so forcing the diagonal back to one would destroy the
+    orthogonality that makes ``theta`` the minimiser -- and it means
+    ``Sigma_0`` is a covariance matrix rather than a correlation matrix.
+
+    Parameters
+    ----------
+    cm : CompiledModel
+        The compiled model supplying ``Sigma(theta)`` and the parameter
+        pattern.
+    target_rmsea : float
+        Desired population RMSEA.  ``<= 0`` returns ``Sigma(theta)``
+        untouched.
+    df : int, optional
+        Degrees of freedom used for ``F_0 = df * target_rmsea**2``.  Defaults
+        to ``p (p + 1) / 2`` minus the number of free parameters of the fitted
+        parameterisation.  ``<= 0`` returns ``Sigma(theta)`` untouched, because
+        a saturated model has no fit to speak of.
+    rng : numpy.random.Generator, optional
+        Explicit generator for the perturbation direction.  Defaults to
+        ``numpy.random.default_rng(cm.spec.seed)``; the global
+        ``numpy.random`` state is never touched.
+    method : {'cudeck_browne', 'residual', 'none'}, default 'cudeck_browne'
+        ``'cudeck_browne'`` projects the random direction out of the model's
+        tangent space and so preserves ``theta`` exactly.  ``'residual'``
+        skips the projection: cheaper, but the parameters that minimise the
+        discrepancy in the resulting population are no longer ``theta``.
+        ``'none'`` disables injection.
+    tol : float, default 1e-8
+        Accepted relative error on the discrepancy,
+        ``|F(k) - F_0| <= tol * max(1, F_0)``.  The root solve is driven to
+        machine precision and then polished by Newton steps; failing the check
+        sets ``converged`` to ``False`` rather than raising.
+    max_iter : int, default 200
+        Cap on the iterations of the bracket search and of Brent's method.
+    min_eigenvalue : float, default :data:`DEFAULT_MIN_EIGENVALUE`
+        Smallest eigenvalue ``Sigma_0`` may have, as a fraction of the mean
+        variance of ``Sigma(theta)``.  A target that could only be reached
+        with a matrix closer to singular than this raises
+        :class:`~semsim.core.errors.InfeasibleTargetError` instead of
+        returning an unusable matrix.
+
+    Returns
+    -------
+    ModelErrorResult
+        Carrying ``sigma_0``, the achieved RMSEA and discrepancy, the scalar
+        ``k``, the perturbation direction and bilingual warnings.
+
+    Raises
+    ------
+    semsim.core.errors.SpecificationError
+        Unknown ``method``, a non-finite ``target_rmsea``, or a singular
+        ``Sigma(theta)``.
+    semsim.core.errors.InfeasibleTargetError
+        The model is saturated, so no perturbation direction exists; or the
+        requested RMSEA is so large that no positive-definite ``Sigma_0`` on
+        this ray attains it.  The error context carries
+        ``max_achievable_rmsea``.
+    semsim.core.errors.ConvergenceError
+        The Jacobian of ``Sigma(theta)`` could not be formed.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from semsim.core import examples
+    >>> from semsim.core.compile import compile_model
+    >>> cm = compile_model(examples.minimal_cfa())
+    >>> out = inject_model_error(cm, 0.05, rng=np.random.default_rng(1))
+    >>> out.df
+    8
+    >>> bool(abs(out.achieved_rmsea - 0.05) < 1e-9)
+    True
+
+    References
+    ----------
+    Cudeck, R., & Browne, M. W. (1992). Constructing a covariance matrix that
+        yields a specified minimizer and a specified minimum discrepancy
+        function value. *Psychometrika*, 57(3), 357-369.
+    Browne, M. W., & Cudeck, R. (1993). Alternative ways of assessing model
+        fit. In K. A. Bollen & J. S. Long (Eds.), *Testing Structural Equation
+        Models* (pp. 136-162). Sage.
+    Steiger, J. H., & Lind, J. C. (1980). Statistically based tests for the
+        number of common factors. Psychometric Society, Iowa City, IA.
+    """
+    notes: List[str] = []
+    resolved_method = _resolve_method(method)
+    sigma = implied_covariance(cm)
+
+    target = float(target_rmsea)
+    if not np.isfinite(target):
+        raise SpecificationError(
+            "The target RMSEA must be a finite number.",
+            "القيمة المستهدفة لمؤشر RMSEA يجب أن تكون عددًا منتهيًا.",
+            target_rmsea=target_rmsea,
+        )
+
+    if resolved_method == METHOD_NONE or target <= 0.0:
+        return _unperturbed(sigma, max(target, 0.0),
+                            int(df) if df is not None else 0,
+                            resolved_method, notes)
+
+    if not is_positive_definite(sigma, tol=1e-12):
+        raise SpecificationError(
+            "The model-implied covariance matrix is not positive definite, so "
+            "no amount of model error can be injected into it. Check the "
+            "Heywood-case and residual-covariance warnings from the compiler "
+            "first.",
+            "مصفوفة التغاير المُشتقة من النموذج ليست معرّفة موجبة، لذلك لا يمكن "
+            "إدخال أي خطأ نموذج إليها. راجع أولًا تحذيرات حالات هايوود وتغايرات "
+            "البواقي الصادرة من مُصرِّف النموذج.",
+        )
+
+    pmap: Optional[FreeParameterMap] = None
+    source = ""
+    n_free = 0
+    if resolved_method == METHOD_CUDECK_BROWNE:
+        pmap = free_parameter_map(cm)
+        source = pmap.source
+        n_free = pmap.q
+        if source == "builtin":
+            notes.append(_bilingual(
+                "OWN_PARAMETERISATION: semsim.analysis.estimator exposed no "
+                "usable free-parameter mapping, so this module's own "
+                "marker-variable parameterisation was used to build the "
+                "tangent space (free loadings, structural paths, latent "
+                "(co)variances, residual variances and covariances; one marker "
+                "loading fixed per latent variable).",
+                "لم تُوفّر الوحدة semsim.analysis.estimator تعيينًا صالحًا "
+                "للمعالم الحرة، لذلك استُخدم التشكيل المعلمي الخاص بهذه الوحدة "
+                "لبناء الفضاء المماسي (تشبعات ومسارات وتباينات وتغايرات كامنة "
+                "وتباينات وتغايرات بواقٍ حرة، مع تثبيت تشبع مرجعي واحد لكل "
+                "متغير كامن).",
+            ))
+    else:
+        notes.append(_bilingual(
+            "UNPROJECTED_ERROR: the 'residual' method perturbs the implied "
+            "matrix without projecting the perturbation out of the model's "
+            "tangent space, so the parameters that minimise the discrepancy "
+            "in the generated population are no longer exactly the ones you "
+            "specified. Use 'cudeck_browne' when the recovered parameters "
+            "matter.",
+            "طريقة «residual» تُضطرب مصفوفة النموذج دون إسقاط الاضطراب خارج "
+            "الفضاء المماسي للنموذج، لذلك لن تكون المعالم المُصغِّرة لدالة "
+            "التباعد في المجتمع المُولَّد مطابقة تمامًا للمعالم التي حددتها. "
+            "استخدم «cudeck_browne» إذا كانت المعالم المُستردة مهمة لك.",
+        ))
+
+    resolved_df = _resolve_df(cm, df, n_free, notes)
+    if resolved_df <= 0:
+        notes.append(_bilingual(
+            "ZERO_DF: the model has no degrees of freedom, so RMSEA is "
+            "undefined and no model error was injected.",
+            "النموذج لا يملك درجات حرية، لذلك يفقد مؤشر RMSEA معناه ولم يُدخل "
+            "أي خطأ نموذج.",
+        ))
+        return _unperturbed(sigma, target, resolved_df, resolved_method,
+                            notes, n_free, source)
+
+    f_target = discrepancy_for_rmsea(target, resolved_df)
+
+    generator = _resolve_rng(cm, rng, notes)
+    direction = perturbation_direction(
+        cm, generator, method=resolved_method, pmap=pmap, sigma=sigma,
+        warnings_out=notes)
+
+    k, achieved, converged, iterations = _solve_scale(
+        sigma, direction, f_target, tol=tol, max_iter=max_iter,
+        min_eigenvalue=min_eigenvalue, df=resolved_df, target_rmsea=target)
+
+    sigma_0 = _symmetrise(sigma + k * direction)
+    with _quiet():
+        min_eig = float(np.linalg.eigvalsh(sigma_0).min())
+
+    if not is_positive_definite(sigma_0, tol=0.0):  # pragma: no cover
+        raise InfeasibleTargetError(
+            f"A population RMSEA of {target:.4f} cannot be reached on this "
+            "model without making the generating covariance matrix "
+            "non-positive-definite. Ask for less misfit, or add items so the "
+            "model has more degrees of freedom to absorb it.",
+            f"لا يمكن الوصول إلى قيمة RMSEA سكانية مقدارها {target:.4f} في هذا "
+            "النموذج دون أن تصبح مصفوفة التغاير المُولِّدة غير معرّفة موجبة. "
+            "اطلب قدرًا أقل من سوء المطابقة، أو أضف بنودًا حتى تزيد درجات حرية "
+            "النموذج القادرة على استيعابه.",
+            target_rmsea=target, df=resolved_df,
+        )
+
+    achieved_rmsea = rmsea_from_discrepancy(achieved, resolved_df)
+    if not converged:
+        notes.append(_bilingual(
+            f"RMSEA_TOLERANCE: the injected model error reached RMSEA "
+            f"{achieved_rmsea:.6f} instead of the requested {target:.6f}; the "
+            "scalar solve stopped at the limits of numerical precision.",
+            f"بلغ خطأ النموذج المُدخَل قيمة RMSEA مقدارها {achieved_rmsea:.6f} "
+            f"بدلًا من القيمة المطلوبة {target:.6f}؛ إذ توقّف حل المعادلة "
+            "العددية عند حدود الدقة الحسابية.",
+        ))
+
+    return ModelErrorResult(
+        sigma_0=sigma_0,
+        achieved_rmsea=achieved_rmsea,
+        achieved_fmin=float(achieved),
+        target_rmsea=target,
+        scale=float(k),
+        converged=bool(converged),
+        warnings=notes,
+        df=int(resolved_df),
+        n_free=int(n_free),
+        method=resolved_method,
+        parameterisation=source,
+        direction=direction,
+        min_eigenvalue=min_eig,
+        iterations=int(iterations),
+    )
+
+
+def _solve_scale(sigma: np.ndarray, direction: np.ndarray, f_target: float, *,
+                 tol: float, max_iter: int, min_eigenvalue: float,
+                 df: int, target_rmsea: float
+                 ) -> Tuple[float, float, bool, int]:
+    """Solve ``F_ML(Sigma + k E, Sigma) = F_0`` for ``k > 0``.
+
+    ``F`` vanishes with zero derivative at ``k = 0`` and is strictly convex
+    along the ray, so it increases monotonically and the root is unique.  The
+    upper bracket is doubled while ``Sigma + k E`` stays admissible and
+    bisected back towards the admissibility boundary once it does not, exactly
+    as Cudeck & Browne (1992, p. 362) describe.  Brent's method then locates
+    the root, and two Newton steps using
+    ``F'(k) = tr(E Sigma^-1) - tr(E Sigma_0^-1)`` polish it.
+
+    Returns
+    -------
+    (float, float, bool, int)
+        ``(k, F(k), converged, n_evaluations)``.
+    """
+    s = _symmetrise(sigma)
+    e = _symmetrise(direction)
+    p = s.shape[0]
+    floor = float(min_eigenvalue) * float(np.mean(np.diag(s)))
+    budget = {"n": 0}
+
+    sigma_inv = _safe_inverse(
+        s,
+        "The model-implied covariance matrix is singular, so the model-error "
+        "scale cannot be solved for.",
+        "مصفوفة التغاير المُشتقة من النموذج مفردة، لذلك تعذّر حل مقدار خطأ "
+        "النموذج.",
+    )
+    trace_const = float(np.trace(e @ sigma_inv))
+
+    def admissible(k: float) -> bool:
+        with _quiet():
+            candidate = _symmetrise(s + float(k) * e)
+            if not np.all(np.isfinite(candidate)):
+                return False
+            try:
+                return bool(np.linalg.eigvalsh(candidate).min() > floor)
+            except np.linalg.LinAlgError:
+                return False
+
+    def f_of(k: float) -> float:
+        budget["n"] += 1
+        if not admissible(k):
+            return float("inf")
+        return population_discrepancy(s + float(k) * e, s)
+
+    # -- an admissible starting point ------------------------------------- #
+    hi = 1.0
+    for _ in range(int(max_iter)):
+        if admissible(hi) and np.isfinite(f_of(hi)):
+            break
+        hi *= 0.5
+        if hi < 1e-14:
+            raise InfeasibleTargetError(
+                "Even an infinitesimal amount of model error makes the "
+                "generating covariance matrix singular, so the requested fit "
+                "cannot be produced. The implied matrix is almost certainly "
+                "already near-singular: look for two items with a residual "
+                "correlation close to one, or a loading at the Heywood bound.",
+                "حتى أقل قدر من خطأ النموذج يجعل مصفوفة التغاير المُولِّدة مفردة، "
+                "لذلك لا يمكن إنتاج حسن المطابقة المطلوب. من المرجّح جدًا أن "
+                "مصفوفة النموذج شبه مفردة بالأصل: ابحث عن بندين بينهما ارتباط "
+                "بواقٍ يقارب الواحد، أو عن تشبع عند حدّ هايوود.",
+                target_rmsea=target_rmsea,
+            )
+
+    # -- bracket the root ------------------------------------------------- #
+    for _ in range(int(max_iter)):
+        if f_of(hi) >= f_target:
+            break
+        nxt = 2.0 * hi
+        if admissible(nxt):
+            hi = nxt
+            continue
+        low, up = hi, nxt
+        for _ in range(200):
+            mid = 0.5 * (low + up)
+            if admissible(mid):
+                low = mid
+            else:
+                up = mid
+            if up - low <= 1e-14 * max(1.0, up):
+                break
+        hi = low
+        break
+
+    reachable = f_of(hi)
+    if not np.isfinite(reachable) or reachable < f_target:
+        max_rmsea = rmsea_from_discrepancy(reachable, df)
+        raise InfeasibleTargetError(
+            f"A population RMSEA of {target_rmsea:.4f} is out of reach for "
+            f"this model: with {df} degrees of freedom the largest misfit that "
+            "still leaves a usable (positive definite, well conditioned) "
+            f"generating matrix is about {max_rmsea:.4f}. Ask for a smaller "
+            "RMSEA, or specify more items so the model has more degrees of "
+            "freedom to carry the error.",
+            f"قيمة RMSEA السكانية المطلوبة {target_rmsea:.4f} بعيدة عن متناول "
+            f"هذا النموذج: فبدرجات حرية مقدارها {df}، أقصى سوء مطابقة يُبقي "
+            "مصفوفة التوليد صالحة للاستخدام (معرّفة موجبة وجيدة الشرطية) هو "
+            f"نحو {max_rmsea:.4f}. اطلب قيمة RMSEA أصغر، أو حدِّد عددًا أكبر من "
+            "البنود حتى تزيد درجات الحرية القادرة على حمل الخطأ.",
+            target_rmsea=target_rmsea, df=int(df),
+            max_achievable_rmsea=max_rmsea,
+            max_achievable_fmin=float(reachable),
+        )
+
+    try:
+        k = float(_opt.brentq(lambda x: f_of(x) - f_target, 0.0, hi,
+                              xtol=1e-16, rtol=8.9e-16,
+                              maxiter=max(int(max_iter), 20)))
+    except (ValueError, RuntimeError) as exc:
+        raise ConvergenceError(
+            "Brent's method failed to solve for the amount of model error "
+            "needed to reach the requested RMSEA.",
+            "فشلت طريقة برنت في حل مقدار خطأ النموذج اللازم للوصول إلى قيمة "
+            "RMSEA المطلوبة.",
+            detail=str(exc),
+        ) from exc
+
+    # -- Newton polish ----------------------------------------------------- #
+    value = f_of(k)
+    for _ in range(12):
+        gap = value - f_target
+        if abs(gap) <= tol * max(1.0, abs(f_target)) * 1e-3:
+            break
+        with _quiet():
+            inv_0 = np.linalg.inv(_symmetrise(s + k * e))
+            slope = trace_const - float(np.trace(e @ inv_0))
+        if not np.isfinite(slope) or abs(slope) < 1e-300:
+            break
+        step = gap / slope
+        candidate = k - step
+        if not (candidate > 0.0) or not admissible(candidate):
+            break
+        new_value = f_of(candidate)
+        if not np.isfinite(new_value) or abs(new_value - f_target) >= abs(gap):
+            break
+        k, value = candidate, new_value
+
+    del p
+    converged = bool(abs(value - f_target) <= tol * max(1.0, abs(f_target)))
+    return k, float(value), converged, int(budget["n"])

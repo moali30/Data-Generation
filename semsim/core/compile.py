@@ -893,6 +893,27 @@ def compile_model(spec: ModelSpec,
         Theta, "the item residual covariance matrix Theta",
         "مصفوفة تغاير بواقي البنود (Theta)", warnings)
 
+    # A reverse-worded item is answered on an inverted scale, so its raw
+    # responses correlate NEGATIVELY with its factor until the researcher
+    # recodes them. Modelling that as a negated loading keeps Sigma, the
+    # generated data and any estimator fitted to them consistent, and lets a
+    # simulated dataset reproduce the diagnostic a forgotten recode produces:
+    # a negative item-total correlation and a collapsed alpha.
+    reversed_items = [it.id for it in spec.all_items() if it.reverse_coded]
+    for iid in reversed_items:
+        j = item_index.get(iid)
+        if j is not None:
+            Lambda[j, :] *= -1.0
+    if reversed_items:
+        warnings.append(_bilingual(
+            f"REVERSE_CODED: {len(reversed_items)} item(s) are reverse-worded, "
+            "so their loadings carry a negative sign and their raw responses "
+            "run against their factor until they are recoded.",
+            f"بنود معكوسة الصياغة: {len(reversed_items)} من البنود معكوسة، "
+            "لذا تحمل تشبعاتها إشارة سالبة وتسير استجاباتها الخام عكس عاملها "
+            "إلى أن يُعاد ترميزها.",
+        ))
+
     compiled = CompiledModel(
         spec=spec,
         item_ids=item_ids,

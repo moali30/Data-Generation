@@ -109,8 +109,8 @@ _METHOD_WALD_ANALYTIC = "wald_analytic"
 MONTE_CARLO_COLUMNS: Tuple[str, ...] = (
     "parameter", "kind", "source", "target", "population",
     "mean_estimate", "mean_bias", "relative_bias", "empirical_sd",
-    "mean_se", "power", "coverage_95", "n_converged", "replications",
-    "n", "alpha",
+    "mean_se", "power", "coverage_95", "coverage_metric",
+    "n_converged", "replications", "n", "alpha",
 )
 
 #: Columns of :attr:`PowerResult.per_path_power`.
@@ -1545,12 +1545,21 @@ def monte_carlo_power(spec: ModelSpec, *, n: int, replications: int = 200,
     under 10 % and coverage between 0.91 and 0.98; a sample size that buys
     power while wrecking coverage has not solved the problem.
 
-    Parameters are compared on the **completely standardised** scale, because
-    that is the metric the spec is written in.  The standardised standard
-    error used for coverage is the first-order proportional approximation
-    ``se_std = se * |std / est|``, which holds the scaling factors fixed; it
-    is adequate for a coverage diagnostic but is not a substitute for a full
-    delta-method interval.
+    Bias is reported on the **completely standardised** scale, because that is
+    the metric the spec is written in: ``population`` is read straight off the
+    compiled ``B`` / ``Phi``.  Coverage, however, needs the parameter and its
+    standard error in the *same* metric, so it is computed in the estimator's
+    own marker metric against the population value obtained by fitting the
+    model to a pseudo-sample whose covariance matrix is exactly
+    ``Sigma(theta)`` (see :func:`_exact_moment_sample`); at that point the
+    discrepancy is zero, so the estimates *are* the population values.  The
+    column ``coverage_metric`` records which metric was used.  If that
+    reference fit is unavailable, coverage falls back on the first-order
+    proportional approximation ``se_std = se |std / est|`` and
+    ``coverage_metric`` says ``"standardised_approx"``; that approximation
+    holds the standardising factors fixed and is conservative.  ``mean_se``
+    is always the standardised proportional approximation, so it can be read
+    next to ``empirical_sd``.
 
     Parameters
     ----------
@@ -1581,7 +1590,10 @@ def monte_carlo_power(spec: ModelSpec, *, n: int, replications: int = 200,
         second-order loading and every free latent covariance -- with the
         columns listed in :data:`MONTE_CARLO_COLUMNS`.  A model with no
         structural parameters at all yields an empty frame with those
-        columns.
+        columns.  A parameter the estimator holds fixed for identification --
+        the first second-order loading of each second-order construct -- has
+        no standard error and therefore ``NaN`` in ``power`` and
+        ``coverage_95``; its bias columns are still meaningful.
 
     Raises
     ------
@@ -1642,8 +1654,31 @@ def monte_carlo_power(spec: ModelSpec, *, n: int, replications: int = 200,
     hits: Dict[str, int] = {t.parameter: 0 for t in targets}
     covered: Dict[str, int] = {t.parameter: 0 for t in targets}
     tested: Dict[str, int] = {t.parameter: 0 for t in targets}
+    n_interval: Dict[str, int] = {t.parameter: 0 for t in targets}
     completed = 0
     failures = 0
+
+    # Population values in the estimator's own metric, for honest coverage.
+    population_unstd: Dict[str, float] = {}
+    coverage_metric = "standardised_approx"
+    try:
+        reference = _estimator.estimate(
+            pd.DataFrame(_exact_moment_sample(sigma,
+                                              max(2 * cm.n_items + 10, 200)),
+                         columns=columns),
+            spec, use_polychoric=False, observed_se=False)
+        if float(reference.fmin) < 1e-6:
+            table = reference.parameter_table()
+            for t in targets:
+                row = _match_row(table, t)
+                if row is not None and math.isfinite(float(row["est"])):
+                    population_unstd[t.parameter] = float(row["est"])
+            if len(population_unstd) == len(targets):
+                coverage_metric = "unstandardised"
+            else:
+                population_unstd.clear()
+    except Exception:
+        population_unstd.clear()
 
     try:
         for rep in range(reps):
@@ -1676,11 +1711,20 @@ def monte_carlo_power(spec: ModelSpec, *, n: int, replications: int = 200,
                         hits[t.parameter] += 1
                 if (math.isfinite(se) and se > 0.0 and math.isfinite(std)
                         and abs(est) > 1e-12):
-                    se_std = se * abs(std / est)
-                    ses[t.parameter].append(se_std)
-                    lower = std - _Z_95 * se_std
-                    upper = std + _Z_95 * se_std
-                    if lower <= t.population <= upper:
+                    ses[t.parameter].append(se * abs(std / est))
+                if math.isfinite(se) and se > 0.0:
+                    if coverage_metric == "unstandardised":
+                        centre = est
+                        truth = population_unstd[t.parameter]
+                        half = _Z_95 * se
+                    elif math.isfinite(std) and abs(est) > 1e-12:
+                        centre = std
+                        truth = t.population
+                        half = _Z_95 * se * abs(std / est)
+                    else:
+                        continue
+                    n_interval[t.parameter] += 1
+                    if centre - half <= truth <= centre + half:
                         covered[t.parameter] += 1
             if progress is not None:
                 if progress("monte_carlo", (rep + 1) / reps) is False:
@@ -1707,7 +1751,7 @@ def monte_carlo_power(spec: ModelSpec, *, n: int, replications: int = 200,
         vals = np.asarray(estimates[t.parameter], dtype=float)
         se_vals = np.asarray(ses[t.parameter], dtype=float)
         k_tested = tested[t.parameter]
-        k_cover = len(se_vals)
+        k_cover = n_interval[t.parameter]
         mean_est = float(vals.mean()) if vals.size else float("nan")
         bias = mean_est - t.population if vals.size else float("nan")
         rel = (bias / t.population
@@ -1728,6 +1772,7 @@ def monte_carlo_power(spec: ModelSpec, *, n: int, replications: int = 200,
                       else float("nan")),
             "coverage_95": (covered[t.parameter] / k_cover if k_cover
                             else float("nan")),
+            "coverage_metric": coverage_metric,
             "n_converged": int(completed),
             "replications": int(reps),
             "n": int(n),
@@ -1833,6 +1878,43 @@ def _per_path_frame(spec: ModelSpec, cm: "CompiledModel", n: int,
     frame = pd.DataFrame(rows, columns=list(PER_PATH_COLUMNS))
     frame["n_required"] = frame["n_required"].astype("Int64")
     return frame
+
+
+def _refresh_per_path_power(frame: pd.DataFrame, n: int,
+                            alpha: float) -> pd.DataFrame:
+    """Re-evaluate the ``power`` / ``ncp_at_n`` columns at a new ``N``.
+
+    The expensive part of a Satorra-Saris table -- the restricted fit -- gives
+    a noncentrality *per case*, so moving the table to a different sample size
+    is pure arithmetic.
+
+    Parameters
+    ----------
+    frame : pandas.DataFrame
+        A per-path table carrying ``ncp_per_case``.
+    n : int
+        The sample size to report at.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy with ``ncp_at_n`` and ``power`` recomputed.
+
+    References
+    ----------
+    Satorra, A., & Saris, W. E. (1985). Power of the likelihood ratio test in
+        covariance structure analysis. *Psychometrika*, 50(1), 83-90.
+    """
+    crit = float(chi2.ppf(1.0 - alpha, 1))
+    out = frame.copy()
+    out["ncp_at_n"] = (int(n) - 1) * out["ncp_per_case"].astype(float)
+    out["power"] = [
+        float(min(max(1.0 - float(ncx2.cdf(crit, 1, lam)), 0.0), 1.0))
+        for lam in out["ncp_at_n"].tolist()
+    ]
+    return out
 
 
 def analyse(spec: ModelSpec, cm: Optional["CompiledModel"] = None
@@ -2069,16 +2151,6 @@ def analyse(spec: ModelSpec, cm: Optional["CompiledModel"] = None
             needed = per_path["n_required"].dropna()
             if not needed.empty:
                 n_paths_required = int(needed.max())
-            weakest = per_path.loc[per_path["power"].idxmin()]
-            _note(notes_en, notes_ar,
-                  f"Satorra-Saris: at N = {n_recommended} the weakest path "
-                  f"({weakest['source']} -> {weakest['target']}, "
-                  f"beta = {weakest['coefficient']:.3f}) has power "
-                  f"{weakest['power']:.3f}.",
-                  f"ساتورا وساريس: عند حجم عينة {n_recommended} يبلغ أضعف "
-                  f"المسارات ({weakest['source']} ← {weakest['target']}، "
-                  f"بمعامل {weakest['coefficient']:.3f}) قوة قدرها "
-                  f"{weakest['power']:.3f}.")
             if (str(ps.mode).lower() != "fixed"
                     and n_paths_required > n_recommended
                     and n_paths_required <= max_n):
@@ -2095,6 +2167,8 @@ def analyse(spec: ModelSpec, cm: Optional["CompiledModel"] = None
                 binding = "satorra_saris"
                 if method is PowerMethod.SATORRA_SARIS:
                     n_from_method = n_paths_required
+                per_path = _refresh_per_path_power(per_path, n_recommended,
+                                                   alpha)
             elif n_paths_required > max_n:
                 _note(notes_en, notes_ar,
                       f"Detecting every structural path with power "
@@ -2105,6 +2179,16 @@ def analyse(spec: ModelSpec, cm: Optional["CompiledModel"] = None
                       f"{target_power:.2f} إلى {n_paths_required} حالة، وهو "
                       f"يتجاوز الحدَّ الأعلى {max_n}؛ وستبقى أصغر المسارات "
                       f"أقل قوة من المطلوب.")
+            weakest = per_path.loc[per_path["power"].idxmin()]
+            _note(notes_en, notes_ar,
+                  f"Satorra-Saris: at N = {n_recommended} the weakest path "
+                  f"({weakest['source']} -> {weakest['target']}, "
+                  f"beta = {weakest['coefficient']:.3f}) has power "
+                  f"{weakest['power']:.3f}.",
+                  f"ساتورا وساريس: عند حجم عينة {n_recommended} يبلغ أضعف "
+                  f"المسارات ({weakest['source']} ← {weakest['target']}، "
+                  f"بمعامل {weakest['coefficient']:.3f}) قوة قدرها "
+                  f"{weakest['power']:.3f}.")
 
     # -- curve and the headline power -------------------------------------- #
     if df >= 1:

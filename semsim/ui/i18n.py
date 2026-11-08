@@ -655,6 +655,108 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "لا يتضمّن تفاعلًا بين متغيّرين كامنين.",
         "The automatic choice settles on the covariance matrix, because the "
         "model has no latent interaction."),
+
+    # ---- stage 5 additions: fit and significance targeting ------------ #
+    "t.saturated": (
+        "النموذج مشبع (Saturated Model): درجات الحرية صفر أو أقل، فلا توجد "
+        "جودة توفيق يمكن استهدافها؛ أضف أسئلة أو قيّد بعض المعالم أولًا.",
+        "The model is saturated: with zero or negative degrees of freedom "
+        "there is no fit to target. Add items, or constrain parameters, "
+        "first."),
+    "t.level.implies": (
+        "يستهدف هذا المستوى قيمة RMSEA = {rmsea} مع حد أدنى متوقع "
+        "لمؤشر CFI = {cfi}.",
+        "This level targets RMSEA = {rmsea} with an expected CFI floor "
+        "of {cfi}."),
+    "t.target_rmsea": ("قيمة RMSEA المستهدفة", "Target RMSEA"),
+    "t.use_cfi": ("استهداف مؤشر CFI كذلك (هدف ثانوي)",
+                  "Also target CFI (secondary goal)"),
+    "t.target_cfi": ("قيمة CFI المستهدفة", "Target CFI"),
+    "t.use_srmr": ("استهداف مؤشر SRMR كذلك (هدف ثانوي)",
+                   "Also target SRMR (secondary goal)"),
+    "t.target_srmr": ("قيمة SRMR المستهدفة", "Target SRMR"),
+    "t.thresholds": ("المعايير المتعارف عليها لمؤشرات التوفيق",
+                     "Conventional fit thresholds"),
+    "t.no_paths": (
+        "لا توجد مسارات أو تفاعلات بعد؛ أضفها في مرحلة بناء النموذج ثم عُد "
+        "إلى هنا لتوجيه دلالتها.",
+        "No paths or interactions yet: add them in the model-specification "
+        "stage, then come back here to aim them."),
+    "t.targets_summary": (
+        "مستهدف أن يكون دالًا: {sig} — مستهدف أن يكون غير دال: {null} — "
+        "من إجمالي {total} علاقة في النموذج.",
+        "Targeted significant: {sig} — targeted non-significant: {null} — "
+        "out of {total} relationships in the model."),
+    "t.realised_rmsea": ("قيمة RMSEA المتحققة", "Realised RMSEA"),
+    "t.rounds_used": ("دورات المعايرة المنفَّذة", "Calibration rounds used"),
+    "t.within_tolerance": ("داخل هامش التفاوت المقبول", "Within tolerance"),
+    "t.outside_tolerance": ("خارج هامش التفاوت المقبول", "Outside tolerance"),
+    "t.paths_matched": ("تحقّقت كل المسارات المستهدفة",
+                       "Every targeted path matched"),
+    "t.paths_unmatched": ("لم تتحقّق كل المسارات المستهدفة",
+                          "Not every targeted path matched"),
+    "t.no_calibration": (
+        "لم تُجرَ معايرة بعد؛ شغّل المحاكاة الكاملة ليظهر سجل المعايرة "
+        "ونتائجها هنا.",
+        "No calibration run yet: run the full simulation and the calibration "
+        "log will appear here."),
+
+    # ---- stage 4 additions: power analysis & sample size -------------- #
+    "p.complexity": ("تعقيد النموذج", "Model complexity"),
+    "p.settings": ("إعدادات تحليل القوة الإحصائية",
+                   "Power analysis settings"),
+    "p.results": ("نتائج تحليل القوة الإحصائية", "Power analysis results"),
+    "p.df.negative": (
+        "درجات حرية النموذج صفر أو سالبة، أي أن النموذج مشبَع (Saturated) أو "
+        "غير مُعيَّن (Under-identified)، فلا توجد له مطابقة كلية يمكن اختبار "
+        "قوتها. قلّل عدد المعالم المقدَّرة أو أضف أسئلة قبل حساب حجم العينة.",
+        "The model has zero or negative degrees of freedom, so it is saturated "
+        "or under-identified and has no global fit to have power against. "
+        "Estimate fewer parameters, or add items, before sizing the sample."),
+    "p.n.hint": (
+        "يُستخدم هذا العدد كما هو عند اختيار «حجم محدّد»، أما عند اختيار "
+        "«اقترح الحجم الأمثل» فيحسبه البرنامج بنفسه.",
+        "This number is used as it stands under “Fixed N”; under “Suggest the "
+        "optimal N” the engine works it out for you."),
+    "p.rmsea.hint": (
+        "يقارن اختبار التوفيق القريب بين فرض صفري عند RMSEA الصفري وفرض بديل "
+        "عند RMSEA البديل، وكلما تقاربت القيمتان احتاج الاختبار عينة أكبر "
+        "للتمييز بينهما.",
+        "The test of close fit pits a null RMSEA against an alternative RMSEA; "
+        "the closer the two values, the larger the sample the test needs to "
+        "tell them apart."),
+    "p.mc_reps.hint": (
+        "كل تكرار يولّد عينة كاملة ويقدّر النموذج عليها، فالعدد الكبير يرفع "
+        "دقة القوة المقدَّرة ويطيل زمن الحساب.",
+        "Each replication generates a full sample and fits the model to it, so "
+        "a high count buys precision at the cost of time."),
+    "p.criterion": ("المحك", "Criterion"),
+    "p.rules_of_thumb": ("القواعد الإرشادية لحجم العينة",
+                         "Sample-size rules of thumb"),
+    "p.kline_min": ("الحد الأدنى عند كلاين (200 حالة)",
+                    "Kline's minimum (200 cases)"),
+    "p.floor_5_to_1": ("الحد المطلق (5 حالات لكل معلمة)",
+                       "Absolute floor (5 cases per parameter)"),
+    "p.per_path": ("القوة الإحصائية لكل مسار بنائي",
+                   "Power for each structural path"),
+    "p.axis_power": ("القوة الإحصائية (Power)", "Statistical power"),
+    "p.notes": ("ملاحظات على الحساب", "Notes on the calculation"),
+    "p.apply_n": ("استخدم هذا الحجم في النموذج", "Apply this N to the model"),
+    "p.computing": ("جارٍ حساب القوة الإحصائية وحجم العينة…",
+                    "Computing power and sample size…"),
+    "p.not_computed": (
+        "اضغط «احسب حجم العينة» لتشغيل التحليل على النموذج بصيغته الحالية.",
+        "Press “Compute sample size” to run the analysis on the model as it "
+        "stands."),
+    "p.unavailable": (
+        "وحدة تحليل القوة الإحصائية غير متاحة في هذه النسخة، لذا تُعرض "
+        "القواعد الإرشادية وحدها (10 حالات لكل معلمة مقدَّرة، و10 حالات لكل "
+        "سؤال، والحد الأدنى عند كلاين وهو 200 حالة) دون منحنى القوة.",
+        "The power analysis module is unavailable in this build, so only the "
+        "rules of thumb are shown (10 cases per estimated parameter, 10 cases "
+        "per item, and Kline's minimum of 200) with no power curve."),
+    "p.failed": ("تعذّر إكمال تحليل القوة الإحصائية",
+                 "The power analysis could not be completed"),
 }
 
 
