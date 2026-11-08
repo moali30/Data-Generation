@@ -19,6 +19,7 @@ or, when pytest is unavailable, directly::
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
@@ -65,6 +66,7 @@ REQUIRED_SPEC_CODES = [
     "LIKERT_CATEGORY_RANGE", "PROPORTIONS_DONT_SUM",
     "INFEASIBLE_SKEW_KURTOSIS", "SAMPLE_SIZE_TOO_SMALL",
     "FIT_TARGET_IMPOSSIBLE_AT_ZERO_DF", "MISSING_PROPORTION_RANGE",
+    "NON_FINITE_VALUE",
 ]
 REQUIRED_COMPILED_CODES = [
     "HEYWOOD_CASE", "SIGMA_NOT_PD", "R2_EXCEEDS_ONE",
@@ -440,27 +442,39 @@ def test_crossload_home_factor():
 
 
 def test_heywood_risk_from_closed_form_communality():
+    """Communality is ``lambda' Phi lambda``, not ``sum(lambda^2)``.
+
+    This test used to assert the orthogonal-factor sum of squares (0.81 + 0.25
+    = 1.06) for a cross-loading onto ``M``, but in ``clean_spec`` the path
+    X -> M = 0.30 makes X and M correlate 0.30, so the cross term
+    ``2 * lambda_h * lambda_c * r`` is part of the communality the compiler
+    actually realises (ARCHITECTURE step 6). The old expectation was the bug,
+    not the contract, so the numbers below are the implied-metric ones.
+    """
     s = clean_spec()
     item = s.all_items()[0]
     item.loading = 0.9
     s.add_cross_loading(item.name, "M", loading=0.5)
-    # communality = 0.9^2 + 0.5^2 = 0.81 + 0.25 = 1.06  (orthogonal factors)
+    # implied corr(X, M) = 0.30, so
+    # communality = 0.81 + 0.25 + 2*0.9*0.5*0.30 = 1.06 + 0.27 = 1.33
     report = _record(validate(s))
     hits = report.by_code("HEYWOOD_RISK")
     assert len(hits) == 1, [d.message_en for d in hits]
-    assert "1.060" in hits[0].message_en, hits[0].message_en
+    assert "1.330" in hits[0].message_en, hits[0].message_en
     assert hits[0].where == item.id
 
-    # 0.9^2 + 0.4^2 = 0.97 < 1 -> admissible
-    s.cross_loadings[0].loading = 0.4
+    # 0.81 + 0.04 + 2*0.9*0.2*0.30 = 0.85 + 0.108 = 0.958 < 1 -> admissible
+    s.cross_loadings[0].loading = 0.2
     assert not validate(s).has("HEYWOOD_RISK")
 
-    # the method factor adds its own square: 0.9^2 + 0.4^2 + 0.3^2 = 1.06
+    # the method factor is orthogonal to every substantive factor, so it adds
+    # exactly its own square: 0.958 + 0.3^2 = 1.048
     s.common_method_bias.enabled = True
     s.common_method_bias.loading = 0.3
     rep2 = validate(s)
     assert rep2.has("HEYWOOD_RISK")
-    assert "1.060" in rep2.by_code("HEYWOOD_RISK")[0].message_en
+    assert "1.048" in rep2.by_code("HEYWOOD_RISK")[0].message_en, \
+        rep2.by_code("HEYWOOD_RISK")[0].message_en
 
 
 def test_r2_exceeds_one_from_closed_form_quadratic_form():
@@ -713,6 +727,351 @@ def test_validate_compiled_never_raises():
     rep = validate_compiled(cm)
     assert rep.has("SIGMA_NOT_PD")
     _record(rep)
+
+
+# --------------------------------------------------------------------------- #
+# Regressions: the implied latent correlations (not just the declared ones)
+# --------------------------------------------------------------------------- #
+
+
+def test_r2_uses_the_correlations_the_structural_model_induces():
+    """A mediation model correlates its own predictors.
+
+    X -> M = 0.80 means X and M correlate 0.80 even though no
+    ``LatentCovariance`` says so, so the R^2 of Y is
+    ``b' Phi b`` with ``Phi[X, M] = 0.80``, not ``b' I b``.  Building R from
+    the declared covariances alone made this model - whose disturbance
+    variance is unambiguously negative, and which the compiler has to repair
+    with a Heywood clamp - validate completely clean.
+    """
+    s = ModelSpec()
+    s.add_construct("X", n_items=4, loading=0.7)
+    s.add_construct("M", n_items=4, loading=0.7, role=ConstructRole.MEDIATOR)
+    s.add_construct("Y", n_items=4, loading=0.7, role=ConstructRole.DEPENDENT)
+    s.add_path("X", "M", effect_size=EffectSize.CUSTOM, coefficient=0.80)
+    s.add_path("X", "Y", effect_size=EffectSize.CUSTOM, coefficient=0.70)
+    s.add_path("M", "Y", effect_size=EffectSize.CUSTOM, coefficient=0.70)
+
+    b = np.array([0.70, 0.70])
+    R = np.array([[1.0, 0.80], [0.80, 1.0]])
+    assert abs(float(b @ R @ b) - 1.764) < 1e-12        # 0.98 + 0.784
+
+    report = _record(validate(s))
+    hits = report.by_code("R2_EXCEEDS_ONE")
+    assert len(hits) == 1, [d.message_en for d in hits]
+    assert "1.764" in hits[0].message_en, hits[0].message_en
+    assert hits[0].where == s.construct_by_name("Y").id
+    assert not report.ok
+
+    # M itself is fine: R^2 = 0.80^2 = 0.64
+    assert hits[0].where != s.construct_by_name("M").id
+    # and the same model with admissible coefficients raises nothing
+    s.paths[1].coefficient = 0.20
+    s.paths[2].coefficient = 0.30
+    assert not validate(s).has("R2_EXCEEDS_ONE")
+
+
+def test_r2_matches_the_compiler_on_a_chain_of_three_predictors():
+    """The validator's quadratic form and the compiler's must agree."""
+    try:
+        from semsim.core.compile import compile_model
+    except Exception as exc:                      # pragma: no cover
+        print(f"    [skip] semsim.core.compile unavailable: {exc!r}")
+        return
+
+    s = ModelSpec()
+    s.add_construct("X", n_items=3, loading=0.7)
+    s.add_construct("M1", n_items=3, loading=0.7, role=ConstructRole.MEDIATOR)
+    s.add_construct("M2", n_items=3, loading=0.7, role=ConstructRole.MEDIATOR)
+    s.add_construct("Y", n_items=3, loading=0.7, role=ConstructRole.DEPENDENT)
+    s.add_path("X", "M1", effect_size=EffectSize.CUSTOM, coefficient=0.60)
+    s.add_path("M1", "M2", effect_size=EffectSize.CUSTOM, coefficient=0.55)
+    s.add_path("X", "Y", effect_size=EffectSize.CUSTOM, coefficient=0.35)
+    s.add_path("M1", "Y", effect_size=EffectSize.CUSTOM, coefficient=0.30)
+    s.add_path("M2", "Y", effect_size=EffectSize.CUSTOM, coefficient=0.25)
+    assert not validate(s).has("R2_EXCEEDS_ONE")
+
+    cm = compile_model(s)
+    yi = cm.factor_index[s.construct_by_name("Y").id]
+    compiled_r2 = float(cm.B[yi] @ cm.Phi @ cm.B[yi])
+    # The validator's own number, read back through its diagnostic: push the
+    # same model over the edge by a known factor and check the figure it
+    # prints equals the compiler's quadratic form, scaled the same way.
+    scale = 1.0 / math.sqrt(compiled_r2)
+    for p in s.paths:
+        if p.target == s.construct_by_name("Y").id:
+            p.coefficient = p.coefficient * scale * 1.02
+    hits = validate(s).by_code("R2_EXCEEDS_ONE")
+    assert len(hits) == 1, [d.message_en for d in hits]
+    expected = compiled_r2 * (scale * 1.02) ** 2         # = 1.02^2 = 1.0404
+    assert abs(expected - 1.0404) < 1e-9, expected
+    assert f"{expected:.3f}" in hits[0].message_en, hits[0].message_en
+
+
+def test_duplicate_paths_are_not_summed_and_follow_the_compiler():
+    """Two X -> Y paths at 0.50 compile to 0.50, not to 1.00.
+
+    ARCHITECTURE compile step 2 assigns ``B[t, s] = resolved_coefficient()``,
+    so the last declaration wins.  Summing them inside the validator reported
+    R2_EXCEEDS_ONE (1.00) on a model whose compiled R^2 is 0.25.
+    """
+    s = ModelSpec()
+    s.add_construct("X", n_items=4, loading=0.7)
+    s.add_construct("Y", n_items=4, loading=0.7, role=ConstructRole.DEPENDENT)
+    s.add_path("X", "Y", effect_size=EffectSize.CUSTOM, coefficient=0.50)
+    s.add_path("X", "Y", effect_size=EffectSize.CUSTOM, coefficient=0.50)
+
+    report = _record(validate(s))
+    assert not report.has("R2_EXCEEDS_ONE"), [
+        d.message_en for d in report.by_code("R2_EXCEEDS_ONE")]
+    # the user still has to be told that the earlier path is being ignored
+    dups = report.by_code("DUPLICATE_PATH")
+    assert len(dups) == 1
+    assert dups[0].where == s.paths[1].id
+    assert "ignored" in dups[0].message_en
+
+    # the surviving coefficient is the LAST one, so the order matters
+    s.paths[1].coefficient = 0.995
+    assert not validate(s).has("R2_EXCEEDS_ONE")        # 0.995^2 = 0.990
+    s.paths[0].coefficient = 0.10                        # the ignored one
+    assert not validate(s).has("R2_EXCEEDS_ONE")
+    s.paths[1].coefficient = 1.01                        # the live one
+    assert validate(s).has("R2_EXCEEDS_ONE")             # 1.01^2 = 1.020
+
+    try:
+        from semsim.core.compile import compile_model
+    except Exception as exc:                      # pragma: no cover
+        print(f"    [skip] semsim.core.compile unavailable: {exc!r}")
+        return
+    s.paths[0].coefficient = 0.50
+    s.paths[1].coefficient = 0.50
+    cm = compile_model(s)
+    yi = cm.factor_index[s.construct_by_name("Y").id]
+    xi = cm.factor_index[s.construct_by_name("X").id]
+    assert abs(float(cm.B[yi, xi]) - 0.50) < 1e-12, cm.B[yi, xi]
+
+
+def test_heywood_risk_cross_loading_resolves_the_implied_correlation():
+    """``2*lambda_h*lambda_c*r`` needs the *implied* r, in both directions.
+
+    Two dimensions of one second-order construct correlate
+    ``sol_1 * sol_2`` through their parent, and two constructs correlate
+    through the structural paths between them.  Resolving ``r`` against the
+    declared latent covariances only returned 0 in both cases, so the
+    communality came out below 1 and no Heywood case was reported.
+    """
+    # (a) two dimensions of the same parent: r = 0.9 * 0.9 = 0.81
+    s = ModelSpec()
+    c = s.add_second_order_construct("SO", n_dimensions=3,
+                                     items_per_dimension=4, loading=0.7,
+                                     second_order_loading=0.9)
+    item = c.dimensions[0].items[0]
+    item.loading = 0.8
+    s.add_cross_loading(item.id, c.dimensions[1].id, loading=0.5)
+    # 0.64 + 0.25 + 2*0.8*0.5*0.81 = 0.89 + 0.648 = 1.538
+    report = _record(validate(s))
+    hits = report.by_code("HEYWOOD_RISK")
+    assert len(hits) == 1, [d.message_en for d in hits]
+    assert "1.538" in hits[0].message_en, hits[0].message_en
+    assert hits[0].where == item.id
+
+    # (b) the same cross-loading onto a genuinely orthogonal construct keeps
+    #     the plain sum of squares: 0.64 + 0.25 = 0.89 < 1
+    s2 = ModelSpec()
+    c2 = s2.add_second_order_construct("SO", n_dimensions=3,
+                                       items_per_dimension=4, loading=0.7,
+                                       second_order_loading=0.9)
+    s2.add_construct("Z", n_items=4, loading=0.7)
+    it2 = c2.dimensions[0].items[0]
+    it2.loading = 0.8
+    s2.add_cross_loading(it2.id, s2.construct_by_name("Z").id, loading=0.5)
+    assert not validate(s2).has("HEYWOOD_RISK")
+
+    # (c) two constructs correlated only through a structural path:
+    #     clean_spec has X -> M = 0.30 and M -> Y = 0.30, X -> Y = 0.15, so
+    #     implied corr(X, Y) = 0.15 + 0.30*0.30 = 0.24 and the communality is
+    #     0.81 + 0.16 + 2*0.9*0.4*0.24 = 0.97 + 0.1728 = 1.1428
+    s3 = clean_spec()
+    it3 = s3.all_items()[0]
+    it3.loading = 0.9
+    s3.add_cross_loading(it3.id, s3.construct_by_name("Y").id, loading=0.4)
+    hits3 = validate(s3).by_code("HEYWOOD_RISK")
+    assert len(hits3) == 1, [d.message_en for d in hits3]
+    assert "1.143" in hits3[0].message_en, hits3[0].message_en
+
+
+def test_duplicate_cross_loadings_are_not_summed_either():
+    """compile.py writes ``Lambda[j, fi] = cl.loading``: the last one wins."""
+    s = clean_spec()
+    item = s.all_items()[0]
+    item.loading = 0.7
+    s.add_cross_loading(item.id, s.construct_by_name("M").id, loading=0.6)
+    s.add_cross_loading(item.id, s.construct_by_name("M").id, loading=0.1)
+    # live row is (0.7 on X, 0.1 on M): 0.49 + 0.01 + 2*0.7*0.1*0.30 = 0.542
+    assert not validate(s).has("HEYWOOD_RISK")
+
+
+# --------------------------------------------------------------------------- #
+# Regression: NaN / infinity must not validate clean
+# --------------------------------------------------------------------------- #
+
+
+def test_non_finite_values_are_reported():
+    """``_num`` silently coerced NaN / inf to 0.0 and nothing said so.
+
+    A spec carrying a non-finite number used to produce zero diagnostics and
+    then poison Lambda, Sigma, the Cholesky factor and every generated column.
+    """
+    s = clean_spec()
+    assert not validate(s).has("NON_FINITE_VALUE")
+
+    items = s.all_items()
+    items[0].loading = float("nan")
+    items[1].extra_error_variance = float("inf")
+    items[2].scale.thresholds = [-1.0, 0.0, float("nan"), 1.0]
+    s.paths[0].effect_size = EffectSize.CUSTOM
+    s.paths[0].coefficient = float("inf")
+    s.add_error_covariance(items[4].id, items[5].id, correlation=float("nan"))
+    s.latent_covariances.append(LatentCovariance(
+        construct_a=s.construct_by_name("X").id,
+        construct_b=s.construct_by_name("M").id,
+        correlation=float("-inf")))
+    s.noise.missing_mechanism = MissingMechanism.MCAR
+    s.noise.missing_proportion = float("nan")
+
+    report = _record(validate(s))
+    hits = report.by_code("NON_FINITE_VALUE")
+    assert len(hits) == 7, [d.message_en for d in hits]
+    assert all(d.severity is Severity.ERROR for d in hits)
+    assert not report.ok
+
+    by_field = {d.message_en: d for d in hits}
+    assert any("standardised loading" in m and f"'{items[0].name}'" in m
+               for m in by_field), list(by_field)
+    assert any("extra error variance" in m and "+infinity" in m
+               for m in by_field), list(by_field)
+    assert any("threshold number 3" in m and "NaN" in m
+               for m in by_field), list(by_field)
+    assert any("the path 'X' -> 'M'" in m for m in by_field), list(by_field)
+    assert any("residual covariance between items" in m for m in by_field)
+    assert any("free covariance between 'X' and 'M'" in m and "-infinity" in m
+               for m in by_field), list(by_field)
+    assert any("proportion of missing data" in m for m in by_field)
+
+    # every finding points at the object that carries the bad number
+    wheres = {d.where for d in hits}
+    assert items[0].id in wheres
+    assert items[2].id in wheres
+    assert s.paths[0].id in wheres
+
+    # and the spec-level checks still ran instead of crashing
+    assert isinstance(report, ValidationReport)
+    assert validate(s).has("NON_FINITE_VALUE")
+
+
+def test_non_finite_value_covers_the_global_settings_too():
+    s = clean_spec()
+    s.distribution.default_kurtosis = float("nan")
+    s.fit_target.rmsea = float("inf")
+    s.significance_target.alpha = float("nan")
+    s.power.n = float("nan")
+    hits = _record(validate(s)).by_code("NON_FINITE_VALUE")
+    fields = " | ".join(d.message_en for d in hits)
+    assert len(hits) == 4, fields
+    for needle in ("default excess kurtosis", "target RMSEA",
+                   "significance level alpha", "planned sample size"):
+        assert needle in fields, (needle, fields)
+    # a value that simply is not a number (an empty editor) is not reported
+    # here: the field-specific range checks describe that case.
+    s2 = clean_spec()
+    s2.all_items()[0].loading = ""                   # type: ignore[assignment]
+    assert not validate(s2).has("NON_FINITE_VALUE")
+
+
+# --------------------------------------------------------------------------- #
+# Regression: the sample-size check must be monotone in N
+# --------------------------------------------------------------------------- #
+
+
+def test_sample_size_check_is_monotone_in_n():
+    """``N < 5q`` is the contract; N = 0 and N = -50 satisfy it.
+
+    The old ``n > 0`` guard made the check non-monotone: N = 1 and N = 134
+    were flagged while N = 0 and N = -50 - strictly worse - were not.  Both
+    are now reported under SAMPLE_SIZE_TOO_SMALL.
+    """
+    s = clean_spec()
+    q = s.count_free_parameters()
+    need = MIN_CASES_PER_PARAMETER * q
+    assert (q, need) == (27, 135)
+
+    flagged = []
+    for n in (-50, -1, 0, 1, 2, 134, 135, 136, 1000):
+        s.power.n = n
+        flagged.append(validate(s).has("SAMPLE_SIZE_TOO_SMALL"))
+    assert flagged == [True, True, True, True, True, True, False, False, False], \
+        flagged
+
+    s.power.n = 0
+    report = _record(validate(s))
+    hits = report.by_code("SAMPLE_SIZE_TOO_SMALL")
+    assert len(hits) == 1
+    assert "N = 0" in hits[0].message_en and "N = 135" in hits[0].message_en
+    assert "cannot be drawn" in hits[0].message_en
+    assert hits[0].severity is Severity.WARNING
+
+    s.power.n = -50
+    msg = validate(s).by_code("SAMPLE_SIZE_TOO_SMALL")[0].message_en
+    assert "N = -50" in msg, msg
+
+
+# --------------------------------------------------------------------------- #
+# Regression: Diagnostic.where is an id, not a display name
+# --------------------------------------------------------------------------- #
+
+
+def test_compiled_where_is_the_id_not_the_display_name():
+    """``where`` is the construct / item / path id per ARCHITECTURE.
+
+    ``validate_compiled`` used to put the display name there, so the UI could
+    not select the offending object (and two items may even share a name).
+    The name belongs in the message, which is where a human reads it.
+    """
+    cm = _two_factor_compiled(loading=0.4, phi=0.3)
+    cm.item_names = ["Sat1", "Sat2", "Sat3", "Loy1", "Loy2", "Loy3"]
+    cm.item_ids = [f"it_{k}" for k in range(1, 7)]
+    cm.factor_names = ["Satisfaction", "Loyalty"]
+    cm.factor_ids = ["c_sat", "c_loy"]
+    cm.Theta[0, 0] = HEYWOOD_FLOOR
+    cm.endogenous = np.array([False, True])
+    cm.Psi = np.diag([1.0, HEYWOOD_FLOOR])
+    cm.B = np.array([[0.0, 0.0], [1.2, 0.0]])
+    cm.Phi = np.eye(2)
+
+    report = _record(validate_compiled(cm))
+    known_ids = set(cm.item_ids) | set(cm.factor_ids)
+    display_names = set(cm.item_names) | set(cm.factor_names)
+    for d in report.diagnostics:
+        if d.code == "COMPILE_WARNING":
+            continue
+        assert d.where in known_ids, (d.code, d.where)
+        assert d.where not in display_names, (d.code, d.where)
+
+    heywood = report.by_code("HEYWOOD_CASE")
+    assert sorted(d.where for d in heywood) == ["c_loy", "it_1"], \
+        [d.where for d in heywood]
+    # the human-readable name is still in the message
+    assert any("Sat1" in d.message_en and "Sat1" in d.message_ar
+               for d in heywood)
+    assert any("Loyalty" in d.message_en for d in heywood)
+
+    r2 = report.by_code("R2_EXCEEDS_ONE")
+    assert len(r2) == 1 and r2[0].where == "c_loy"
+    assert "Loyalty" in r2[0].message_en
+
+    low = report.by_code("LOW_COMMUNALITY")
+    assert sorted(d.where for d in low) == cm.item_ids, [d.where for d in low]
+    assert "Sat1" in low[0].message_en
 
 
 # --------------------------------------------------------------------------- #

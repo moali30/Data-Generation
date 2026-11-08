@@ -116,6 +116,23 @@ def format_number(value: Any, places: int) -> str:
     return f"{f:.{places}f}"
 
 
+def _still_alive(obj: Any) -> bool:
+    """Is this wrapper's C++ object still there?
+
+    ``shiboken6.isValid`` is the only reliable answer; without it, fall back
+    on touching a cheap Qt method and treating a RuntimeError as "gone".
+    """
+    try:
+        import shiboken6
+        return bool(shiboken6.isValid(obj))
+    except Exception:
+        try:
+            obj.objectName()
+            return True
+        except RuntimeError:
+            return False
+
+
 def _translate_verdict(value: Any) -> str:
     """Render a verdict cell in the interface language.
 
@@ -192,9 +209,30 @@ class DataFrameModel(QAbstractTableModel):
             self.dataChanged.emit(top, bottom, [Qt.ItemDataRole.ForegroundRole])
 
     def _on_language_changed(self, _lang: str) -> None:
+        """Re-emit the header labels in the new language.
+
+        Two things have to be guarded here, and both of them crash rather than
+        raise if they are not.
+
+        ``headerDataChanged`` names an inclusive range of sections. On a model
+        with no columns the old ``max(columnCount() - 1, 0)`` asked Qt to
+        refresh section 0 of a table that has none, which aborts the process -
+        and a results panel sits empty until the first run, so every language
+        switch before a run took the application down.
+
+        The translator is a process-wide object, so this connection outlives
+        the widget tree the model belongs to. Once the C++ side is gone, any
+        call into it is a use-after-free, which shiboken reports as a
+        RuntimeError only some of the time.
+        """
+        if not _still_alive(self):
+            return
         try:
-            self.headerDataChanged.emit(
-                Qt.Orientation.Horizontal, 0, max(self.columnCount() - 1, 0))
+            columns = self.columnCount()
+            if columns <= 0:
+                return
+            self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0,
+                                        columns - 1)
         except RuntimeError:
             pass
 

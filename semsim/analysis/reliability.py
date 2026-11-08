@@ -1593,14 +1593,15 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
                     flags.append(_bilingual(
                         f"HTMT between '{primary_labels[a]}' and "
                         f"'{primary_labels[b]}' is {value:.3f} (magnitude "
-                        f"{abs(value):.3f}), above the "
-                        f"{float(htmt_threshold):.2f} threshold: the two "
-                        f"constructs are not empirically distinct.",
+                        f"{abs(value):.3f}), which exceeds the "
+                        f"{float(htmt_threshold):.2f} threshold in absolute "
+                        f"value: the two constructs are not empirically "
+                        f"distinct.",
                         f"قيمة مؤشّر HTMT بين '{primary_labels[a]}' و "
                         f"'{primary_labels[b]}' تساوي {value:.3f} (وقيمتها "
-                        f"المطلقة {abs(value):.3f})، وهي أعلى من الحد الفاصل "
-                        f"({float(htmt_threshold):.2f})؛ أي أن المفهومين غير "
-                        f"متمايزين تجريبيًا."))
+                        f"المطلقة {abs(value):.3f})، وهي تتجاوز الحد الفاصل "
+                        f"({float(htmt_threshold):.2f}) بالقيمة المطلقة؛ أي أن "
+                        f"المفهومين غير متمايزين تجريبيًا."))
     else:
         htmt = pd.DataFrame(np.ones((f, f)), index=primary_labels,
                             columns=primary_labels)
