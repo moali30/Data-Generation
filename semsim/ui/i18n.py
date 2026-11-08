@@ -564,6 +564,7 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "behavioural sciences."),
 
     # ---- example models ----------------------------------------------- #
+    "ex.minimal": ("نموذج قياس أدنى (عاملان)", "Minimal two-factor CFA"),
     "ex.mediation": ("نموذج وساطة بسيط", "Simple mediation model"),
     "ex.second_order": ("نموذج هرمي من الدرجة الثانية", "Second-order model"),
     "ex.moderation": ("نموذج تعديل (تفاعل)", "Moderation model"),
