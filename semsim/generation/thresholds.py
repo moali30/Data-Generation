@@ -110,14 +110,48 @@ def _coerce_style(style: "ResponseStyle | str") -> ResponseStyle:
 
 
 def _check_n_categories(n_categories: int) -> int:
-    try:
-        n = int(n_categories)
-    except (TypeError, ValueError) as exc:
+    """Validate a Likert category count and return it as an ``int``.
+
+    Why this is strict about integrality.  The previous implementation was a
+    bare ``int(n_categories)``, and ``int`` *truncates* rather than rejects:
+    ``int(5.9)`` is 5 and ``int(2.999)`` is 2.  So a caller who asked for 5.9
+    categories silently received a five-point scale, and one who asked for
+    2.999 received a dichotomy -- while the function's own error message
+    promised that the count "must be a whole number".  A non-integral count is
+    always an arithmetic slip upstream (a proportion mistaken for a count, an
+    unrounded mean, a slider value), and quietly rounding it down hands back a
+    dataset whose response scale is *not* the one that was requested, with no
+    trace in the output that the request was altered.  The function therefore
+    now keeps the promise its message already made.
+
+    Integral values of any numeric type are still accepted -- ``5``, ``5.0``
+    and ``numpy.int64(5)`` all mean five categories, and refusing ``5.0``
+    would break every caller that arrives through a float-typed form field or
+    a numpy array element.  Strings are rejected: ``int("5")`` used to succeed,
+    which let an unparsed text field through as a category count and so turned
+    a parsing bug into a silently mis-scaled dataset.
+    """
+    # Gate on the type first.  ``float(...)`` alone would accept ``"5"``.
+    if isinstance(n_categories, (str, bytes, bytearray)) or not isinstance(
+        n_categories, (int, float, np.integer, np.floating)
+    ):
         raise SpecificationError(
             f"Number of categories must be a whole number, got {n_categories!r}.",
             f"عدد الفئات يجب أن يكون عدداً صحيحاً، والقيمة المُدخلة هي {n_categories!r}.",
             n_categories=n_categories,
-        ) from exc
+        )
+    value = float(n_categories)
+    if not np.isfinite(value) or value != np.floor(value):
+        raise SpecificationError(
+            f"Number of categories must be a whole number, got {n_categories!r}; "
+            "a fractional count would be silently truncated and the generated "
+            "scale would not be the one requested.",
+            f"عدد الفئات يجب أن يكون عدداً صحيحاً، والقيمة المُدخلة هي "
+            f"{n_categories!r}؛ إذ تُقتطع الكسور دون إشعار، فلا يكون المقياس "
+            "المُولَّد مطابقاً للمقياس المطلوب.",
+            n_categories=n_categories,
+        )
+    n = int(value)
     if n < MIN_CATEGORIES or n > MAX_CATEGORIES:
         raise SpecificationError(
             f"A Likert scale needs between {MIN_CATEGORIES} and {MAX_CATEGORIES} "
@@ -348,6 +382,19 @@ def thresholds_for_style(
     The style is realised through its target proportions rather than by
     spacing the cut points directly, so "mass on the low categories" really
     produces a floor effect in the generated data.
+
+    Every named style except ``UNIFORM`` is the equal-width discretisation of
+    a Beta density, with the ``(alpha, beta)`` pairs listed in
+    :data:`STYLE_BETA_PARAMS` (and :data:`BIMODAL_COMPONENTS` for
+    ``BIMODAL``).  ``SYMMETRIC`` in particular is ``Beta(3.5, 3.5)``: a
+    centred, bell-shaped response distribution with most respondents near the
+    middle of the scale and few at either end -- *not* equal-probability
+    normal cuts.  Equal-probability cuts are flat marginals, and that is
+    precisely what ``UNIFORM`` is (``tau_k = Phi^-1(k / K)``), so the two
+    styles would otherwise be the same thing under two names.  At ``K = 5``
+    the two differ plainly: ``SYMMETRIC`` gives proportions of about
+    ``0.044, 0.259, 0.394, 0.259, 0.044`` while ``UNIFORM`` gives ``0.20``
+    five times over.
 
     References
     ----------
@@ -611,17 +658,23 @@ def reverse_code(values: np.ndarray, scale: "ScaleSpec") -> np.ndarray:
     return (n + 1) - v
 
 
-def achieved_proportions(values: np.ndarray, n_categories: int) -> np.ndarray:
+def achieved_proportions(
+    values: np.ndarray, n_categories: int, *, base: "int | None" = None
+) -> np.ndarray:
     """Observed marginal proportions of a categorised item.
 
     Parameters
     ----------
     values : numpy.ndarray
         Integer category codes, either base-1 (``1..K``) or base-0
-        (``0..K-1``); the coding is detected from the observed range, with
-        base-1 preferred when both are possible.  ``NaN`` cells are ignored.
+        (``0..K-1``).  ``NaN`` cells are ignored.
     n_categories : int
         Number of categories ``K`` the proportions are reported over.
+    base : {1, 0} or None, keyword-only
+        Code of the lowest category.  Pass it whenever you know it -- it is
+        the only way to be certain, see the Notes.  ``None`` (the default)
+        keeps the historical auto-detection: base-0 when a code below 1 is
+        observed, base-1 otherwise.
 
     Returns
     -------
@@ -632,8 +685,29 @@ def achieved_proportions(values: np.ndarray, n_categories: int) -> np.ndarray:
     Raises
     ------
     semsim.core.errors.SpecificationError
-        If ``n_categories`` is outside ``2..11``, or the values fall outside
-        both the base-0 and the base-1 range.
+        If ``n_categories`` is outside ``2..11``, ``base`` is neither 0 nor 1,
+        or the values fall outside the range implied by the base in force.
+
+    Notes
+    -----
+    **The coding of the input is genuinely ambiguous, and auto-detection
+    cannot resolve it.**  Base-0 codes of a ``K``-category item whose lowest
+    category happens to be unobserved span ``1..K-1``, which is *also* a legal
+    base-1 sample.  There is no information in the data that separates the two
+    readings, so the old unconditional auto-detection -- which tested
+    ``1 <= min`` before ``0 <= min`` and therefore always answered "base-1" --
+    silently shifted every proportion by one category for such a sample: a
+    base-0 vector of ``1, 2, 3, 4`` on a five-point item was reported as mass
+    on categories 1-4 instead of 2-5.
+
+    Two things follow.  First, the caller who knows the coding should say so
+    through ``base``; that removes the guess entirely.  Second, the default
+    tie-break is base-1 *by design*, not by accident, because base-1 is what
+    this engine's own data carries: :func:`apply_scale` scores every
+    :class:`~semsim.core.spec.ScaleSpec` into ``1..n_categories``, so for any
+    column produced from a ``ScaleSpec`` the ambiguous case resolves the right
+    way.  The guess is wrong only for base-0 data from elsewhere, and that is
+    exactly the case ``base=0`` is for.
 
     References
     ----------
@@ -641,27 +715,37 @@ def achieved_proportions(values: np.ndarray, n_categories: int) -> np.ndarray:
         measures. *American Sociological Review*, 46(2), 232-239.
     """
     n = _check_n_categories(n_categories)
+    if base is not None and int(base) not in (0, 1):
+        raise SpecificationError(
+            f"The category base must be 0 or 1, got {base!r}.",
+            f"يجب أن يكون أساس ترميز الفئات 0 أو 1، والقيمة المُدخلة هي {base!r}.",
+            base=base,
+        )
     v = np.asarray(values, dtype=float).ravel()
     v = v[~np.isnan(v)]
     if v.size == 0:
         return np.zeros(n, dtype=float)
 
     lo, hi = float(v.min()), float(v.max())
-    if lo >= 1.0 and hi <= n:
-        base = 1
-    elif lo >= 0.0 and hi <= n - 1:
-        base = 0
+    if base is None:
+        # Auto-detection.  A code below 1 settles the question outright; when
+        # the sample fits both codings the tie goes to base-1, which is the
+        # coding every ``ScaleSpec`` implies (see the Notes).
+        detected = 1 if lo >= 1.0 else 0
     else:
+        detected = int(base)
+
+    if lo < detected or hi > detected + n - 1:
         raise SpecificationError(
-            f"Observed codes span [{lo:g}, {hi:g}], which fits neither the "
-            f"0..{n - 1} nor the 1..{n} coding of a {n}-category item.",
+            f"Observed codes span [{lo:g}, {hi:g}], which does not fit the "
+            f"{detected}..{detected + n - 1} coding of a {n}-category item.",
             f"القيم المرصودة تمتد من {lo:g} إلى {hi:g}، وهي لا تتوافق مع ترميز "
-            f"الفئات من 0 إلى {n - 1} ولا من 1 إلى {n} لعنصر من {n} فئات.",
-            n_categories=n, observed_min=lo, observed_max=hi,
+            f"الفئات من {detected} إلى {detected + n - 1} لعنصر من {n} فئات.",
+            n_categories=n, base=detected, observed_min=lo, observed_max=hi,
         )
 
     counts = np.bincount(
-        np.rint(v).astype(np.int64) - base, minlength=n
+        np.rint(v).astype(np.int64) - detected, minlength=n
     )[:n].astype(float)
     return counts / counts.sum()
 
@@ -685,7 +769,9 @@ def polychoric_attenuation(thresholds: np.ndarray) -> float:
 
     where ``kappa`` is the factor this function returns for each variable.
     The calibration loop divides a requested loading by ``kappa`` to
-    pre-compensate.
+    pre-compensate.  **That product rule is a first-order approximation, and
+    how good it is depends strongly on the response style** -- see "Accuracy
+    of the product rule" below before relying on it.
 
     Parameters
     ----------
@@ -725,6 +811,64 @@ def polychoric_attenuation(thresholds: np.ndarray) -> float:
     it is ``sqrt(2/pi) = 0.7979``, the classic result behind the warning that
     dichotomisation costs about 20% of a correlation.
 
+    **Accuracy of the product rule.**
+    ``kappa`` itself is exact: it is the point-polyserial correlation of the
+    categorised variable with its own latent, computed in closed form above.
+    What is only *approximate* is the two-variable product rule
+    ``r(x_i, x_j) ~= rho kappa_i kappa_j``.  It is a first-order
+    (small-``rho``) expansion: it treats the categorised variable as a linear
+    function of its latent, which it is not, and the discrepancy grows with
+    ``|rho|``, grows as ``K`` falls, and grows sharply as the thresholds move
+    away from the centre of the distribution.
+
+    The table below is the **exact** relative error of the product rule,
+    obtained from bivariate-normal orthant probabilities (the cell
+    probabilities ``P(x_i = a, x_j = b)`` assembled from
+    ``scipy.stats.multivariate_normal(cov=[[1, rho], [rho, 1]]).cdf`` at the
+    cut points, and summed into the exact Pearson ``r``) -- not from
+    simulation, so there is no Monte-Carlo noise in it.  Both items carry the
+    same style and the same ``K``:
+
+    ======================  ===================  ===================
+    style                   K = 5 or 7,          K = 3,
+                            ``|rho| <= 0.7``     ``|rho| <= 0.8``
+    ======================  ===================  ===================
+    ``SYMMETRIC``           <= 0.3%              <= 2.7%
+    ``UNIFORM``             <= 3.8%              <= 8.0%
+    ``POSITIVE_SKEW``       <= 4.3%              <= 15.6%
+    ``NEGATIVE_SKEW``       <= 4.3%              <= 15.6%
+    ``BIMODAL``             <= 8.2%              <= 13.4%
+    ``EXTREME_POSITIVE``    <= 14.2%             <= 37.1%
+    ``EXTREME_NEGATIVE``    <= 14.2%             <= 37.1%
+    ======================  ===================  ===================
+
+    So the often-quoted "a fraction of a percent" envelope holds for
+    ``SYMMETRIC`` **only**.  ``UNIFORM`` is already an order of magnitude
+    worse than that, and the shipped ``EXTREME_POSITIVE`` /
+    ``EXTREME_NEGATIVE`` / ``BIMODAL`` styles are two orders of magnitude
+    worse: at ``K = 5`` and ``rho = 0.7`` the extreme styles are out by
+    0.081 in ``r`` (exact 0.5704 against a predicted 0.4896, 14.2%), and a
+    dichotomy (``K = 2``) of an extreme style is out by 0.214 in ``r``
+    (exact 0.3258 against 0.1116, 65.7%).  The error is one-signed
+    throughout: the product rule always *under*-predicts ``|r|``, because
+    ``kappa_i kappa_j`` discards the positive higher-order terms of the
+    polychoric series.
+
+    **Consequence for the calibration loop.**  Pre-dividing a loading by
+    ``kappa`` assumes the product rule, so for ``EXTREME_POSITIVE``,
+    ``EXTREME_NEGATIVE`` and ``BIMODAL`` -- and for any style at ``K <= 3`` or
+    with large target correlations -- the one-shot correction overshoots by
+    roughly the percentages above, in the direction of loadings that are too
+    high.  The loop must not lean on it as a closed-form answer for those
+    styles: it should treat ``kappa`` as a starting point and iterate on the
+    *realised* fit, or compute the exact ordinal correlation from the orthant
+    probabilities.  For ``SYMMETRIC`` at ``K >= 5`` the single analytic
+    correction is accurate enough to use as-is.
+
+    The figures above are reproduced exactly, without simulation, by the
+    ``test_product_rule_envelope_*`` tests in ``tests/test_thresholds.py``,
+    so they stay honest if the style parameters are ever retuned.
+
     References
     ----------
     Olsson, U., Drasgow, F., & Dorans, N. J. (1982). The polyserial
@@ -733,6 +877,13 @@ def polychoric_attenuation(thresholds: np.ndarray) -> float:
         discrete variable. *Biometrics*, 30(1), 171-178.
     Bollen, K. A., & Barb, K. H. (1981). Pearson's r and coarsely categorized
         measures. *American Sociological Review*, 46(2), 232-239.
+    Pearson, K. (1900). Mathematical contributions to the theory of evolution,
+        VII. *Philosophical Transactions of the Royal Society A*, 195, 1-47.
+        (The polychoric series whose leading term is the product rule.)
+    Rhemtulla, M., Brosseau-Liard, P. E., & Savalei, V. (2012). When can
+        categorical variables be treated as continuous? *Psychological
+        Methods*, 17(3), 354-373. (Why the asymmetric and few-category cases
+        are the ones that misbehave.)
     """
     tau = _validated_thresholds(thresholds)
     probs = category_probabilities(tau)

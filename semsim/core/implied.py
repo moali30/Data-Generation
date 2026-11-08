@@ -26,6 +26,7 @@ Bollen, K. A. (1989). *Structural Equations with Latent Variables*. Wiley.
 
 from __future__ import annotations
 
+import warnings as _warnings
 from typing import TYPE_CHECKING, Dict, List, Sequence, Tuple
 
 import numpy as np
@@ -535,6 +536,11 @@ def population_htmt(cm: "CompiledModel") -> Tuple[np.ndarray, List[str]]:
     evaluated on the model-implied correlation matrix.  Factors measured by
     fewer than two items have no monotrait average and are omitted.
 
+    A pair whose monotrait mean is not positive on *either* side gets ``nan``
+    instead of a number, and the reason is recorded as a ``RuntimeWarning``
+    naming the offending factors; the ratio has no meaning there, and a factor
+    built mostly from reverse-worded items is the common way to land in it.
+
     Parameters
     ----------
     cm : CompiledModel
@@ -566,9 +572,40 @@ def population_htmt(cm: "CompiledModel") -> Tuple[np.ndarray, List[str]]:
             rows_a = groups[a][1]
             rows_b = groups[b][1]
             hetero = float(np.mean(corr[np.ix_(rows_a, rows_b)]))
-            denom = mono[a] * mono[b]
-            value = (hetero / np.sqrt(denom) if denom > 0 else float("nan"))
-            htmt[a, b] = htmt[b, a] = value
+            # Each monotrait mean must be positive *on its own*. Guarding only
+            # the product ``mono[a] * mono[b]`` passes when BOTH means are
+            # negative, and the geometric mean of two negative averages is not
+            # a monotrait reliability of anything: the ratio it produces is
+            # arbitrary in both sign and size. That case is reachable, not
+            # hypothetical — the compiler negates the loading row of every
+            # reverse-worded item (the REVERSE_CODED block in compile.py), so a
+            # factor whose items are mostly reverse-worded has a negative mean
+            # within-factor correlation until the researcher recodes them.
+            # NaN is the honest answer, with the reason recorded as a warning
+            # so the caller can report the missing recode rather than a number.
+            offending = [i for i in (a, b) if not mono[i] > 0.0]
+            if offending:
+                htmt[a, b] = htmt[b, a] = float("nan")
+                named = ", ".join(f"{ids[i]} ({mono[i]:.4f})" for i in offending)
+                named_ar = "، ".join(f"«{ids[i]}» ({mono[i]:.4f})"
+                                     for i in offending)
+                _warnings.warn(
+                    "HTMT_MONOTRAIT_NOT_POSITIVE: the HTMT ratio between "
+                    f"{ids[a]!r} and {ids[b]!r} is undefined because the mean "
+                    "within-factor (monotrait) correlation is not positive "
+                    f"for {named}; NaN was returned. The usual cause is "
+                    "reverse-worded items that have not been recoded. | "
+                    "نسبة HTMT غير معرَّفة: تعذّر حساب النسبة بين العاملين "
+                    f"«{ids[a]}» و«{ids[b]}» لأن متوسط الارتباطات الداخلية "
+                    f"(أحادية السمة) غير موجب لدى {named_ar}؛ وقد أُعيدت القيمة "
+                    "NaN لأن الجذر التربيعي لحاصل ضرب متوسطين سالبين لا يحمل "
+                    "أي معنى قياسي. والسبب الأغلب هو وجود بنود معكوسة الصياغة "
+                    "لم يُعَد ترميزها.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                continue
+            htmt[a, b] = htmt[b, a] = hetero / float(np.sqrt(mono[a] * mono[b]))
     return htmt, ids
 
 
@@ -706,6 +743,9 @@ def condition_number(m: np.ndarray) -> float:
     -------
     float
         ``|lambda_max| / |lambda_min|``, or ``inf`` for a singular matrix.
+        Singularity is judged with numpy's own relative tolerance,
+        ``max(shape) * eps * |lambda_max|``, so a matrix that is singular only
+        up to floating-point noise is still reported as singular.
         Values above roughly ``1e4`` signal an empirically under-identified or
         near-collinear covariance structure.
 
@@ -727,7 +767,17 @@ def condition_number(m: np.ndarray) -> float:
         vals = np.abs(np.linalg.eigvalsh(_symmetrise(a)))
     except np.linalg.LinAlgError:
         return float("inf")
+    largest = float(vals.max())
     smallest = float(vals.min())
-    if smallest <= 0.0:
+    # A *numerically* singular matrix almost never produces an eigenvalue of
+    # exactly zero: LAPACK returns a tiny value of either sign, so testing
+    # ``smallest <= 0.0`` misses it half the time. np.outer([1, 2, 3], [1, 2, 3])
+    # is exactly rank one, yet its zero eigenvalue comes back as +1.9e-16 and
+    # the old test let it through, reporting a finite 7.36e16 for a matrix with
+    # no inverse. Compare against numpy's own default singularity tolerance
+    # (``max(shape) * eps * largest``, as used by matrix_rank and pinv) so that
+    # "singular" means the same thing here as everywhere else in the stack.
+    tol = max(a.shape) * float(np.finfo(float).eps) * largest
+    if smallest <= tol:
         return float("inf")
-    return float(vals.max() / smallest)
+    return float(largest / smallest)

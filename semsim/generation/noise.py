@@ -618,9 +618,16 @@ def inject_missing(
     intercept ``a`` is solved by bisection so that ``mean(p_i)`` equals the
     requested proportion exactly; the *realised* rate is then that proportion
     plus ordinary binomial noise, rather than the far-off rate you get from an
-    uncalibrated link.  Every column -- the driver included -- is eligible for
-    missingness, which keeps the overall rate on target; pass the driver as an
-    explicit vector when it must stay fully observed.
+    uncalibrated link.
+
+    **Every column is eligible for missingness, the driver's own items
+    included.**  Passing ``driver`` as an explicit vector only decides where
+    the driver *values* are read from; it does not shield any column from
+    being blanked.  A caller that needs the driver to stay fully observed in
+    the returned matrix must hold those columns out itself -- restore them
+    from a pre-call copy, or blank only the sub-matrix of the remaining
+    columns.  :func:`apply_noise` does exactly that for the MAR driver
+    construct it chooses.
 
     Raises
     ------
@@ -686,15 +693,32 @@ def inject_missing(
 
 def _scales_for(spec: ModelSpec, cm: Optional["CompiledModel"], p: int
                 ) -> List[Optional[ScaleSpec]]:
-    """Column scales in dataset order, preferring the compiled column order."""
+    """Column scales in dataset order, preferring the compiled column order.
+
+    The fallback has to trigger on an *unusable* lookup, not merely an empty
+    one.  ``spec.item(id)`` returns ``None`` for an id it does not know, so
+    when ``cm.item_ids`` cannot be resolved against the spec -- a compiled
+    model built from a different spec object, ids renamed or regenerated after
+    compilation, a duck-typed stand-in -- the comprehension yields a list of
+    the right *length* made entirely of ``None``.  The old guard was
+    ``if not items:``, which a list of ``None`` passes happily, so the
+    fallback never ran and every column came back with no scale.  Downstream
+    that is not a mild loss of metadata: :func:`_ordinal_flags_and_bounds`
+    treats a ``None`` scale as "continuous, unbounded", so
+    :func:`inject_outliers` skips the Likert clip and writes values such as
+    -1.9 or 7.9 into a 1-5 item -- illegal response codes in the delivered
+    dataset, from a function whose documented contract is that ordinal
+    outliers are clipped back into range.  Testing that *at least one* item
+    actually resolved is what makes the fallback do its job.
+    """
     scales: List[Optional[ScaleSpec]] = []
-    items = []
+    items: List[Any] = []
     if cm is not None:
         ids = list(getattr(cm, "item_ids", []) or [])
         getter = getattr(spec, "item", None)
         if ids and callable(getter):
             items = [getter(i) for i in ids]
-    if not items:
+    if not any(it is not None for it in items):
         try:
             items = list(spec.all_items())
         except Exception:  # pragma: no cover - duck-typed spec
@@ -774,8 +798,34 @@ def apply_noise(
     MAR missingness is driven by the respondent's observed composite score on
     ``spec.noise.mar_driver`` (the row mean of that construct's items).  When
     the construct cannot be resolved, the first exogenous construct's composite
-    is used, and failing that the first column.  The composite is read *before*
-    any cell is blanked, so the driver is a genuinely observed quantity.
+    is used, and failing that the first column.
+
+    The composite is read before any cell is blanked, **and the driver's own
+    columns are then held out of the missingness step** -- whichever of the
+    three resolutions above supplied them -- so the driver is a genuinely
+    observed quantity in the returned matrix: an analyst can recompute it
+    from the delivered data for every respondent.
+
+    Reading it pre-blanking is not on its own enough for that: missingness
+    used to be applied to all columns, so a driver item was itself blanked for
+    a large share of rows (around 40% of respondents at a 20% missing rate on
+    a six-item, three-item-driver dataset), and the quantity the mechanism
+    depended on was not recoverable from the output.  That is a real loss and
+    not a cosmetic one, because MAR is *defined* as missingness that depends
+    only on observed data (Rubin, 1976): a partly-missing driver makes the
+    mechanism MNAR for the rows where the driver is gone, and silently voids
+    the assumption that every MAR-valid method -- FIML, multiple imputation --
+    is tested against.
+
+    Holding the driver columns out would drive the realised rate below the
+    request, so the per-cell rate on the remaining columns is scaled up by
+    ``p / (p - p_driver)``; the *overall* share of missing cells therefore
+    still matches ``spec.noise.missing_proportion``, while the driver columns
+    stay complete.  Two edge cases: if the driver spans every column there is
+    nothing to hold out and the old all-columns behaviour applies, and if the
+    scaled-up rate would exceed 1 it is clamped, which leaves the realised
+    overall rate below the request.  MCAR needs none of this -- it has no
+    driver -- and is applied to all columns as before.
 
     Raises
     ------
@@ -805,8 +855,31 @@ def apply_noise(
     n, p = out.shape
     scales = _scales_for(spec, cm, p)
 
+    # Validate every requested proportion up front.  The step guards below are
+    # ``> 0.0``, and a negative value fails that test exactly as 0.0 does, so
+    # a negative proportion used to be silently treated as "no contamination"
+    # -- while a value above 1 raised, because it reached the inject_* call
+    # that checks it.  The docstring promises a SpecificationError for any
+    # proportion outside [0, 1], and the asymmetry hid the far more likely
+    # mistake of the two: a sign slip or an off-by-one on a percentage
+    # (``-5`` for 5%) turned the whole realism layer off without a word, so
+    # the researcher got a pristine dataset and believed it was contaminated.
+    # Checking here rather than inside the guards also means the error is
+    # raised for a bad request even when that step would have been skipped.
+    careless_prop = _check_proportion(
+        getattr(noise, "careless_proportion", 0.0) or 0.0,
+        "The careless-responder proportion", "نسبة المستجيبين غير المبالين",
+    )
+    outlier_prop = _check_proportion(
+        getattr(noise, "outlier_proportion", 0.0) or 0.0,
+        "The outlier proportion", "نسبة الخلايا الشاذة",
+    )
+    missing_prop = _check_proportion(
+        getattr(noise, "missing_proportion", 0.0) or 0.0,
+        "The missing-data proportion", "نسبة البيانات المفقودة",
+    )
+
     # -- 1. careless responders ------------------------------------------ #
-    careless_prop = float(getattr(noise, "careless_proportion", 0.0) or 0.0)
     if careless_prop > 0.0:
         style = str(getattr(noise, "careless_style", "random") or "random")
         out, rows = inject_careless(out, scales, careless_prop, style, rng)
@@ -816,7 +889,6 @@ def apply_noise(
             report.applied.append(f"careless[{style}]={len(rows)} rows")
 
     # -- 2. outliers ------------------------------------------------------ #
-    outlier_prop = float(getattr(noise, "outlier_proportion", 0.0) or 0.0)
     if outlier_prop > 0.0:
         mag = float(getattr(noise, "outlier_magnitude_sd", 3.5) or 3.5)
         out, n_out = inject_outliers(out, outlier_prop, mag, rng, scales=scales)
@@ -827,9 +899,9 @@ def apply_noise(
     # -- 3. missingness --------------------------------------------------- #
     mechanism = getattr(noise, "missing_mechanism", MissingMechanism.NONE)
     mech_key = str(getattr(mechanism, "value", mechanism) or "none").lower()
-    missing_prop = float(getattr(noise, "missing_proportion", 0.0) or 0.0)
     if mech_key not in ("", "none") and missing_prop > 0.0:
         driver: Any = None
+        cols: List[int] = []
         if mech_key == MissingMechanism.MAR.value:
             cols = _mar_driver_columns(
                 spec, cm, str(getattr(noise, "mar_driver", "") or ""), p
@@ -843,9 +915,44 @@ def apply_noise(
                             break
             if cols:
                 driver = np.nanmean(np.asarray(out, dtype=float)[:, cols], axis=1)
+            elif p:
+                # Last-resort driver: the first column.  Name it explicitly
+                # rather than leaving ``driver=None`` for ``inject_missing``
+                # to resolve, so that the hold-out below protects it too.
+                # Standardising the raw column is exactly what
+                # ``_resolve_driver`` would have done with ``None``, so the
+                # mechanism is unchanged -- but the guarantee that the driver
+                # stays observed must not depend on which fallback fired.
+                cols = [0]
+                driver = np.asarray(out, dtype=float)[:, 0]
+
+        # Hold the MAR driver's own items out of the blanking.  Reading the
+        # composite from the pre-missingness matrix (above) is necessary but
+        # not sufficient: if the driver items are then blanked like any other
+        # column, the quantity the mechanism depends on is unrecoverable from
+        # the delivered data, and "missingness depends on observed data" --
+        # the definition of MAR (Rubin, 1976) -- no longer holds for those
+        # rows.  The rate on the remaining columns is scaled up by
+        # ``p / (p - len(cols))`` so the *overall* share of missing cells
+        # still equals what was requested; see the Notes for the two edge
+        # cases this cannot cover.
+        hold_out = bool(cols) and len(cols) < p
+        effective_prop = missing_prop
+        if hold_out:
+            effective_prop = min(missing_prop * p / (p - len(cols)), 1.0)
+
+        pre_missing = out
         out, n_missing = inject_missing(
-            out, mechanism, missing_prop, rng, driver
+            out, mechanism, effective_prop, rng, driver
         )
+        if hold_out:
+            before_nan = np.isnan(np.asarray(pre_missing, dtype=float))
+            out[:, cols] = np.asarray(pre_missing, dtype=out.dtype)[:, cols]
+            # Recount: the cells restored above are no longer missing.
+            n_missing = int(
+                (np.isnan(np.asarray(out, dtype=float)) & ~before_nan).sum()
+            )
+
         report.n_missing_cells = n_missing
         if n_missing:
             report.applied.append(f"missing[{mech_key}]={n_missing} cells")

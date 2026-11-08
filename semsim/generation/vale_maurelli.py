@@ -552,6 +552,15 @@ def achieved_moments(x: np.ndarray) -> Dict[str, np.ndarray]:
         plus the aliases ``"skew"`` and ``"excess_kurtosis"``.  ``"sd"`` is the
         population (``ddof=0``) standard deviation.
 
+        A column that is exactly constant has no shape to report, so its
+        skewness and excess kurtosis are ``0.0``.  A column containing
+        ``nan`` -- what :func:`semsim.generation.noise.inject_missing` leaves
+        behind -- yields ``nan`` for all four statistics: these are
+        complete-data moments, and the function will not pretend to have
+        measured a column it could not read.  Drop or impute the missing cells
+        first (``x[~np.isnan(x).any(axis=1)]``) if you want moments from the
+        observed part.
+
     Raises
     ------
     semsim.core.errors.SpecificationError
@@ -584,9 +593,24 @@ def achieved_moments(x: np.ndarray) -> Dict[str, np.ndarray]:
     m4 = np.mean(centred ** 4, axis=0)
     sd = np.sqrt(m2)
 
+    # A column with no variance has no shape, so its skewness and excess
+    # kurtosis are reported as 0.0 rather than 0/0.  The test has to be
+    # ``m2 == 0.0`` and not the old ``m2 > 0.0``: ``np.where(m2 > 0.0, ..., 0.0)``
+    # takes the *else* branch for a NaN ``m2`` as well, because every
+    # comparison with NaN is False.  A column holding a single ``nan`` -- which
+    # is exactly what :func:`semsim.generation.noise.inject_missing` produces,
+    # and therefore what the engine's own output looks like whenever
+    # missingness is switched on -- then came back as "skewness 0.0, excess
+    # kurtosis 0.0", i.e. indistinguishable from a perfectly normal column,
+    # while ``mean`` and ``sd`` for the same column correctly read ``nan``.
+    # That is the worst kind of wrong: a diagnostic silently reporting a clean
+    # bill of health for data it could not actually measure.  Writing the mask
+    # the other way round lets NaN fall through the arithmetic and propagate,
+    # so a caller sees ``nan`` and knows to drop or impute first.
+    degenerate = m2 == 0.0
     with np.errstate(divide="ignore", invalid="ignore"):
-        skew = np.where(m2 > 0.0, m3 / np.power(m2, 1.5), 0.0)
-        kurt = np.where(m2 > 0.0, m4 / (m2 * m2) - 3.0, 0.0)
+        skew = np.where(degenerate, 0.0, m3 / np.power(m2, 1.5))
+        kurt = np.where(degenerate, 0.0, m4 / (m2 * m2) - 3.0)
 
     return {
         "mean": mean,

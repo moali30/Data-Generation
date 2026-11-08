@@ -28,6 +28,7 @@ import math
 import os
 import sys
 import time
+import warnings
 
 import numpy as np
 
@@ -550,6 +551,156 @@ def test_correlated_exogenous_block_is_copied_into_phi() -> None:
     assert abs(cm.Phi[y, b] - 0.44) < ATOL
 
 
+def _realised_disturbance_correlation(cm, id_a: str, id_b: str) -> float:
+    """Correlation actually carried by Psi between two latents' disturbances."""
+    a = cm.factor_index[id_a]
+    b = cm.factor_index[id_b]
+    return float(cm.Psi[a, b] / math.sqrt(cm.Psi[a, a] * cm.Psi[b, b]))
+
+
+def test_latent_covariance_is_realised_as_a_correlation_not_a_covariance() -> None:
+    """``LatentCovariance.correlation`` is a correlation for every pair.
+
+    Regression test. ``Psi[a, b]`` used to be set to ``r`` itself, which is
+    only the right covariance when both disturbance variances are one, i.e.
+    when both latents are exogenous. An endogenous latent has
+    ``Psi[i, i] = 1 - R^2 < 1``, so the unscaled entry realised
+    ``r / sqrt(Psi_aa Psi_bb)`` -- bigger than ``r``, and for the model below it
+    came out as 1.1111, an impossible correlation that left ``Psi`` indefinite.
+    The entry has to be ``r * sqrt(Psi_aa Psi_bb)``, taken after the diagonals
+    are known.
+    """
+    # -- exogenous <-> exogenous: both disturbance variances are 1, so the fix
+    #    must leave this case exactly as it was.
+    cm = compile_model(_correlated_exogenous())
+    spec = cm.spec
+    a_id = spec.construct_by_name("A").id
+    b_id = spec.construct_by_name("B").id
+    assert abs(_realised_disturbance_correlation(cm, a_id, b_id) - 0.35) < ATOL
+    assert abs(cm.Psi[cm.factor_index[a_id], cm.factor_index[b_id]] - 0.35) < ATOL
+
+    # -- exogenous <-> endogenous.  Y = 0.8 X2 + zeta_Y with X2 exogenous and
+    #    unit variance, so Psi_YY = 1 - 0.64 = 0.36 and the covariance that
+    #    realises corr(A, zeta_Y) = 0.40 is 0.40 * sqrt(1 * 0.36) = 0.24.
+    spec = ModelSpec(seed=101)
+    a = spec.add_construct("A", n_items=3, loading=0.8)
+    spec.add_construct("X2", n_items=3, loading=0.8)
+    y = spec.add_construct("Y", n_items=3, loading=0.8,
+                           role=ConstructRole.DEPENDENT)
+    spec.add_path("X2", "Y", coefficient=0.8)
+    spec.latent_covariances.append(
+        LatentCovariance(construct_a=a.id, construct_b=y.id, correlation=0.40))
+    cm = compile_model(spec)
+    ai, yi = cm.factor_index[a.id], cm.factor_index[y.id]
+    assert abs(cm.Psi[yi, yi] - 0.36) < ATOL, cm.Psi[yi, yi]
+    assert abs(cm.Psi[ai, yi] - 0.24) < ATOL, cm.Psi[ai, yi]
+    assert abs(_realised_disturbance_correlation(cm, a.id, y.id) - 0.40) < ATOL
+    # Cov(A, Y) = 0.8 * Cov(A, X2) + Cov(A, zeta_Y) = 0 + 0.24.
+    assert abs(cm.Phi[ai, yi] - 0.24) < ATOL, cm.Phi[ai, yi]
+
+    # -- endogenous <-> endogenous with *unequal* disturbance variances, the
+    #    sharpest discriminator: Psi_M1M1 = 1 - 0.8^2 = 0.36 and
+    #    Psi_M2M2 = 1 - 0.5^2 = 0.75, so the entry is
+    #    0.40 * sqrt(0.36 * 0.75) = 0.2078460969...  The old code wrote 0.40
+    #    and realised 0.7698.
+    spec = ModelSpec(seed=103)
+    spec.add_construct("X", n_items=3, loading=0.8)
+    m1 = spec.add_construct("M1", n_items=3, loading=0.8,
+                            role=ConstructRole.MEDIATOR)
+    m2 = spec.add_construct("M2", n_items=3, loading=0.8,
+                            role=ConstructRole.MEDIATOR)
+    spec.add_path("X", "M1", coefficient=0.8)
+    spec.add_path("X", "M2", coefficient=0.5)
+    spec.latent_covariances.append(
+        LatentCovariance(construct_a=m1.id, construct_b=m2.id, correlation=0.40))
+    cm = compile_model(spec)
+    # The warning naming the reinterpretation must survive the fix.
+    assert any("ENDOGENOUS_COVARIANCE" in w for w in cm.warnings), cm.warnings
+    i1, i2 = cm.factor_index[m1.id], cm.factor_index[m2.id]
+    xi = cm.factor_index[spec.construct_by_name("X").id]
+    assert abs(cm.Psi[i1, i1] - 0.36) < ATOL, cm.Psi[i1, i1]
+    assert abs(cm.Psi[i2, i2] - 0.75) < ATOL, cm.Psi[i2, i2]
+    expected = 0.40 * math.sqrt(0.36 * 0.75)
+    assert abs(cm.Psi[i1, i2] - expected) < ATOL, (cm.Psi[i1, i2], expected)
+    assert abs(_realised_disturbance_correlation(cm, m1.id, m2.id) - 0.40) < ATOL
+    # Cov(M1, M2) = 0.8 * 0.5 * Var(X) + Psi[M1, M2].
+    assert abs(cm.Phi[i1, i2] - (0.40 + expected)) < ATOL, cm.Phi[i1, i2]
+    # Partialling X back out of Phi must return the requested 0.40 exactly.
+    rho = cm.Phi
+    partial = ((rho[i1, i2] - rho[i1, xi] * rho[i2, xi])
+               / math.sqrt((1.0 - rho[i1, xi] ** 2) * (1.0 - rho[i2, xi] ** 2)))
+    assert abs(partial - 0.40) < ATOL, partial
+    # An over-large off-diagonal is what used to make Psi indefinite.
+    assert implied.is_positive_definite(cm.Psi), cm.Psi
+    assert np.allclose(np.diag(cm.Phi), 1.0, atol=ATOL)
+    assert implied.is_positive_definite(implied.implied_covariance(cm))
+
+
+def test_disturbance_correlation_matches_the_closed_form_solution() -> None:
+    """The solved disturbance variance agrees with the algebra by hand.
+
+    A chain C0 -> C1 (0.839) -> C2 (0.819) with corr(zeta_1, zeta_2) = -0.091.
+    Psi_11 = 1 - 0.839^2 directly, and the unit-variance constraint on C2 is
+
+        0.819^2 + v + 2 * 0.819 * (-0.091) * sqrt(Psi_11) * sqrt(v) = 1,
+
+    a quadratic in sqrt(v) whose positive root is the only admissible answer.
+    The cross term is what makes this a real test: it exists only because the
+    off-diagonal of Psi is scaled by the disturbance standard deviations, and
+    it is also what makes d Phi_22 / d Psi_22 differ from one, so this model
+    exercises the corrected Newton slope as well as the scaling.
+    """
+    spec = ModelSpec(seed=137)
+    spec.add_construct("C0", n_items=3, loading=0.8)
+    c1 = spec.add_construct("C1", n_items=3, loading=0.8,
+                            role=ConstructRole.MEDIATOR)
+    c2 = spec.add_construct("C2", n_items=3, loading=0.8,
+                            role=ConstructRole.DEPENDENT)
+    spec.add_path("C0", "C1", coefficient=0.839)
+    spec.add_path("C1", "C2", coefficient=0.819)
+    spec.latent_covariances.append(
+        LatentCovariance(construct_a=c1.id, construct_b=c2.id,
+                         correlation=-0.091))
+    cm = compile_model(spec)
+    i1, i2 = cm.factor_index[c1.id], cm.factor_index[c2.id]
+
+    psi_11 = 1.0 - 0.839 ** 2
+    assert abs(cm.Psi[i1, i1] - psi_11) < ATOL, cm.Psi[i1, i1]
+    # Positive root of  v - 2*0.819*0.091*sqrt(psi_11)*sqrt(v) + 0.819^2 - 1 = 0.
+    half_b = 0.819 * 0.091 * math.sqrt(psi_11)
+    root = half_b + math.sqrt(half_b ** 2 + 1.0 - 0.819 ** 2)
+    assert abs(cm.Psi[i2, i2] - root ** 2) < 1e-9, (cm.Psi[i2, i2], root ** 2)
+    assert abs(_realised_disturbance_correlation(cm, c1.id, c2.id)
+               - (-0.091)) < ATOL
+    assert np.allclose(np.diag(cm.Phi), 1.0, atol=ATOL)
+    assert implied.is_positive_definite(cm.Psi), cm.Psi
+
+
+def test_disturbance_correlation_holds_through_a_feedback_loop() -> None:
+    """The rescaling must survive the cyclic fixed-point solver too.
+
+    Regression test. The fixed-point pass rewrites ``diag(Psi)`` on every
+    sweep; the off-diagonal is a function of that diagonal, so it has to be
+    rebuilt each time. Leaving it alone let the realised correlation drift with
+    the diagonal, far away from the requested value.
+    """
+    spec = ModelSpec(seed=107)
+    a = spec.add_construct("A", n_items=3, loading=0.8)
+    b = spec.add_construct("B", n_items=3, loading=0.8)
+    spec.add_construct("C", n_items=3, loading=0.8, role=ConstructRole.DEPENDENT)
+    spec.add_path("A", "B", coefficient=0.5)
+    spec.add_path("B", "A", coefficient=0.3)
+    spec.add_path("B", "C", coefficient=0.4)
+    spec.latent_covariances.append(
+        LatentCovariance(construct_a=a.id, construct_b=b.id, correlation=-0.45))
+    cm = compile_model(spec)
+    assert not cm.is_recursive
+    assert abs(_realised_disturbance_correlation(cm, a.id, b.id) - (-0.45)) < ATOL
+    assert np.allclose(np.diag(cm.Phi), 1.0, atol=ATOL)
+    assert implied.is_positive_definite(cm.Psi), cm.Psi
+    assert implied.is_positive_definite(implied.implied_covariance(cm))
+
+
 # --------------------------------------------------------------------------- #
 # Heywood handling
 # --------------------------------------------------------------------------- #
@@ -648,6 +799,136 @@ def test_condition_number_of_identity_is_one() -> None:
     m = np.diag([4.0, 1.0, 0.5])
     assert abs(implied.condition_number(m) - 8.0) < 1e-12
     assert implied.condition_number(np.array([[1.0, 1.0], [1.0, 1.0]])) == float("inf")
+
+
+def test_condition_number_reports_a_numerically_singular_matrix_as_inf() -> None:
+    """Singularity is relative to the largest eigenvalue, not to exact zero.
+
+    Regression test. Singularity used to be decided with
+    ``min(|eigvalsh|) <= 0.0``, but LAPACK returns a tiny value of either sign
+    for a zero eigenvalue, so the test missed it whenever the sign came out
+    positive. ``np.outer([1, 2, 3], [1, 2, 3])`` is exactly rank one; its zero
+    eigenvalue comes back as +1.9e-16 and the function reported a finite
+    7.36e16 for a matrix with no inverse.
+    """
+    rank_one = np.outer([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+    assert np.linalg.matrix_rank(rank_one) == 1
+    assert float(np.abs(np.linalg.eigvalsh(rank_one)).min()) > 0.0, (
+        "the eigenvalue this test is about is supposed to be a tiny positive "
+        "float, not an exact zero")
+    assert implied.condition_number(rank_one) == float("inf")
+    # A rank-deficient matrix with a larger scale must behave the same way: the
+    # tolerance has to be relative, not an absolute floor.
+    assert implied.condition_number(1e6 * rank_one) == float("inf")
+    assert implied.condition_number(np.zeros((4, 4))) == float("inf")
+    # ... while a genuinely ill-conditioned but invertible matrix stays finite.
+    nearly = np.diag([1.0, 1e-9, 1.0])
+    assert abs(implied.condition_number(nearly) - 1e9) < 1.0
+
+
+def test_population_htmt_is_nan_when_a_monotrait_mean_is_not_positive() -> None:
+    """Each monotrait mean is guarded on its own, not only their product.
+
+    Regression test. The guard used to be ``mono[a] * mono[b] > 0``, which
+    passes when BOTH means are negative -- and the geometric mean of two
+    negative within-factor averages is not a reliability of anything. The case
+    is reachable: the compiler negates the loading row of every reverse-worded
+    item, so a factor whose items are mostly reverse-worded has a negative mean
+    monotrait correlation until the researcher recodes them. Here both factors
+    are in that state and the old code returned a confident 0.1333.
+    """
+    spec = ModelSpec(seed=109)
+    fa = spec.add_construct("FA", n_items=3, loading=0.8)
+    fb = spec.add_construct("FB", n_items=3, loading=0.8)
+    spec.latent_covariances.append(
+        LatentCovariance(construct_a=fa.id, construct_b=fb.id, correlation=0.4))
+    for construct in (fa, fb):
+        construct.items[0].reverse_coded = True
+        construct.items[1].reverse_coded = True
+    cm = compile_model(spec)
+
+    # Both monotrait means really are negative: (+0.64 - 0.64 - 0.64) / 3.
+    corr = implied.implied_correlation(cm)
+    iu = np.triu_indices(3, k=1)
+    for construct in (fa, fb):
+        rows = cm.items_of(construct.id)
+        mono = float(np.mean(corr[np.ix_(rows, rows)][iu]))
+        assert abs(mono - (-0.64 / 3.0)) < 1e-12, mono
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        htmt, ids = implied.population_htmt(cm)
+    assert len(ids) == 2
+    assert math.isnan(htmt[0, 1]) and math.isnan(htmt[1, 0]), htmt
+    assert np.allclose(np.diag(htmt), 1.0, atol=0.0)
+    # The reason has to be recorded, naming both offending factors, in both
+    # interface languages.
+    reasons = [str(w.message) for w in caught
+               if "HTMT_MONOTRAIT_NOT_POSITIVE" in str(w.message)]
+    assert len(reasons) == 1, [str(w.message) for w in caught]
+    assert fa.id in reasons[0] and fb.id in reasons[0]
+    assert "متوسط الارتباطات الداخلية" in reasons[0]
+
+    # One negative mean is enough; this side was already handled and must stay.
+    spec2 = ModelSpec(seed=113)
+    ga = spec2.add_construct("GA", n_items=3, loading=0.8)
+    spec2.add_construct("GB", n_items=3, loading=0.8)
+    ga.items[0].reverse_coded = True
+    ga.items[1].reverse_coded = True
+    with warnings.catch_warnings(record=True) as caught2:
+        warnings.simplefilter("always")
+        htmt2, _ = implied.population_htmt(compile_model(spec2))
+    assert math.isnan(htmt2[0, 1]), htmt2
+    assert any("HTMT_MONOTRAIT_NOT_POSITIVE" in str(w.message) for w in caught2)
+
+    # And a clean model must still produce a number, with no warning at all.
+    with warnings.catch_warnings(record=True) as caught3:
+        warnings.simplefilter("always")
+        htmt3, _ = implied.population_htmt(compile_model(_two_factor_simple()))
+    assert abs(htmt3[0, 1] - 0.5) < 1e-12
+    assert not [w for w in caught3
+                if "HTMT_MONOTRAIT_NOT_POSITIVE" in str(w.message)]
+
+
+def test_reverse_coded_items_get_negative_loadings_and_correlations() -> None:
+    """A reverse-worded item runs against its factor until it is recoded.
+
+    The generation engine leans on this: a simulated dataset has to be able to
+    reproduce what a forgotten recode looks like in practice -- a negative
+    item-total correlation and a collapsed alpha -- so the negated loading row
+    and the negative sibling correlations are load-bearing, not cosmetic.
+    """
+    spec = ModelSpec(seed=127)
+    f = spec.add_construct("F", n_items=4, loading=0.8)
+    spec.add_construct("G", n_items=3, loading=0.7, role=ConstructRole.DEPENDENT)
+    spec.add_path("F", "G", coefficient=0.5)
+    f.items[0].reverse_coded = True
+    cm = compile_model(spec)
+    assert any("REVERSE_CODED" in w for w in cm.warnings), cm.warnings
+
+    rows = cm.items_of(f.id)
+    reversed_row = cm.item_index[f.items[0].id]
+    siblings = [j for j in rows if j != reversed_row]
+    home = cm.home_factor[reversed_row]
+    # The whole loading row flips sign, the forward-worded ones do not.
+    assert cm.Lambda[reversed_row, home] < 0.0, cm.Lambda[reversed_row]
+    assert abs(cm.Lambda[reversed_row, home] + 0.8) < ATOL
+    for j in siblings:
+        assert cm.Lambda[j, cm.home_factor[j]] > 0.0
+
+    # Implied correlations: reverse-against-sibling is -0.64, and the item
+    # still explains the same share of its own variance (Theta is unchanged).
+    sigma = implied.implied_correlation(cm)
+    for j in siblings:
+        assert sigma[reversed_row, j] < 0.0, sigma[reversed_row, j]
+        assert abs(sigma[reversed_row, j] + 0.64) < ATOL
+    # Across factors it is negative too: -0.8 * 0.5 * 0.7.
+    for j in cm.items_of(spec.construct_by_name("G").id):
+        assert abs(sigma[reversed_row, j] + 0.28) < ATOL, sigma[reversed_row, j]
+    # Standardisation is untouched by the sign flip.
+    assert np.allclose(np.diag(sigma), 1.0, atol=ATOL)
+    assert implied.is_positive_definite(sigma)
+    assert abs(cm.Theta[reversed_row, reversed_row] - (1.0 - 0.64)) < ATOL
 
 
 def test_theta_with_an_impossible_residual_pattern_is_repaired() -> None:

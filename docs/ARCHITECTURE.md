@@ -270,7 +270,8 @@ def achieved_moments(x: np.ndarray) -> dict[str, np.ndarray]   # mean/sd/skew/ex
 ```python
 def thresholds_for_style(n_categories: int, style: ResponseStyle) -> np.ndarray
     # z-cut points, length n_categories - 1, strictly increasing.
-    # SYMMETRIC: equal-probability normal cuts. UNIFORM: cuts at Phi^-1(k/K).
+    # SYMMETRIC: equal-width cuts of Beta(3.5, 3.5) -- a centred bell, not flat
+    # marginals. UNIFORM is the equal-probability one: cuts at Phi^-1(k/K).
     # POSITIVE_SKEW/NEGATIVE_SKEW: beta-shaped proportions (a, b) = (2, 5)/(5, 2);
     # EXTREME_*: (1.4, 6)/(6, 1.4); BIMODAL: mixture with mass at both ends.
 def thresholds_from_proportions(proportions: Sequence[float]) -> np.ndarray

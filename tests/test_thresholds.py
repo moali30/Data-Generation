@@ -31,6 +31,7 @@ from semsim.core.spec import (
 from semsim.generation.thresholds import (
     MAX_CATEGORIES,
     MIN_CATEGORIES,
+    STYLE_BETA_PARAMS,
     achieved_proportions,
     apply_scale,
     categorise,
@@ -463,3 +464,278 @@ def test_scale_spec_labels_are_untouched() -> None:
     apply_scale(np.linspace(-2, 2, 50), scale)
     assert (scale.n_categories, scale.thresholds,
             scale.category_proportions) == before
+
+
+# --------------------------------------------------------------------------- #
+# Regression tests for the repaired defects
+# --------------------------------------------------------------------------- #
+
+
+def _exact_ordinal_correlation(tau: np.ndarray, rho: float) -> float:
+    """Exact Pearson r between two identically categorised standard normals.
+
+    Built from bivariate-normal orthant probabilities rather than simulation,
+    so there is no Monte-Carlo noise to tolerate: the cell probabilities come
+    from the joint CDF evaluated on the grid of cut points,
+
+        P(x1 = a, x2 = b) = F(t_a, t_b) - F(t_{a-1}, t_b)
+                            - F(t_a, t_{b-1}) + F(t_{a-1}, t_{b-1}),
+
+    which is the quantity the product rule ``rho * kappa_i * kappa_j``
+    approximates.
+    """
+    from scipy.stats import multivariate_normal
+
+    edges = np.concatenate(([-np.inf], np.asarray(tau, dtype=float), [np.inf]))
+    k = edges.size - 1
+    mvn = multivariate_normal(mean=[0.0, 0.0], cov=[[1.0, rho], [rho, 1.0]])
+
+    cdf = np.empty((k + 1, k + 1))
+    for a in range(k + 1):
+        for b in range(k + 1):
+            ha, hb = edges[a], edges[b]
+            if ha == -np.inf or hb == -np.inf:
+                cdf[a, b] = 0.0
+            elif ha == np.inf and hb == np.inf:
+                cdf[a, b] = 1.0
+            elif ha == np.inf:
+                cdf[a, b] = float(stats.norm.cdf(hb))
+            elif hb == np.inf:
+                cdf[a, b] = float(stats.norm.cdf(ha))
+            else:
+                cdf[a, b] = float(mvn.cdf([ha, hb]))
+
+    joint = (cdf[1:, 1:] - cdf[:-1, 1:] - cdf[1:, :-1] + cdf[:-1, :-1])
+    codes = np.arange(1.0, k + 1.0)
+    marginal = joint.sum(axis=1)
+    mu = float(marginal @ codes)
+    var = float(marginal @ (codes - mu) ** 2)
+    return (float(codes @ joint @ codes) - mu * mu) / var
+
+
+def test_product_rule_envelope_matches_the_documented_figures() -> None:
+    """Pin the accuracy envelope that ``polychoric_attenuation`` documents.
+
+    The docstring used to present ``r ~= rho * kappa_i * kappa_j`` as simply
+    "the" first-order relation, with no statement of how far off it can be.
+    It is accurate to a fraction of a percent for ``SYMMETRIC`` only; for the
+    shipped extreme styles it is out by more than an order of magnitude more
+    than that, which matters because the calibration loop pre-divides loadings
+    by ``kappa``.  These bounds are the ones the docstring now quotes, so a
+    future edit that re-asserts a uniformly tight envelope fails here.
+    """
+    # style -> (worst relative error over K in {5, 7} and rho in {.3,.5,.7})
+    documented = {
+        ResponseStyle.SYMMETRIC: 0.3,
+        ResponseStyle.UNIFORM: 3.8,
+        ResponseStyle.POSITIVE_SKEW: 4.3,
+        ResponseStyle.NEGATIVE_SKEW: 4.3,
+        ResponseStyle.BIMODAL: 8.2,
+        ResponseStyle.EXTREME_POSITIVE: 14.2,
+        ResponseStyle.EXTREME_NEGATIVE: 14.2,
+    }
+    print("\n  exact vs first-order product rule (worst over K=5,7 and "
+          "rho=.3,.5,.7):")
+    worst_by_style = {}
+    for style, bound in documented.items():
+        worst = 0.0
+        for k in (5, 7):
+            tau = thresholds_for_style(k, style)
+            kappa = polychoric_attenuation(tau)
+            for rho in (0.3, 0.5, 0.7):
+                exact = _exact_ordinal_correlation(tau, rho)
+                product = rho * kappa * kappa
+                # One-signed: the product rule drops the positive
+                # higher-order terms of the polychoric series, so it always
+                # under-predicts the realised correlation.
+                assert product <= exact + 1e-12, (
+                    f"{style.value} K={k} rho={rho}: product {product:.6f} "
+                    f"exceeded the exact {exact:.6f}"
+                )
+                worst = max(worst, 100.0 * abs(exact - product) / exact)
+        worst_by_style[style] = worst
+        print(f"    {style.value:18s} worst {worst:6.2f}%  "
+              f"(documented bound {bound}%)")
+        assert worst <= bound, (
+            f"{style.value}: worst relative error {worst:.2f}% exceeds the "
+            f"documented {bound}%"
+        )
+
+    # The whole point of the repaired documentation: SYMMETRIC is tight and
+    # the extreme styles are nowhere near it.  A 30x gap, not a rounding one.
+    assert worst_by_style[ResponseStyle.SYMMETRIC] < 0.5
+    assert worst_by_style[ResponseStyle.EXTREME_POSITIVE] > 5.0
+    assert worst_by_style[ResponseStyle.EXTREME_NEGATIVE] > 5.0
+    assert worst_by_style[ResponseStyle.BIMODAL] > 5.0
+    assert (worst_by_style[ResponseStyle.EXTREME_POSITIVE]
+            > 30.0 * worst_by_style[ResponseStyle.SYMMETRIC])
+
+
+def test_product_rule_envelope_at_three_categories() -> None:
+    """The second column of the documented table: K = 3, |rho| <= 0.8."""
+    documented = {
+        ResponseStyle.SYMMETRIC: 2.7,
+        ResponseStyle.UNIFORM: 8.0,
+        ResponseStyle.POSITIVE_SKEW: 15.6,
+        ResponseStyle.NEGATIVE_SKEW: 15.6,
+        ResponseStyle.BIMODAL: 13.4,
+        ResponseStyle.EXTREME_POSITIVE: 37.1,
+        ResponseStyle.EXTREME_NEGATIVE: 37.1,
+    }
+    print("\n  exact vs product rule at K=3 (worst over rho=.1,.3,.5,.7,.8):")
+    for style, bound in documented.items():
+        tau = thresholds_for_style(3, style)
+        kappa = polychoric_attenuation(tau)
+        worst = 0.0
+        for rho in (0.1, 0.3, 0.5, 0.7, 0.8):
+            exact = _exact_ordinal_correlation(tau, rho)
+            worst = max(worst, 100.0 * abs(exact - rho * kappa * kappa) / exact)
+        print(f"    {style.value:18s} worst {worst:6.2f}%  "
+              f"(documented bound {bound}%)")
+        assert worst <= bound, f"{style.value}: {worst:.2f}% > {bound}%"
+        # The bound must also be tight, or the documentation is not informative.
+        assert worst > 0.6 * bound, (
+            f"{style.value}: documented {bound}% is far looser than the "
+            f"observed {worst:.2f}%"
+        )
+
+
+def test_product_rule_is_worst_for_a_dichotomised_extreme_style() -> None:
+    """K = 2 on an extreme style is the documented worst case: ~66% out."""
+    tau = thresholds_for_style(2, ResponseStyle.EXTREME_POSITIVE)
+    kappa = polychoric_attenuation(tau)
+    exact = _exact_ordinal_correlation(tau, 0.7)
+    product = 0.7 * kappa * kappa
+    rel = 100.0 * abs(exact - product) / exact
+    print(f"\n  K=2 extreme_positive, rho=0.7: kappa={kappa:.4f} "
+          f"exact={exact:.5f} product={product:.5f} rel={rel:.1f}%")
+    assert abs(exact - 0.32580) < 1e-4
+    assert abs(product - 0.11162) < 1e-4
+    assert 60.0 < rel < 70.0
+
+
+def test_attenuation_docstring_states_the_real_envelope() -> None:
+    """The envelope must stay *written down*, not just true.
+
+    The defect was documentary: the product rule was presented without its
+    accuracy envelope, so the calibration loop had no warning that the
+    correction is unreliable for the extreme styles.
+    """
+    doc = polychoric_attenuation.__doc__ or ""
+    assert "first-order" in doc
+    assert "Accuracy of the product rule" in doc   # the section heading
+    for name in ("EXTREME_POSITIVE", "EXTREME_NEGATIVE", "BIMODAL",
+                 "SYMMETRIC", "UNIFORM"):
+        assert name in doc, name
+    assert "14.2%" in doc and "0.3%" in doc
+    assert "calibration loop" in doc
+
+
+@pytest.mark.parametrize("bad", [5.9, 2.999, 4.5, 5.5, "5", "five", None,
+                                 object()])
+def test_non_integral_category_count_raises(bad: object) -> None:
+    """int(5.9) == 5 used to pass silently; a whole number is now required.
+
+    The error message always claimed the count "must be a whole number", but
+    the implementation was a truncating ``int(...)``, so asking for 5.9
+    categories produced a five-point scale with no warning.
+    """
+    with pytest.raises(SpecificationError) as exc:
+        thresholds_for_style(bad, ResponseStyle.SYMMETRIC)  # type: ignore[arg-type]
+    assert _arabic(exc.value.message_ar), exc.value.message_ar
+    print(f"\n  n_categories={bad!r} -> {exc.value.message_en[:70]}")
+
+
+@pytest.mark.parametrize("good", [5, 5.0, np.int64(7), np.float64(3.0)])
+def test_integral_category_count_of_any_numeric_type_is_accepted(
+    good: object,
+) -> None:
+    """Rejecting 5.0 would break float-typed form fields and numpy scalars."""
+    tau = thresholds_for_style(good, ResponseStyle.SYMMETRIC)  # type: ignore[arg-type]
+    assert tau.size == int(float(good)) - 1  # type: ignore[arg-type]
+
+
+def test_non_integral_category_count_raises_everywhere_it_is_read() -> None:
+    """Every entry point that reads ``n_categories`` must reject a fraction."""
+    scale = ScaleSpec(n_categories=5.9)  # type: ignore[arg-type]
+    for label, call in (
+        ("scale_thresholds", lambda: scale_thresholds(scale)),
+        ("apply_scale", lambda: apply_scale(np.zeros(4), scale)),
+        ("reverse_code", lambda: reverse_code(np.array([3]), scale)),
+        ("achieved_proportions",
+         lambda: achieved_proportions(np.array([1, 2, 3]), 5.9)),  # type: ignore
+    ):
+        with pytest.raises(SpecificationError) as exc:
+            call()
+        assert _arabic(exc.value.message_ar), label
+        print(f"  {label} rejected a fractional category count")
+
+
+def test_achieved_proportions_takes_an_explicit_base() -> None:
+    """Base-0 codes spanning 1..K-1 are ambiguous; the caller can now say.
+
+    ``[1, 2, 3, 4]`` on a five-category item is a legal base-1 sample *and* a
+    legal base-0 sample whose lowest category went unobserved.  Nothing in the
+    data separates the two, so auto-detection cannot be made correct -- it can
+    only be made explicit.  The old API offered no way to say which it was and
+    always answered base-1, shifting every proportion by one category for
+    base-0 input.
+    """
+    v = np.array([1, 1, 2, 2, 3, 3, 4, 4])
+    base1 = achieved_proportions(v, 5, base=1)
+    base0 = achieved_proportions(v, 5, base=0)
+    print(f"\n  codes {v.tolist()} on a 5-category item:"
+          f"\n    base=1 -> {np.round(base1, 4)}"
+          f"\n    base=0 -> {np.round(base0, 4)}")
+    assert np.allclose(base1, [0.25, 0.25, 0.25, 0.25, 0.0])
+    assert np.allclose(base0, [0.0, 0.25, 0.25, 0.25, 0.25])
+    # The default keeps the historical behaviour, which is the base-1
+    # tie-break -- and base-1 is what apply_scale emits, so for this engine's
+    # own columns the default is the right answer.
+    assert np.allclose(achieved_proportions(v, 5), base1)
+    scored = apply_scale(np.linspace(-3, 3, 4000), ScaleSpec(n_categories=5))
+    assert scored.min() >= 1 and scored.max() <= 5
+    assert np.allclose(achieved_proportions(scored, 5),
+                       achieved_proportions(scored, 5, base=1))
+
+
+def test_achieved_proportions_base_is_validated_and_enforced() -> None:
+    v = np.array([1, 1, 2, 2, 3, 3, 4, 4])
+    with pytest.raises(SpecificationError) as exc:
+        achieved_proportions(v, 5, base=2)
+    assert _arabic(exc.value.message_ar)
+    print(f"\n  base=2 -> {exc.value.message_en}")
+    # An explicit base that the data contradict must raise, not be silently
+    # overridden by the detector.
+    with pytest.raises(SpecificationError) as exc2:
+        achieved_proportions(np.array([0, 1, 2]), 3, base=1)
+    assert _arabic(exc2.value.message_ar)
+    print(f"  base=1 on 0..2 codes -> {exc2.value.message_en}")
+    # Unambiguous base-0 input (a zero is present) is still detected.
+    assert np.allclose(achieved_proportions(np.array([0, 1, 2]), 3),
+                       [1 / 3, 1 / 3, 1 / 3])
+
+
+def test_symmetric_is_a_beta_bell_not_equal_probability_cuts() -> None:
+    """SYMMETRIC and UNIFORM are different styles, and must stay different.
+
+    ``docs/ARCHITECTURE.md`` used to describe SYMMETRIC as "equal-probability
+    normal cuts", which is the definition of UNIFORM -- the two styles would
+    have been the same thing under two names.  The implementation is the
+    sensible one: SYMMETRIC is the equal-width discretisation of
+    ``Beta(3.5, 3.5)``, a centred bell.
+    """
+    sym = proportions_for_style(5, ResponseStyle.SYMMETRIC)
+    uni = proportions_for_style(5, ResponseStyle.UNIFORM)
+    print(f"\n  SYMMETRIC K=5 = {np.round(sym, 4)}"
+          f"\n  UNIFORM   K=5 = {np.round(uni, 4)}")
+    assert np.allclose(uni, 0.2)
+    assert not np.allclose(sym, uni, atol=0.05)
+    # Bell-shaped: the middle category carries the most mass, the tails least,
+    # and the profile is symmetric about the centre.
+    assert sym.argmax() == 2
+    assert np.allclose(sym, sym[::-1], atol=1e-12)
+    assert sym[2] > 2.0 * sym[0]
+    assert STYLE_BETA_PARAMS[ResponseStyle.SYMMETRIC] == (3.5, 3.5)
+    # And the Beta shape is written down where a reader will look for it.
+    assert "Beta(3.5, 3.5)" in (thresholds_for_style.__doc__ or "")

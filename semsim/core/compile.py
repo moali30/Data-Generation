@@ -64,6 +64,11 @@ PHI_DIAG_TOL = 1e-10
 #: Maximum passes of the fixed-point iteration before giving up.
 MAX_FIXED_POINT_PASSES = 500
 
+#: Smallest Newton slope the fixed-point solver will divide a step by. Guards
+#: against a step that explodes (or reverses) when a strong correlated
+#: disturbance makes ``d Phi[i, i] / d Psi[i, i]`` approach zero.
+_MIN_NEWTON_SLOPE = 0.1
+
 __all__ = [
     "HEYWOOD_FLOOR", "PHI_DIAG_TOL", "MAX_FIXED_POINT_PASSES",
     "CompiledModel", "compile_model",
@@ -238,6 +243,40 @@ def _repair_symmetric(matrix: np.ndarray, label_en: str, label_ar: str,
     return repaired
 
 
+def _apply_disturbance_correlations(Psi: np.ndarray, psi_corr: np.ndarray,
+                                    pairs: Sequence[Tuple[int, int]]) -> None:
+    """Re-express the requested disturbance *correlations* as covariances.
+
+    ``LatentCovariance.correlation`` is a correlation, not a covariance, so the
+    entry that belongs in ``Psi`` is ``r * sd_a * sd_b`` with
+    ``sd_i = sqrt(Psi[i, i])``.  Writing ``r`` itself is only right when both
+    disturbance variances are one, i.e. when both latents are exogenous.  An
+    endogenous latent has ``Psi[i, i] = 1 - R^2 < 1``, so the unscaled entry
+    implies a disturbance correlation of ``r / sqrt(Psi_aa Psi_bb)``, which is
+    strictly larger than ``r`` in magnitude and can exceed one outright — a
+    non-positive-definite ``Psi`` that the engine then generates data from.
+
+    Writing the scaled entry has a second benefit: because ``Psi`` is then
+    ``D^(1/2) psi_corr D^(1/2)`` with ``D = diag(Psi)`` positive, it inherits
+    positive definiteness from ``psi_corr`` no matter how far the fixed-point
+    iteration drives the disturbance variances down.
+
+    Parameters
+    ----------
+    Psi : numpy.ndarray
+        ``(m, m)`` disturbance covariance; its off-diagonal entries for
+        ``pairs`` are overwritten in place from its current diagonal.
+    psi_corr : numpy.ndarray
+        ``(m, m)`` matrix of requested disturbance *correlations*, unit
+        diagonal, as settled (and possibly PD-repaired) in step 3.
+    pairs : sequence of (int, int)
+        The ``(a, b)`` index pairs carrying a requested correlation.
+    """
+    for a, b in pairs:
+        sd = float(np.sqrt(max(float(Psi[a, a]), 0.0) * max(float(Psi[b, b]), 0.0)))
+        Psi[a, b] = Psi[b, a] = float(psi_corr[a, b]) * sd
+
+
 # --------------------------------------------------------------------------- #
 # Step 1: the latent node list
 # --------------------------------------------------------------------------- #
@@ -273,15 +312,29 @@ def _build_nodes(spec: ModelSpec) -> Tuple[List[str], List[str], Dict[str, str]]
 
 def _solve_phi_fixed_point(B: np.ndarray, Psi: np.ndarray,
                            endogenous: np.ndarray, factor_names: Sequence[str],
-                           warnings: List[str]) -> np.ndarray:
+                           warnings: List[str],
+                           psi_corr: Optional[np.ndarray] = None,
+                           psi_pairs: Sequence[Tuple[int, int]] = (),
+                           ) -> np.ndarray:
     """Rescale ``diag(Psi)`` until ``diag(Phi)`` is one, then return ``Phi``.
 
     Used for non-recursive models and for models with correlated disturbances
     between endogenous latents, where the single forward pass of the recursive
     algorithm does not hold.  Each pass evaluates
     ``Phi = (I - B)^-1 Psi (I - B)^-T`` and applies the Newton correction
-    ``Psi[i, i] += 1 - Phi[i, i]`` (exact to first order because the diagonal
-    of ``(I - B)^-1`` is one for a model with no self-loops).  When the
+    ``Psi[i, i] += (1 - Phi[i, i]) / slope_i``, where ``slope_i`` is the exact
+    derivative ``d Phi[i, i] / d Psi[i, i]``::
+
+        A       = (I - B)^-1,   g = sqrt(diag(Psi)),   R = psi_corr
+        slope_i = A_ii^2 + A_ii * sum_(l != i) A_il R_il g_l / g_i
+
+    A unit slope — what an earlier version of this solver assumed — is only
+    right for an uncoupled latent of a recursive model, where ``A_ii`` is one
+    and the sum is empty.  It is wrong inside a feedback loop (``A_ii != 1``)
+    and badly wrong for a correlated disturbance, whose contribution to
+    ``Phi[i, i]`` goes as ``sqrt(Psi[i, i])`` and so has a slope that grows
+    without bound as the disturbance variance shrinks; the undamped step then
+    oscillated past the solution until the pass budget ran out.  When the
     correction would drive a disturbance variance below ``HEYWOOD_FLOOR`` the
     corresponding row of ``B`` is shrunk instead, which is the latent Heywood
     repair.
@@ -298,6 +351,14 @@ def _solve_phi_fixed_point(B: np.ndarray, Psi: np.ndarray,
         Display names, used in the warning text.
     warnings : list of str
         Appended to in place.
+    psi_corr : numpy.ndarray, optional
+        ``(m, m)`` requested disturbance *correlations* with a unit diagonal.
+        Every pass rescales the off-diagonal entries listed in ``psi_pairs``
+        from the freshly updated diagonal, because the diagonal moves on every
+        pass and a correlation written as a raw covariance would silently drift
+        with it.
+    psi_pairs : sequence of (int, int), optional
+        The index pairs in ``psi_corr`` that carry a requested correlation.
 
     Returns
     -------
@@ -321,6 +382,12 @@ def _solve_phi_fixed_point(B: np.ndarray, Psi: np.ndarray,
     m = B.shape[0]
     eye = np.eye(m)
     shrunk: Set[int] = set()
+    # The entry Psi[a, b] must track the diagonal, so the pass that changes a
+    # disturbance variance has to rewrite the covariance built from it. Doing
+    # it once up front as well keeps the very first evaluation of Phi
+    # consistent with the diagonal it is derived from.
+    if psi_corr is not None and len(psi_pairs):
+        _apply_disturbance_correlations(Psi, psi_corr, psi_pairs)
 
     for _ in range(MAX_FIXED_POINT_PASSES):
         try:
@@ -345,10 +412,44 @@ def _solve_phi_fixed_point(B: np.ndarray, Psi: np.ndarray,
             np.fill_diagonal(Phi, 1.0)
             return 0.5 * (Phi + Phi.T)
 
+        # Snapshot of the disturbance standard deviations this pass started
+        # from, used for the Newton slope below; Psi[i, i] is written in place
+        # inside the loop, so reading it back would mix two passes.
+        sd_in = np.sqrt(np.clip(np.diag(Psi), 0.0, None))
+
         for i in range(m):
             if not endogenous[i]:
                 continue
-            proposed = Psi[i, i] + (1.0 - diag[i])
+            # d Phi[i, i] / d Psi[i, i] is one only for an uncoupled node of a
+            # recursive model. With ``Psi = D^(1/2) R D^(1/2)`` and
+            # ``A = (I - B)^-1``, Phi[i, i] = sum_kl A_ik A_il R_kl g_k g_l with
+            # g = sqrt(diag(Psi)), so the exact slope is
+            # ``A_ii^2 + A_ii * S_i / g_i`` with
+            # ``S_i = sum_(l != i) A_il R_il g_l``. The correlated-disturbance
+            # term grows without bound as g_i shrinks, which is exactly the
+            # regime a strong incoming path puts an endogenous latent in, so
+            # the old undamped step (slope fixed at one) overshot and
+            # oscillated until the pass budget ran out on models that do have a
+            # solution. Dividing by the true slope is a proper Newton step and
+            # converges on them.
+            slope = 1.0
+            if sd_in[i] > 0.0:
+                a_ii = float(inv[i, i])
+                coupling = 0.0
+                if psi_corr is not None:
+                    for pa, pb in psi_pairs:
+                        partner = pb if pa == i else (pa if pb == i else None)
+                        if partner is None:
+                            continue
+                        coupling += (float(inv[i, partner])
+                                     * float(psi_corr[i, partner])
+                                     * sd_in[partner])
+                slope = a_ii * a_ii + a_ii * coupling / sd_in[i]
+            # A slope at or below zero means the linearisation points the wrong
+            # way; fall back on a bounded positive step and let the next pass
+            # re-linearise rather than marching off.
+            slope = max(slope, _MIN_NEWTON_SLOPE)
+            proposed = Psi[i, i] + (1.0 - diag[i]) / slope
             if proposed < HEYWOOD_FLOOR:
                 explained = max(diag[i] - Psi[i, i], HEYWOOD_FLOOR)
                 factor = float(np.sqrt((1.0 - HEYWOOD_FLOOR) / explained))
@@ -371,6 +472,14 @@ def _solve_phi_fixed_point(B: np.ndarray, Psi: np.ndarray,
                 Psi[i, i] = HEYWOOD_FLOOR
             else:
                 Psi[i, i] = proposed
+
+        # diag(Psi) has just moved, so the correlated-disturbance covariances
+        # derived from it are stale; rebuild them before the next evaluation of
+        # Phi. Without this the realised disturbance correlation drifts away
+        # from the one the researcher asked for, and the drift is upward, which
+        # is the direction that breaks positive definiteness.
+        if psi_corr is not None and len(psi_pairs):
+            _apply_disturbance_correlations(Psi, psi_corr, psi_pairs)
 
     raise ConvergenceError(
         "Could not give every latent variable unit variance in this "
@@ -683,9 +792,21 @@ def compile_model(spec: ModelSpec,
         Psi, "the latent disturbance covariance matrix Psi",
         "مصفوفة تغاير بواقي المتغيرات الكامنة (Psi)", warnings)
 
+    # At this point diag(Psi) is still all ones, so Psi *is* the matrix of
+    # requested disturbance correlations (post-repair, which only ever touches
+    # the off-diagonal). Keep that correlation metric aside: the step-4 passes
+    # below replace the diagonal with 1 - R^2 for every endogenous latent, and
+    # each off-diagonal then has to be rebuilt as r * sd_a * sd_b so the
+    # correlation the researcher typed is the correlation actually realised.
+    psi_corr = Psi.copy()
+    psi_pairs = [(int(a), int(b))
+                 for a, b in zip(*np.triu_indices(m, k=1))
+                 if psi_corr[a, b] != 0.0]
+
     # ---------------------------------------------------------------- Step 4
     if has_cycle or correlated_disturbance:
-        Phi = _solve_phi_fixed_point(B, Psi, endogenous, factor_names, warnings)
+        Phi = _solve_phi_fixed_point(B, Psi, endogenous, factor_names, warnings,
+                                     psi_corr=psi_corr, psi_pairs=psi_pairs)
     else:
         Phi = np.zeros((m, m), dtype=float)
         processed: List[int] = []
@@ -724,6 +845,16 @@ def compile_model(spec: ModelSpec,
                 ))
             else:
                 Psi[i, i] = 1.0 - explained
+            # Psi[i, i] is only known now, so any requested correlation that
+            # involves node i has to be turned into a covariance at this point
+            # and not in step 3. A model reaching this branch has both ends of
+            # every requested correlation exogenous (anything else sets
+            # ``correlated_disturbance`` and goes through the fixed-point
+            # solver), so today this is a no-op guard that keeps the branch
+            # correct if that gating is ever widened.
+            if psi_pairs:
+                _apply_disturbance_correlations(
+                    Psi, psi_corr, [(a, b) for a, b in psi_pairs if i in (a, b)])
             for j in processed:
                 Phi[i, j] = Phi[j, i] = float(b @ Phi[predictors, j]) + Psi[i, j]
             Phi[i, i] = 1.0

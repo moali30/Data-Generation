@@ -26,11 +26,14 @@ from semsim.generation.noise import (
     MAR_LOGIT_SLOPE,
     NoiseReport,
     _calibrate_intercept,
+    _ordinal_flags_and_bounds,
+    _scales_for,
     apply_noise,
     inject_careless,
     inject_missing,
     inject_outliers,
 )
+from semsim.generation.vale_maurelli import achieved_moments
 
 SEED = 20240101
 
@@ -481,6 +484,304 @@ def test_bad_matrix_shape_is_rejected() -> None:
         assert exc.message_ar != exc.message_en
     else:  # pragma: no cover - must raise
         raise AssertionError("a 1-D dataset was accepted")
+
+
+# --------------------------------------------------------------------------- #
+# 5. Regression tests for the repaired defects
+# --------------------------------------------------------------------------- #
+
+
+class _UnresolvableCM:
+    """A compiled model whose ``item_ids`` do not exist in the spec.
+
+    This is what a stale or mismatched compile looks like: ids renamed or
+    regenerated after compilation, or a matrix that came from a different spec
+    object.  ``spec.item(id)`` answers ``None`` for each of them.
+    """
+
+    def __init__(self, p: int) -> None:
+        self.item_ids = [f"no-such-item-{j}" for j in range(p)]
+        self.item_index: dict = {}
+
+
+def test_scales_for_falls_back_when_every_item_id_is_unresolvable() -> None:
+    """A list of ``None`` is not an empty list.
+
+    The old fallback guard was ``if not items:``, which a list made entirely
+    of ``None`` passes happily, so when ``cm.item_ids`` could not be resolved
+    against the spec the fallback never ran and every column came back with no
+    scale at all.
+    """
+    spec = _spec_with_noise()
+    scales = _scales_for(spec, _UnresolvableCM(6), 6)
+    is_ordinal, lower, upper = _ordinal_flags_and_bounds(scales, 6)
+    print(f"\n  resolved scales: {sum(s is not None for s in scales)}/6 "
+          f"non-None; is_ordinal={is_ordinal.tolist()}")
+    assert all(s is not None for s in scales)
+    assert is_ordinal.all()
+    assert np.allclose(lower, 1.0) and np.allclose(upper, 5.0)
+
+    # The real consequence: without the fallback every column read as
+    # "continuous, unbounded", so inject_outliers skipped the Likert clip and
+    # wrote values such as -1.9 or 7.9 into a 1..5 item.
+    data = _likert_data(300, 6, k=5, seed=77)
+    out, n_cells = inject_outliers(data, 0.25, 3.5, np.random.default_rng(5),
+                                   scales=scales)
+    finite = out[np.isfinite(out)]
+    print(f"  outlier range with the recovered scales = "
+          f"[{finite.min()}, {finite.max()}] over {n_cells} cells")
+    assert n_cells > 0
+    assert finite.min() >= 1 and finite.max() <= 5
+
+
+def test_apply_noise_clips_likert_outliers_through_a_stale_compiled_model() -> None:
+    """End to end: a mismatched ``cm`` must not yield illegal item codes."""
+    spec = _spec_with_noise(outlier_proportion=0.3, outlier_magnitude_sd=4.0)
+    data = _likert_data(400, 6, k=5, seed=78)
+    out, report = apply_noise(data, spec, _UnresolvableCM(6),
+                              np.random.default_rng(SEED))
+    finite = out[np.isfinite(out)]
+    print(f"\n  apply_noise with an unresolvable cm: "
+          f"{report.n_outlier_cells} outlier cells, "
+          f"range [{finite.min()}, {finite.max()}]")
+    assert report.n_outlier_cells > 0
+    assert finite.min() >= 1 and finite.max() <= 5
+
+
+def test_apply_noise_rejects_a_proportion_outside_the_unit_interval() -> None:
+    """A negative proportion used to be silently treated as zero.
+
+    The step guards were ``> 0.0``, which a negative value fails exactly as
+    0.0 does, so ``careless_proportion = -0.05`` switched that contamination
+    off without a word -- while a value above 1 raised, because it reached the
+    ``inject_*`` call that checks it.  The docstring promised a
+    ``SpecificationError`` for anything outside ``[0, 1]`` either way, and a
+    sign slip or a percent/proportion mix-up is the likelier of the two
+    mistakes: the researcher gets a pristine dataset and believes it is
+    contaminated.
+    """
+    data = _likert_data(60, 6)
+    checked = 0
+    for field in ("careless_proportion", "outlier_proportion",
+                  "missing_proportion"):
+        for bad in (-0.25, -1e-9, 1.5, float("nan")):
+            spec = _spec_with_noise(missing_mechanism=MissingMechanism.MCAR)
+            setattr(spec.noise, field, bad)
+            try:
+                apply_noise(data, spec, None, np.random.default_rng(0))
+            except SpecificationError as exc:
+                assert exc.message_ar and exc.message_ar != exc.message_en
+                checked += 1
+            else:  # pragma: no cover - must raise
+                raise AssertionError(
+                    f"{field}={bad!r} was accepted instead of raising"
+                )
+    print(f"\n  12 out-of-range proportions all raised "
+          f"SpecificationError ({checked} checked)")
+    assert checked == 12
+
+
+def test_apply_noise_leaves_the_mar_driver_fully_observed() -> None:
+    """MAR must depend on data the analyst can actually see.
+
+    Reading the driver composite before any cell is blanked is necessary but
+    not sufficient: missingness used to be applied to every column, the driver
+    construct's own items included, so the quantity the mechanism depended on
+    was unrecoverable from the delivered data for a large share of
+    respondents.  That makes the mechanism MNAR for those rows and voids the
+    assumption every MAR-valid method (FIML, multiple imputation) is tested
+    against.
+    """
+    spec = _spec_with_noise(
+        missing_mechanism=MissingMechanism.MAR,
+        missing_proportion=0.2,
+    )
+    spec.noise.mar_driver = spec.constructs[0].id      # items 0..2 of 6
+    n, p = 3000, 6
+    data = _likert_data(n, p, seed=424)
+    out, report = apply_noise(data, spec, None, np.random.default_rng(SEED))
+
+    driver_nan = int(np.isnan(out[:, :3]).sum())
+    other_nan = int(np.isnan(out[:, 3:]).sum())
+    realised = report.n_missing_cells / (n * p)
+    print(f"\n  driver columns: {driver_nan} blanked cells; "
+          f"other columns: {other_nan}; realised overall rate "
+          f"{realised:.4f} (requested 0.2)")
+    # The driver composite is recomputable for every single respondent.
+    assert driver_nan == 0
+    assert other_nan == report.n_missing_cells
+    # Holding three of six columns out would halve the realised rate, so the
+    # rate on the remaining columns is scaled up and the overall share still
+    # matches the request.
+    assert abs(realised - 0.2) < 0.02
+    # And the mechanism is still genuinely driven by the driver.
+    driver = data[:, :3].mean(axis=1)
+    any_missing = np.isnan(out).any(axis=1)
+    g1, g0 = driver[any_missing], driver[~any_missing]
+    se = np.sqrt(g1.var(ddof=1) / g1.size + g0.var(ddof=1) / g0.size)
+    t = (g1.mean() - g0.mean()) / se
+    print(f"  driver mean: incomplete={g1.mean():.4f} "
+          f"complete={g0.mean():.4f} t={t:.3f}")
+    assert abs(t) > 3.0
+
+
+def test_apply_noise_mar_driver_spanning_every_column_still_works() -> None:
+    """One-construct model: there is nothing to hold out, so do not try."""
+    spec = ModelSpec(seed=SEED)
+    spec.add_construct("X", n_items=6, n_categories=5)
+    spec.noise.enabled = True
+    spec.noise.missing_mechanism = MissingMechanism.MAR
+    spec.noise.missing_proportion = 0.1
+    spec.noise.mar_driver = spec.constructs[0].id
+    n, p = 1500, 6
+    data = _likert_data(n, p, seed=425)
+    out, report = apply_noise(data, spec, None, np.random.default_rng(SEED))
+    realised = report.n_missing_cells / (n * p)
+    print(f"\n  driver spans all {p} columns: realised {realised:.4f} "
+          "(requested 0.1)")
+    assert abs(realised - 0.1) < 0.02
+    assert report.n_missing_cells == int(np.isnan(out).sum())
+
+
+def test_mcar_is_unaffected_by_the_driver_hold_out() -> None:
+    """MCAR has no driver, so every column stays eligible."""
+    spec = _spec_with_noise(missing_mechanism=MissingMechanism.MCAR,
+                            missing_proportion=0.2)
+    n, p = 2000, 6
+    data = _likert_data(n, p, seed=426)
+    out, report = apply_noise(data, spec, None, np.random.default_rng(SEED))
+    per_column = np.isnan(out).mean(axis=0)
+    print(f"\n  MCAR per-column missing rates = {np.round(per_column, 4)}")
+    assert report.n_missing_cells == int(np.isnan(out).sum())
+    assert abs(report.n_missing_cells / (n * p) - 0.2) < 0.02
+    assert per_column.min() > 0.15, "no column may be held out under MCAR"
+
+
+def test_apply_noise_holds_the_fallback_driver_column_out_too() -> None:
+    """The guarantee must not depend on which driver resolution fired.
+
+    ``apply_noise`` resolves the MAR driver in three steps: the requested
+    construct, then the first exogenous construct, then the first column.  The
+    third was reached by leaving ``driver=None`` for ``inject_missing`` to
+    resolve internally, which meant ``apply_noise`` did not know which column
+    it was and could not hold it out -- so the "driver stays observed"
+    guarantee quietly lapsed for exactly the specs that were already in
+    trouble.  Naming it explicitly costs nothing and keeps the mechanism
+    identical, because ``_resolve_driver`` standardises whatever it is given.
+    """
+    class _BareNoise:
+        enabled = True
+        careless_proportion = 0.0
+        outlier_proportion = 0.0
+        careless_style = "random"
+        outlier_magnitude_sd = 3.5
+        missing_mechanism = MissingMechanism.MAR
+        missing_proportion = 0.15
+        mar_driver = ""
+
+    class _BareSpec:
+        """A duck-typed spec with no resolvable constructs at all."""
+
+        noise = _BareNoise()
+
+        def all_items(self):
+            return []
+
+    n, p = 2000, 6
+    data = _likert_data(n, p, seed=427)
+    out, report = apply_noise(data, _BareSpec(), None,
+                              np.random.default_rng(SEED))
+    per_column = np.isnan(out).sum(axis=0)
+    realised = report.n_missing_cells / (n * p)
+    print(f"\n  first-column fallback: per-column nan={per_column.tolist()}, "
+          f"realised={realised:.4f} (requested 0.15)")
+    assert per_column[0] == 0, "the fallback driver column was blanked"
+    assert (per_column[1:] > 0).all()
+    assert abs(realised - 0.15) < 0.02
+    # Still a genuine MAR mechanism, driven by that first column.
+    driver = data[:, 0].astype(float)
+    any_missing = np.isnan(out).any(axis=1)
+    g1, g0 = driver[any_missing], driver[~any_missing]
+    se = np.sqrt(g1.var(ddof=1) / g1.size + g0.var(ddof=1) / g0.size)
+    print(f"  driver(col 0) mean: incomplete={g1.mean():.4f} "
+          f"complete={g0.mean():.4f}")
+    assert abs((g1.mean() - g0.mean()) / se) > 3.0
+
+
+def test_apply_noise_exogenous_fallback_driver_is_held_out() -> None:
+    """Second resolution step: an unknown ``mar_driver`` id."""
+    spec = _spec_with_noise(
+        missing_mechanism=MissingMechanism.MAR,
+        missing_proportion=0.15,
+    )
+    spec.noise.mar_driver = "no-such-construct"
+    n, p = 2000, 6
+    data = _likert_data(n, p, seed=428)
+    out, report = apply_noise(data, spec, None, np.random.default_rng(SEED))
+    per_column = np.isnan(out).sum(axis=0)
+    realised = report.n_missing_cells / (n * p)
+    print(f"\n  exogenous fallback: per-column nan={per_column.tolist()}, "
+          f"realised={realised:.4f} (requested 0.15)")
+    # The first exogenous construct owns columns 0..2.
+    assert per_column[:3].sum() == 0
+    assert (per_column[3:] > 0).all()
+    assert abs(realised - 0.15) < 0.02
+
+
+def test_achieved_moments_propagate_nan_from_injected_missingness() -> None:
+    """A NaN column must not be reported as a perfectly normal one.
+
+    ``vale_maurelli.achieved_moments`` computed its shape statistics with
+    ``np.where(m2 > 0.0, ..., 0.0)``, and every comparison against NaN is
+    False, so the *else* branch was taken for a column whose ``m2`` was NaN:
+    skewness 0.0 and excess kurtosis 0.0, indistinguishable from a normal
+    column, while ``mean`` and ``sd`` for the same column correctly read NaN.
+    NaN is exactly what :func:`inject_missing` writes, so this misreported the
+    moments of the engine's own output whenever missingness was switched on.
+    The test lives here because ``inject_missing`` is where the NaN comes
+    from.
+    """
+    rng = np.random.default_rng(31)
+    # A strongly skewed column, so "skewness 0.0" is unmistakably wrong.
+    x = np.column_stack([
+        rng.standard_normal(2000),
+        rng.exponential(size=2000),
+        rng.standard_normal(2000),
+    ])
+    clean = achieved_moments(x)
+    assert clean["skewness"][1] > 1.0, clean["skewness"]
+
+    holed, n_missing = inject_missing(
+        x, MissingMechanism.MCAR, 0.05, np.random.default_rng(SEED)
+    )
+    assert n_missing > 0
+    moments = achieved_moments(holed)
+    print(f"\n  complete-data skewness = {np.round(clean['skewness'], 4)}"
+          f"\n  after {n_missing} blanked cells: "
+          f"skew={np.round(moments['skewness'], 4)} "
+          f"kurt={np.round(moments['kurtosis'], 4)}")
+    assert np.all(np.isnan(moments["skewness"])), moments["skewness"]
+    assert np.all(np.isnan(moments["kurtosis"])), moments["kurtosis"]
+    assert np.all(np.isnan(moments["skew"]))
+    assert np.all(np.isnan(moments["excess_kurtosis"]))
+    # Dropping the incomplete rows recovers the complete-data answer.
+    kept = holed[~np.isnan(holed).any(axis=1)]
+    recovered = achieved_moments(kept)
+    assert np.all(np.isfinite(recovered["skewness"]))
+    assert abs(recovered["skewness"][1] - clean["skewness"][1]) < 0.3
+
+
+def test_achieved_moments_still_report_zero_shape_for_a_constant_column() -> None:
+    """A genuinely constant column has no shape; that is not the NaN case."""
+    x = np.column_stack([np.full(100, 3.0), np.linspace(-1.0, 1.0, 100)])
+    moments = achieved_moments(x)
+    print(f"\n  constant column: sd={moments['sd'][0]:.4f} "
+          f"skew={moments['skewness'][0]:.4f} "
+          f"kurt={moments['kurtosis'][0]:.4f}")
+    assert moments["sd"][0] == 0.0
+    assert moments["skewness"][0] == 0.0
+    assert moments["kurtosis"][0] == 0.0
+    assert np.isfinite(moments["skewness"]).all()
 
 
 if __name__ == "__main__":  # pragma: no cover - manual runner
