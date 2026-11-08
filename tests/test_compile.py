@@ -855,19 +855,25 @@ def test_population_htmt_is_nan_when_a_monotrait_mean_is_not_positive() -> None:
         mono = float(np.mean(corr[np.ix_(rows, rows)][iu]))
         assert abs(mono - (-0.64 / 3.0)) < 1e-12, mono
 
+    before = len(cm.warnings)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         htmt, ids = implied.population_htmt(cm)
     assert len(ids) == 2
     assert math.isnan(htmt[0, 1]) and math.isnan(htmt[1, 0]), htmt
     assert np.allclose(np.diag(htmt), 1.0, atol=0.0)
-    # The reason has to be recorded, naming both offending factors, in both
-    # interface languages.
-    reasons = [str(w.message) for w in caught
-               if "HTMT_MONOTRAIT_NOT_POSITIVE" in str(w.message)]
-    assert len(reasons) == 1, [str(w.message) for w in caught]
+    # The reason travels on cm.warnings, where every other diagnostic in the
+    # engine goes -- not as a Python warning, which in a desktop application
+    # prints to a stderr nobody reads.
+    assert not caught, [str(w.message) for w in caught]
+    reasons = [w for w in cm.warnings[before:]
+               if "HTMT_MONOTRAIT_NOT_POSITIVE" in w]
+    assert len(reasons) == 1, cm.warnings[before:]
     assert fa.id in reasons[0] and fb.id in reasons[0]
     assert "متوسط الارتباطات الداخلية" in reasons[0]
+    # Calling again must not grow the list.
+    implied.population_htmt(cm)
+    assert len([w for w in cm.warnings if "HTMT_MONOTRAIT_NOT_POSITIVE" in w]) == 1
 
     # One negative mean is enough; this side was already handled and must stay.
     spec2 = ModelSpec(seed=113)
@@ -875,11 +881,15 @@ def test_population_htmt_is_nan_when_a_monotrait_mean_is_not_positive() -> None:
     spec2.add_construct("GB", n_items=3, loading=0.8)
     ga.items[0].reverse_coded = True
     ga.items[1].reverse_coded = True
+    cm2 = compile_model(spec2)
+    start = len(cm2.warnings)
     with warnings.catch_warnings(record=True) as caught2:
         warnings.simplefilter("always")
-        htmt2, _ = implied.population_htmt(compile_model(spec2))
+        htmt2, _ = implied.population_htmt(cm2)
     assert math.isnan(htmt2[0, 1]), htmt2
-    assert any("HTMT_MONOTRAIT_NOT_POSITIVE" in str(w.message) for w in caught2)
+    assert not caught2, [str(w.message) for w in caught2]
+    assert any("HTMT_MONOTRAIT_NOT_POSITIVE" in w
+               for w in cm2.warnings[start:]), cm2.warnings[start:]
 
     # And a clean model must still produce a number, with no warning at all.
     with warnings.catch_warnings(record=True) as caught3:
