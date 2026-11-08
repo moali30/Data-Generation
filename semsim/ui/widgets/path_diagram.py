@@ -44,6 +44,11 @@ CONSTRUCT_W, CONSTRUCT_H = 148.0, 62.0
 DIMENSION_W, DIMENSION_H = 118.0, 46.0
 ITEM_W, ITEM_H = 56.0, 24.0
 LAYER_GAP = 230.0
+COLUMN_GAP = 118.0        # clear space between two layers of constructs
+DIM_GAP = 64.0            # construct to its dimensions
+DIM_V_GAP = 22.0          # between sibling dimensions
+ITEM_LINK_GAP = 48.0      # factor to its indicator column
+STACK_GAP = 26.0          # factor to an indicator row above or below it
 NODE_GAP = 34.0
 ITEM_GAP = 6.0
 
@@ -108,6 +113,14 @@ def _assign_layers(spec: ModelSpec) -> Dict[str, int]:
 
 def build_layout(spec: ModelSpec, *, show_items: bool,
                  rtl: bool) -> Tuple[Dict[str, _Node], List[_Edge], QRectF]:
+    """Lay the model out in layers along the flow direction.
+
+    Indicators follow the convention of published path diagrams: they hang off
+    the OUTER edge for the first and last layers, and sit above and below the
+    construct for the layers in between.  Putting every indicator on one side
+    would park them squarely across the structural arrows that have to reach
+    the next layer.
+    """
     lang = translator.language
     layers = _assign_layers(spec)
     by_layer: Dict[int, List[Construct]] = {}
@@ -117,57 +130,71 @@ def build_layout(spec: ModelSpec, *, show_items: bool,
     nodes: Dict[str, _Node] = {}
     edges: List[_Edge] = []
     direction = -1.0 if rtl else 1.0
+    layer_indices = sorted(by_layer)
+    first_layer = layer_indices[0] if layer_indices else 0
+    last_layer = layer_indices[-1] if layer_indices else 0
 
-    for layer_index in sorted(by_layer):
+    def side_for(layer_index: int) -> str:
+        """Where this layer's indicators go."""
+        if not show_items:
+            return "none"
+        if layer_index == first_layer:
+            return "behind"          # outer edge, upstream of the flow
+        if layer_index == last_layer:
+            return "ahead"           # outer edge, downstream of the flow
+        return "stacked"             # above and below, clear of the arrows
+
+    # -- horizontal: how much room each layer needs, then cumulative x ------ #
+    widths: Dict[int, Tuple[float, float]] = {}      # layer -> (behind, ahead)
+    for layer_index in layer_indices:
+        second_order = any(c.is_second_order for c in by_layer[layer_index])
+        side = side_for(layer_index)
+        satellite = 0.0
+        if second_order:
+            satellite += DIM_GAP + DIMENSION_W
+        if side in ("behind", "ahead"):
+            satellite += ITEM_LINK_GAP + ITEM_W
+        behind = satellite if side == "behind" or (
+            second_order and side != "ahead") else 0.0
+        ahead = satellite if side == "ahead" else 0.0
+        if second_order and side == "stacked":
+            behind, ahead = DIM_GAP + DIMENSION_W, 0.0
+        widths[layer_index] = (behind, ahead)
+
+    x_of: Dict[int, float] = {}
+    cursor = 0.0
+    for position, layer_index in enumerate(layer_indices):
+        behind, ahead = widths[layer_index]
+        if position:
+            cursor += direction * (behind + CONSTRUCT_W / 2)
+        x_of[layer_index] = cursor
+        cursor += direction * (CONSTRUCT_W / 2 + ahead + COLUMN_GAP)
+
+    # -- vertical ----------------------------------------------------------- #
+    for layer_index in layer_indices:
         column = by_layer[layer_index]
-        # Height of this column, so it can be centred vertically.
-        heights = []
-        for construct in column:
-            if construct.is_second_order:
-                block = max(len(construct.dimensions), 1) * (DIMENSION_H + NODE_GAP)
-                if show_items:
-                    block = sum(
-                        max(len(d.items), 1) * (ITEM_H + ITEM_GAP) + NODE_GAP
-                        for d in construct.dimensions) or block
-                heights.append(max(block, CONSTRUCT_H))
-            else:
-                block = (len(construct.items) * (ITEM_H + ITEM_GAP)
-                         if show_items else CONSTRUCT_H)
-                heights.append(max(block, CONSTRUCT_H))
-        total = sum(heights) + NODE_GAP * max(len(column) - 1, 0)
-        cursor = -total / 2.0
+        side = side_for(layer_index)
+        blocks = [_block_height(c, side) for c in column]
+        total = sum(blocks) + NODE_GAP * max(len(column) - 1, 0)
+        top = -total / 2.0
 
-        for construct, block_height in zip(column, heights):
-            x = direction * layer_index * LAYER_GAP
-            y = cursor + block_height / 2.0
-            cursor += block_height + NODE_GAP
-            label = construct.label.get(lang) or construct.name
+        for construct, block_height in zip(column, blocks):
+            x = x_of[layer_index]
+            y = top + block_height / 2.0
+            top += block_height + NODE_GAP
             nodes[construct.id] = _Node(
-                key=construct.id, label=label, kind="construct",
-                role=construct.role, layer=layer_index, x=x, y=y)
+                key=construct.id,
+                label=construct.label.get(lang) or construct.name,
+                kind="construct", role=construct.role,
+                layer=layer_index, x=x, y=y)
 
             if construct.is_second_order:
-                dims = construct.dimensions
-                span = len(dims) * (DIMENSION_H + NODE_GAP)
-                dim_cursor = y - span / 2.0 + DIMENSION_H / 2.0
-                for dimension in dims:
-                    dim_x = x + direction * (LAYER_GAP * 0.52)
-                    dim_label = dimension.label.get(lang) or dimension.name
-                    nodes[dimension.id] = _Node(
-                        key=dimension.id, label=dim_label, kind="dimension",
-                        layer=layer_index, x=dim_x, y=dim_cursor,
-                        w=DIMENSION_W, h=DIMENSION_H)
-                    edges.append(_Edge(construct.id, dimension.id,
-                                       f"{dimension.second_order_loading:.2f}",
-                                       kind="loading"))
-                    if show_items:
-                        _place_items(nodes, edges, dimension.items,
-                                     dim_x + direction * (LAYER_GAP * 0.42),
-                                     dim_cursor, dimension.id)
-                    dim_cursor += DIMENSION_H + NODE_GAP
+                _place_dimensions(nodes, edges, construct, x, y, direction,
+                                  side, show_items, lang)
             elif show_items:
-                _place_items(nodes, edges, construct.items,
-                             x + direction * (LAYER_GAP * 0.5), y, construct.id)
+                _place_item_group(nodes, edges, construct.items, construct.id,
+                                  x, y, CONSTRUCT_W, CONSTRUCT_H, direction,
+                                  side)
 
     for path in spec.paths:
         if path.source in nodes and path.target in nodes:
@@ -189,14 +216,103 @@ def build_layout(spec: ModelSpec, *, show_items: bool,
                                strength=abs(interaction.resolved_coefficient())))
 
     if nodes:
-        xs = [n.rect for n in nodes.values()]
-        bounds = xs[0]
-        for r in xs[1:]:
-            bounds = bounds.united(r)
+        bounds = None
+        for node in nodes.values():
+            bounds = node.rect if bounds is None else bounds.united(node.rect)
         bounds = bounds.adjusted(-60, -60, 60, 60)
     else:
         bounds = QRectF(-200, -120, 400, 240)
     return nodes, edges, bounds
+
+
+def _block_height(construct: Construct, side: str) -> float:
+    """Vertical room one construct needs, indicators included."""
+    item_run = ITEM_H + ITEM_GAP
+    if construct.is_second_order:
+        dims = construct.dimensions or [None]
+        if side in ("behind", "ahead"):
+            per = [max(len(d.items) * item_run if d else 0.0,
+                       DIMENSION_H + 14) for d in dims]
+        else:
+            per = [DIMENSION_H + 14 + (STACK_GAP + item_run
+                                       if side == "stacked" and d and d.items
+                                       else 0.0) for d in dims]
+        return max(sum(per) + DIM_V_GAP * (len(per) - 1), CONSTRUCT_H)
+    if side in ("behind", "ahead"):
+        return max(len(construct.items) * item_run, CONSTRUCT_H)
+    if side == "stacked" and construct.items:
+        return CONSTRUCT_H + 2 * (STACK_GAP + ITEM_H)
+    return CONSTRUCT_H
+
+
+def _place_dimensions(nodes, edges, construct: Construct, x: float, y: float,
+                      direction: float, side: str, show_items: bool,
+                      lang: str) -> None:
+    dims = construct.dimensions
+    if not dims:
+        return
+    dim_x = x - direction * (CONSTRUCT_W / 2 + DIM_GAP + DIMENSION_W / 2)
+    item_run = ITEM_H + ITEM_GAP
+    if show_items and side in ("behind", "ahead"):
+        heights = [max(len(d.items) * item_run, DIMENSION_H + 14) for d in dims]
+    elif show_items and side == "stacked":
+        heights = [DIMENSION_H + 14 + (STACK_GAP + item_run if d.items else 0)
+                   for d in dims]
+    else:
+        heights = [DIMENSION_H + 14 for d in dims]
+    total = sum(heights) + DIM_V_GAP * (len(dims) - 1)
+    top = y - total / 2.0
+    for dimension, height in zip(dims, heights):
+        dim_y = top + height / 2.0
+        top += height + DIM_V_GAP
+        nodes[dimension.id] = _Node(
+            key=dimension.id,
+            label=dimension.label.get(lang) or dimension.name,
+            kind="dimension", x=dim_x, y=dim_y,
+            w=DIMENSION_W, h=DIMENSION_H)
+        edges.append(_Edge(construct.id, dimension.id,
+                           f"{dimension.second_order_loading:.2f}",
+                           kind="loading"))
+        if show_items:
+            _place_item_group(nodes, edges, dimension.items, dimension.id,
+                              dim_x, dim_y, DIMENSION_W, DIMENSION_H,
+                              direction, side)
+
+
+def _place_item_group(nodes, edges, items, parent_key: str, x: float, y: float,
+                      parent_w: float, parent_h: float, direction: float,
+                      side: str) -> None:
+    """Indicators in a column beside the factor, or split above and below it."""
+    if not items:
+        return
+    if side == "behind":
+        _place_items(nodes, edges, items,
+                     x - direction * (parent_w / 2 + ITEM_LINK_GAP + ITEM_W / 2),
+                     y, parent_key)
+    elif side == "ahead":
+        _place_items(nodes, edges, items,
+                     x + direction * (parent_w / 2 + ITEM_LINK_GAP + ITEM_W / 2),
+                     y, parent_key)
+    else:
+        half = (len(items) + 1) // 2
+        _place_items_row(nodes, edges, items[:half], x,
+                         y - parent_h / 2 - STACK_GAP - ITEM_H / 2, parent_key)
+        _place_items_row(nodes, edges, items[half:], x,
+                         y + parent_h / 2 + STACK_GAP + ITEM_H / 2, parent_key)
+
+
+def _place_items_row(nodes, edges, items, centre_x: float, y: float,
+                     parent_key: str) -> None:
+    if not items:
+        return
+    span = len(items) * (ITEM_W + ITEM_GAP)
+    cursor = centre_x - span / 2.0 + ITEM_W / 2.0
+    for item in items:
+        nodes[item.id] = _Node(key=item.id, label=item.name, kind="item",
+                               x=cursor, y=y, w=ITEM_W, h=ITEM_H)
+        edges.append(_Edge(parent_key, item.id, f"{item.loading:.2f}",
+                           kind="loading"))
+        cursor += ITEM_W + ITEM_GAP
 
 
 def _place_items(nodes: Dict[str, _Node], edges: List[_Edge], items,

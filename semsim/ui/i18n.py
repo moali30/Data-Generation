@@ -577,6 +577,84 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "ex.second_order": ("نموذج هرمي من الدرجة الثانية", "Second-order model"),
     "ex.moderation": ("نموذج تعديل (تفاعل)", "Moderation model"),
     "ex.full": ("نموذج كامل معقّد", "Full complex model"),
+
+    # ---- stage 2: complex realities (appended) ------------------------ #
+    "x.auto_enable": ("تشغيل التوليد التلقائي للتحميلات المتقاطعة",
+                      "Enable automatic cross-loading generation"),
+    "x.magnitude_range.hint": (
+        "يُسحب الحجم المطلق لكل تحميل متقاطع عشوائيًا من هذا المدى؛ "
+        "والحد الأدنى لا يتجاوز الحد الأعلى أبدًا.",
+        "The absolute magnitude of each generated cross-loading is drawn at "
+        "random from this range; the low bound can never exceed the high one."),
+    "x.self_loading": (
+        "لا معنى لتحميل السؤال على عامله الأصلي (Home Factor)؛ اختر عاملًا آخر.",
+        "A cross-loading onto the item's own home factor is meaningless; "
+        "choose a different factor."),
+    "x.same_item": (
+        "لا يصح ربط خطأ السؤال بخطأ نفسه؛ اختر سؤالًا مختلفًا.",
+        "An item cannot have a correlated error with itself; choose a "
+        "different item."),
+    "x.reason.hint": (
+        "مبرّر نظري موجز يُذكر في التقرير، مثل تشابه صياغة السؤالين "
+        "أو ورودهما في قسم واحد من الاستبانة.",
+        "A short theoretical justification for the write-up: the two items are "
+        "worded alike, or sit in the same block of the questionnaire."),
+    "x.cross_loadings.empty": (
+        "لا توجد تحميلات متقاطعة؛ نموذج القياس نظيف تمامًا",
+        "No cross-loadings: the measurement model is perfectly clean"),
+    "x.error_cov.empty": ("لا يوجد تغاير بين أخطاء القياس بعد",
+                         "No correlated measurement errors yet"),
+    "x.needs_items": (
+        "أضف المتغيرات الكامنة وأسئلتها في المرحلة الأولى قبل إضافة التعقيدات",
+        "Add constructs and their items in stage 1 before adding "
+        "complications here"),
+    "x.cmb_enable": ("تشغيل عامل طريقة القياس المشترك",
+                     "Enable the common method factor"),
+    "x.cmb_scope": ("نطاق عامل الطريقة", "Scope of the method factor"),
+    "x.cmb_subset": ("أسئلة محددة فقط", "Selected items only"),
+    "x.method_loadings": ("تشبعات عامل الطريقة", "Method-factor loadings"),
+    "x.summary": ("حصيلة التعقيدات المضافة", "Complexity added to the model"),
+    "x.df_cost": (
+        "كل تعقيد تضيفه يُقدر كمعلمة إضافية، فيستهلك درجة حرية "
+        "(Degree of Freedom) من ميزانية النموذج؛ ودرجات الحرية السالبة "
+        "تعني نموذجًا غير مُعيَن.",
+        "Every complication you add is one more estimated parameter, so it "
+        "spends a degree of freedom from the model's budget; negative degrees "
+        "of freedom mean an unidentified model."),
+
+    # ---- stage 3 additions: distribution & generation engine ---------- #
+    "d.clamp_feasible": (
+        "تقييد الالتواء والتفلطح داخل المنطقة القابلة للتحقيق (Feasible Region)",
+        "Clamp skewness and kurtosis to the feasible region"),
+    "d.threshold_preview": ("معاينة العتبات ونسب الفئات",
+                            "Threshold and category preview"),
+    "d.apply_all_items": ("تطبيق على كل أسئلة النموذج", "Apply to every item"),
+    "d.apply_to_construct": ("تطبيق على المتغير الكامن المحدَّد",
+                             "Apply to the selected latent variable"),
+    "d.thresholds.unavailable": (
+        "محرّك العتبات (Thresholds Engine) غير متاح في هذه النسخة، لذا تُعرض "
+        "نسب متساوية للفئات كتقدير مؤقت فقط.",
+        "The thresholds engine is unavailable in this build, so equal category "
+        "proportions are shown as a placeholder only."),
+    "d.custom_style.hint": (
+        "النمط المخصّص لا يحمل شكلًا بذاته؛ تُحدَّد نسب الفئات أو نقاط القطع "
+        "لكل سؤال على حدة، وتُعرض هنا نسب متساوية.",
+        "The custom style carries no shape of its own: set the proportions or "
+        "thresholds item by item. Equal proportions are shown here."),
+    "d.reproducibility": ("إمكانية التكرار", "Reproducibility"),
+    "d.new_seed": ("بذرة جديدة", "New seed"),
+    "d.engine.resolved": ("المحرّك الذي سيعمل فعليًا", "Engine that will run"),
+    "d.engine.forced_scores": (
+        "وجود تفاعل بين متغيّرين كامنين (Latent Interaction) يفرض التوليد من "
+        "درجات المتغيرات الكامنة، لأن حاصل ضرب متغيّرين كامنين لا يمكن تمثيله "
+        "في مصفوفة التغاير.",
+        "A latent interaction forces generation from latent scores: the product "
+        "of two latent variables cannot be represented in a covariance matrix."),
+    "d.engine.auto_resolved": (
+        "الاختيار التلقائي استقرّ على التوليد من مصفوفة التغاير، لأن النموذج "
+        "لا يتضمّن تفاعلًا بين متغيّرين كامنين.",
+        "The automatic choice settles on the covariance matrix, because the "
+        "model has no latent interaction."),
 }
 
 

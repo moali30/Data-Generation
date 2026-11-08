@@ -426,8 +426,8 @@ def alpha_confidence_interval(alpha: float, n: int, k: int,
 
     Examples
     --------
-    ``alpha = 0.80``, ``n = 300``, ``k = 4`` gives roughly
-    ``(0.766, 0.830)``.
+    ``alpha = 0.80``, ``n = 300``, ``k = 4`` gives
+    ``(0.758, 0.833)`` -- wider below the point estimate than above it.
 
     References
     ----------
@@ -892,3 +892,574 @@ def htmt_matrix(data: pd.DataFrame, factor_items: Mapping[str, Sequence[str]],
             hetero = float(np.mean(values[np.ix_(rows_a, rows_b)]))
             out[a, b] = out[b, a] = hetero / float(np.sqrt(mono))
     return pd.DataFrame(out, index=keys, columns=keys)
+
+
+def _corrected_item_total(S: np.ndarray, i: int,
+                          rows: Sequence[int]) -> float:
+    """Correlation of item ``i`` with the sum of the other items in ``rows``."""
+    others = [j for j in rows if j != i]
+    if not others:
+        return float("nan")
+    covariance = float(S[i, others].sum())
+    rest_variance = float(S[np.ix_(others, others)].sum())
+    own_variance = float(S[i, i])
+    if rest_variance <= 1e-12 or own_variance <= 1e-12:
+        return float("nan")
+    return covariance / float(np.sqrt(own_variance * rest_variance))
+
+
+def _factor_correlation(R: np.ndarray, rows_a: Sequence[int],
+                        rows_b: Sequence[int], lam_a: np.ndarray,
+                        lam_b: np.ndarray) -> float:
+    """Least-squares estimate of the correlation between two factors.
+
+    For a congeneric model ``R[a, b] = lambda_a lambda_b phi``, so the value
+    of ``phi`` minimising ``sum (R_ab - lambda_a lambda_b phi)^2`` over the
+    between-factor block is ``sum(lambda_a lambda_b R_ab) / sum((lambda_a
+    lambda_b)^2)``.  Disattenuating this way, rather than correlating
+    unit-weighted scale scores, keeps the factor correlations on the latent
+    metric that the Fornell-Larcker comparison assumes.
+    """
+    outer = np.outer(lam_a, lam_b)
+    block = R[np.ix_(rows_a, rows_b)]
+    denominator = float((outer ** 2).sum())
+    if denominator <= 1e-12:
+        return float("nan")
+    return float(np.clip(float((outer * block).sum()) / denominator,
+                         -1.0, 1.0))
+
+
+def _structure_coefficient(S: np.ndarray, i: int,
+                           rows: Sequence[int]) -> float:
+    """Correlation of item ``i`` with the summed score of ``rows``.
+
+    The item itself is excluded from the sum whenever it belongs to ``rows``,
+    so a home-factor coefficient is the corrected one and is therefore
+    directly comparable with the foreign-factor coefficients beside it.
+    """
+    return _corrected_item_total(S, i, rows)
+
+
+def _resolve_factor_items(
+    spec: ModelSpec, columns: Sequence[str],
+) -> Tuple[List[Tuple[str, str, List[str]]],
+           List[Tuple[str, str, List[str]]],
+           List[str]]:
+    """Map the spec's factors onto the columns actually present in the data.
+
+    Returns
+    -------
+    (primary, second_order, missing)
+        ``primary`` holds ``(factor_id, factor_name, column_names)`` for every
+        factor items attach to directly -- the construct for a first-order
+        construct, each dimension for a second-order one.  ``second_order``
+        holds the same triples for second-order constructs taken as whole
+        scales.  ``missing`` lists item names the data does not carry.
+    """
+    available = {str(c) for c in columns}
+    missing: List[str] = []
+
+    def column_for(item) -> Optional[str]:
+        if item.name and str(item.name) in available:
+            return str(item.name)
+        if str(item.id) in available:
+            return str(item.id)
+        missing.append(str(item.name or item.id))
+        return None
+
+    primary: List[Tuple[str, str, List[str]]] = []
+    second_order: List[Tuple[str, str, List[str]]] = []
+    for construct in spec.constructs:
+        if construct.is_second_order:
+            whole: List[str] = []
+            for dimension in construct.dimensions:
+                cols = [c for c in (column_for(it) for it in dimension.items)
+                        if c is not None]
+                whole.extend(cols)
+                if cols:
+                    primary.append((dimension.id,
+                                    spec.factor_label(dimension.id, "en"),
+                                    cols))
+            if whole:
+                second_order.append((construct.id,
+                                     spec.factor_label(construct.id, "en"),
+                                     whole))
+        else:
+            cols = [c for c in (column_for(it) for it in construct.items)
+                    if c is not None]
+            if cols:
+                primary.append((construct.id,
+                                spec.factor_label(construct.id, "en"),
+                                cols))
+    return primary, second_order, missing
+
+
+def _factor_aliases(spec: ModelSpec, factor_id: str,
+                    factor_name: str) -> set:
+    """Every label an estimation table might use for one factor.
+
+    Estimators label their ``loadings`` rows with whatever they find most
+    readable -- the factor id, the short ``name`` from the spec, or the
+    bilingual display label -- so all of them are accepted.
+    """
+    aliases = {str(factor_id), str(factor_name)}
+    construct = spec.construct(factor_id)
+    dimension = spec.dimension(factor_id)
+    for owner in (construct, dimension):
+        if owner is not None and getattr(owner, "name", ""):
+            aliases.add(str(owner.name))
+    for lang in ("en", "ar"):
+        label = spec.factor_label(factor_id, lang)
+        if label:
+            aliases.add(str(label))
+    return {alias for alias in aliases if alias}
+
+
+def _loadings_from_estimation(
+    estimation: object, factor_id: str, factor_name: str,
+    columns: Sequence[str], spec: ModelSpec,
+) -> Optional[np.ndarray]:
+    """Pull standardised loadings for one factor out of an estimation result.
+
+    The estimator module is never imported: the argument is duck-typed.  It
+    must expose a ``loadings`` table with the columns ``item``, ``factor`` and
+    ``std``; ``item`` may carry item names or ids and ``factor`` factor names
+    or ids.  ``None`` is returned whenever the table is absent, malformed, or
+    does not cover every item of this factor, which makes the caller fall
+    back on principal axis factoring for that factor alone.
+    """
+    table = getattr(estimation, "loadings", None)
+    if table is None:
+        return None
+    try:
+        frame = table if isinstance(table, pd.DataFrame) else pd.DataFrame(table)
+    except Exception:
+        return None
+    if not {"item", "factor", "std"}.issubset(set(map(str, frame.columns))):
+        return None
+
+    wanted_factor = _factor_aliases(spec, factor_id, factor_name)
+    name_to_id = {str(it.name): str(it.id) for it in spec.all_items()
+                  if it.name}
+    try:
+        subset = frame[frame["factor"].astype(str).isin(wanted_factor)]
+    except Exception:
+        return None
+    if subset.empty:
+        return None
+
+    by_key: Dict[str, float] = {}
+    for item_key, value in zip(subset["item"].astype(str),
+                               subset["std"]):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(number):
+            by_key[item_key] = number
+
+    out: List[float] = []
+    for column in columns:
+        if column in by_key:
+            out.append(by_key[column])
+        elif name_to_id.get(column, "") in by_key:
+            out.append(by_key[name_to_id[column]])
+        else:
+            return None
+    return np.clip(np.asarray(out, dtype=float),
+                   -_MAX_ABS_LOADING, _MAX_ABS_LOADING)
+
+
+def analyse(data: pd.DataFrame, spec: ModelSpec,
+            estimation: Optional["EstimationResult"] = None,
+            *, use_polychoric: bool = False,
+            htmt_threshold: float = 0.85) -> ValidityReport:
+    """Full reliability and construct-validity report for a generated dataset.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Observed items in columns, cases in rows.  Columns are matched to the
+        spec's items by ``Item.name`` first and ``Item.id`` second; rows with
+        a missing value on any analysed item are deleted listwise and the fact
+        is recorded in ``flags``.
+    spec : ModelSpec
+        The model whose factors define which items belong together.  Items
+        attach to the construct for a first-order construct and to each
+        dimension for a second-order one; a second-order construct also gets
+        one extra :class:`FactorReliability` row covering all of its items,
+        because that is the total-scale reliability researchers quote.  Those
+        whole-construct rows are excluded from the discriminant-validity
+        blocks, whose item sets must not overlap.
+    estimation : EstimationResult, optional
+        A fitted model.  When given, its ``loadings`` table (columns ``item``,
+        ``factor``, ``std``) supplies the standardised loadings, which is
+        preferable because they come from the full model.  Duck-typed: the
+        estimator module is never imported, and a table that does not cover a
+        factor's items simply sends that factor back to the fallback.
+    use_polychoric : bool, default False
+        Estimate the item correlation matrix with
+        :func:`semsim.analysis.polychoric.polychoric_matrix` instead of
+        Pearson's ``r``.  Alpha then becomes the ordinal alpha of Zumbo,
+        Gadermann and Zeisser (2007), and every loading-based coefficient is
+        computed on the disattenuated matrix.
+    htmt_threshold : float, default 0.85
+        The HTMT value above which a pair of factors is flagged.
+
+    Returns
+    -------
+    ValidityReport
+        Per-factor reliability, the factor correlation matrix, the
+        Fornell-Larcker and HTMT tables with their verdicts, a cross-loading
+        table and a list of bilingual flags.
+
+    Raises
+    ------
+    semsim.core.errors.SpecificationError
+        If the data cannot be read as a table, the spec names no factor whose
+        items are present in the data, or fewer than two complete cases
+        remain.
+
+    Notes
+    -----
+    Everything is computed from one covariance matrix and one correlation
+    matrix, so the cost is a single pass over the data plus ``O(p^2)`` work
+    per factor; a 500 x 60 dataset is reported in a few milliseconds unless
+    ``use_polychoric`` is set, which adds one bounded optimisation per item
+    pair.
+
+    Single-item factors are reported with ``lambda = 1``, ``AVE = 1`` and
+    ``alpha = nan`` -- there is no information in one indicator with which to
+    separate common from unique variance -- and are flagged.
+
+    References
+    ----------
+    Cronbach, L. J. (1951). Coefficient alpha and the internal structure of
+        tests. *Psychometrika*, 16(3), 297-334.
+    Fornell, C., & Larcker, D. F. (1981). Evaluating structural equation
+        models with unobservable variables and measurement error. *Journal of
+        Marketing Research*, 18(1), 39-50.
+    Henseler, J., Ringle, C. M., & Sarstedt, M. (2015). A new criterion for
+        assessing discriminant validity in variance-based structural equation
+        modeling. *Journal of the Academy of Marketing Science*, 43(1),
+        115-135.
+    Hair, J. F., Hult, G. T. M., Ringle, C. M., & Sarstedt, M. (2017). *A
+        Primer on Partial Least Squares Structural Equation Modeling* (2nd
+        ed.). Sage.
+    """
+    if isinstance(data, pd.DataFrame):
+        frame = data
+    else:
+        try:
+            frame = pd.DataFrame(data)
+        except Exception as exc:
+            raise SpecificationError(
+                "The data could not be read as a table of items by cases.",
+                "لم يتمكّن البرنامج من قراءة البيانات كجدول من البنود "
+                "والحالات.",
+                detail=str(exc),
+            ) from exc
+    frame = frame.copy()
+    frame.columns = [str(c) for c in frame.columns]
+
+    flags: List[str] = []
+    primary, second_order, missing = _resolve_factor_items(
+        spec, list(frame.columns))
+    if missing:
+        flags.append(_bilingual(
+            f"{len(missing)} item(s) in the model are absent from the data "
+            f"and were skipped: {', '.join(missing[:8])}.",
+            f"عدد {len(missing)} من بنود النموذج غير موجودة في البيانات وقد "
+            f"تم تجاهلها: {'، '.join(missing[:8])}."))
+    if not primary:
+        raise SpecificationError(
+            "None of the model's items could be found among the data "
+            "columns, so no reliability can be computed.",
+            "لم يُعثر على أي من بنود النموذج بين أعمدة البيانات، ولذلك يتعذّر "
+            "حساب الثبات.",
+            n_columns=int(frame.shape[1]),
+        )
+
+    used_columns: List[str] = []
+    for _, _, columns in primary:
+        for column in columns:
+            if column not in used_columns:
+                used_columns.append(column)
+    numeric = frame[used_columns].apply(pd.to_numeric, errors="coerce")
+    complete_mask = np.isfinite(numeric.to_numpy(dtype=float)).all(axis=1)
+    n_dropped = int(numeric.shape[0] - complete_mask.sum())
+    numeric = numeric.loc[complete_mask]
+    n_cases = int(numeric.shape[0])
+    if n_cases < 2:
+        raise SpecificationError(
+            f"Only {n_cases} case(s) are complete on every analysed item, so "
+            f"no covariance matrix can be formed.",
+            f"لا توجد سوى {n_cases} حالة مكتملة في جميع البنود المُحلَّلة، "
+            f"ولذلك يتعذّر تكوين مصفوفة التغايُر.",
+            n_complete=n_cases,
+        )
+    if n_dropped:
+        flags.append(_bilingual(
+            f"Listwise deletion removed {n_dropped} case(s) with missing "
+            f"values; {n_cases} remain.",
+            f"أدّى الحذف بالقائمة إلى استبعاد {n_dropped} حالة تحتوي على قيم "
+            f"مفقودة، وبقيت {n_cases} حالة."))
+
+    index = {column: position for position, column in enumerate(used_columns)}
+    values = numeric.to_numpy(dtype=float)
+    covariance = np.cov(values, rowvar=False, ddof=1)
+    covariance = np.atleast_2d(covariance)
+    sd = np.sqrt(np.clip(np.diag(covariance), 1e-12, None))
+    pearson = covariance / np.outer(sd, sd)
+    np.fill_diagonal(pearson, 1.0)
+
+    if use_polychoric:
+        from semsim.analysis.polychoric import polychoric_matrix
+        correlation = polychoric_matrix(
+            numeric, repair_pd=True).to_numpy(dtype=float)
+        #: Ordinal alpha and the corrected item-total correlations are read off
+        #: the polychoric matrix, whose diagonal is one, so it doubles as the
+        #: "covariance" matrix for those two quantities.
+        alpha_source = correlation
+    else:
+        correlation = pearson
+        alpha_source = covariance
+
+    # ------------------------------------------------------------------ #
+    # Loadings, per factor
+    # ------------------------------------------------------------------ #
+    all_groups = list(primary) + list(second_order)
+    rows_of: Dict[str, List[int]] = {}
+    loadings_of: Dict[str, np.ndarray] = {}
+    for factor_id, factor_name, columns in all_groups:
+        rows = [index[column] for column in columns]
+        rows_of[factor_id] = rows
+        lam: Optional[np.ndarray] = None
+        if estimation is not None:
+            lam = _loadings_from_estimation(
+                estimation, factor_id, factor_name, columns, spec)
+        if lam is None:
+            block = correlation[np.ix_(rows, rows)]
+            lam = principal_axis_loadings(block)
+        loadings_of[factor_id] = np.asarray(lam, dtype=float)
+
+    # ------------------------------------------------------------------ #
+    # Per-factor reliability
+    # ------------------------------------------------------------------ #
+    per_factor: List[FactorReliability] = []
+    for factor_id, factor_name, columns in all_groups:
+        rows = rows_of[factor_id]
+        lam = loadings_of[factor_id]
+        k = len(rows)
+        block_r = correlation[np.ix_(rows, rows)]
+        block_alpha = alpha_source[np.ix_(rows, rows)]
+
+        if k >= 2:
+            alpha = alpha_from_matrix(block_alpha)
+            ci = alpha_confidence_interval(alpha, n_cases, k)
+            mean_r = _mean_offdiagonal(block_r)
+            omega = omega_total(lam, block_r)
+        else:
+            alpha = float("nan")
+            ci = (float("nan"), float("nan"))
+            mean_r = float("nan")
+            omega = 1.0
+            flags.append(_bilingual(
+                f"Factor '{factor_name or factor_id}' has a single item, so "
+                f"its reliability cannot be estimated from the data.",
+                f"العامل '{factor_name or factor_id}' يتكوّن من بند واحد، "
+                f"ولذلك يتعذّر تقدير ثباته من البيانات."))
+
+        cr = composite_reliability(lam)
+        ave = average_variance_extracted(lam)
+        item_total = {columns[position]:
+                      _corrected_item_total(block_alpha, position,
+                                            range(k))
+                      for position in range(k)}
+        dropped: Dict[str, float] = {}
+        for position, column in enumerate(columns):
+            keep = [other for other in range(k) if other != position]
+            if len(keep) >= 2:
+                dropped[column] = alpha_from_matrix(
+                    block_alpha[np.ix_(keep, keep)])
+            else:
+                dropped[column] = float("nan")
+
+        per_factor.append(FactorReliability(
+            factor_id=factor_id,
+            factor_name=factor_name,
+            n_items=k,
+            cronbach_alpha=alpha,
+            alpha_ci=ci,
+            composite_reliability=cr,
+            omega_total=omega,
+            ave=ave,
+            sqrt_ave=float(np.sqrt(max(ave, 0.0))),
+            mean_inter_item_r=mean_r,
+            item_total_correlations=item_total,
+            alpha_if_item_dropped=dropped,
+        ))
+
+        label = factor_name or factor_id
+        if k < 3:
+            flags.append(_bilingual(
+                f"Factor '{label}' is measured by {k} item(s); three are the "
+                f"conventional minimum for an identified factor.",
+                f"العامل '{label}' يُقاس بعدد {k} من البنود، والحد الأدنى "
+                f"المتعارف عليه لتحديد العامل هو ثلاثة بنود."))
+        if np.isfinite(alpha) and alpha < ALPHA_FLOOR:
+            flags.append(_bilingual(
+                f"Cronbach's alpha for '{label}' is {alpha:.3f}, below the "
+                f"conventional {ALPHA_FLOOR:.2f} floor.",
+                f"معامل ألفا لكرونباخ للعامل '{label}' يساوي {alpha:.3f}، "
+                f"وهو أقل من الحد المتعارف عليه ({ALPHA_FLOOR:.2f})."))
+        if cr < CR_FLOOR:
+            flags.append(_bilingual(
+                f"Composite reliability for '{label}' is {cr:.3f}, below the "
+                f"conventional {CR_FLOOR:.2f} floor.",
+                f"الثبات المركّب للعامل '{label}' يساوي {cr:.3f}، وهو أقل من "
+                f"الحد المتعارف عليه ({CR_FLOOR:.2f})."))
+        if ave < AVE_FLOOR:
+            flags.append(_bilingual(
+                f"AVE for '{label}' is {ave:.3f}: the residuals explain more "
+                f"of the items than the construct does.",
+                f"متوسط التباين المُستخلَص للعامل '{label}' يساوي {ave:.3f}؛ "
+                f"أي أن البواقي تفسّر من تباين البنود أكثر مما يفسّره "
+                f"المفهوم نفسه."))
+
+    # ------------------------------------------------------------------ #
+    # Discriminant validity, on the non-overlapping primary factors only
+    # ------------------------------------------------------------------ #
+    primary_ids = [factor_id for factor_id, _, _ in primary]
+    primary_labels = [factor_name or factor_id
+                      for factor_id, factor_name, _ in primary]
+    f = len(primary_ids)
+
+    phi = np.eye(f, dtype=float)
+    for a in range(f):
+        for b in range(a + 1, f):
+            value = _factor_correlation(
+                correlation, rows_of[primary_ids[a]], rows_of[primary_ids[b]],
+                loadings_of[primary_ids[a]], loadings_of[primary_ids[b]])
+            phi[a, b] = phi[b, a] = value
+    factor_correlations = pd.DataFrame(phi, index=primary_labels,
+                                       columns=primary_labels)
+
+    ave_by_primary = {entry.factor_id: entry for entry in per_factor
+                      if entry.factor_id in set(primary_ids)}
+    fl = phi.copy()
+    for a, factor_id in enumerate(primary_ids):
+        fl[a, a] = ave_by_primary[factor_id].sqrt_ave
+    fornell_larcker = pd.DataFrame(fl, index=primary_labels,
+                                   columns=primary_labels)
+
+    fl_passed = True
+    for a, factor_id in enumerate(primary_ids):
+        if f < 2:
+            break
+        others = [abs(phi[a, b]) for b in range(f) if b != a
+                  and np.isfinite(phi[a, b])]
+        if not others:
+            continue
+        largest = max(others)
+        if not (ave_by_primary[factor_id].sqrt_ave > largest):
+            fl_passed = False
+            partner = primary_labels[int(np.argmax(
+                [abs(phi[a, b]) if b != a and np.isfinite(phi[a, b]) else -1.0
+                 for b in range(f)]))]
+            flags.append(_bilingual(
+                f"Fornell-Larcker fails for '{primary_labels[a]}': "
+                f"sqrt(AVE) = {ave_by_primary[factor_id].sqrt_ave:.3f} does "
+                f"not exceed its correlation with '{partner}' "
+                f"({largest:.3f}).",
+                f"لم يتحقّق معيار فورنيل-لاركر للعامل '{primary_labels[a]}'؛ "
+                f"إذ إن الجذر التربيعي لمتوسط التباين المُستخلَص "
+                f"({ave_by_primary[factor_id].sqrt_ave:.3f}) لا يتجاوز "
+                f"ارتباطه بالعامل '{partner}' ({largest:.3f})."))
+
+    if f >= 2:
+        htmt = htmt_matrix(
+            numeric,
+            {primary_labels[a]: primary[a][2] for a in range(f)},
+            correlations=pd.DataFrame(correlation, index=used_columns,
+                                      columns=used_columns),
+        )
+        htmt_values = htmt.to_numpy(dtype=float)
+        offdiag = ~np.eye(f, dtype=bool)
+        finite = np.isfinite(htmt_values) & offdiag
+        htmt_passed = bool(
+            not np.any(htmt_values[finite] > float(htmt_threshold)))
+        for a in range(f):
+            for b in range(a + 1, f):
+                value = htmt_values[a, b]
+                if np.isfinite(value) and value > float(htmt_threshold):
+                    flags.append(_bilingual(
+                        f"HTMT between '{primary_labels[a]}' and "
+                        f"'{primary_labels[b]}' is {value:.3f}, above the "
+                        f"{float(htmt_threshold):.2f} threshold: the two "
+                        f"constructs are not empirically distinct.",
+                        f"قيمة مؤشّر HTMT بين '{primary_labels[a]}' و "
+                        f"'{primary_labels[b]}' تساوي {value:.3f}، وهي أعلى من "
+                        f"الحد الفاصل ({float(htmt_threshold):.2f})؛ أي أن "
+                        f"المفهومين غير متمايزين تجريبيًا."))
+    else:
+        htmt = pd.DataFrame(np.ones((f, f)), index=primary_labels,
+                            columns=primary_labels)
+        htmt_passed = True
+        flags.append(_bilingual(
+            "Discriminant validity needs at least two factors; HTMT and "
+            "Fornell-Larcker were not evaluated.",
+            "يتطلّب فحص الصدق التمييزي وجود عاملين على الأقل، ولذلك لم يتم "
+            "حساب مؤشّر HTMT ولا معيار فورنيل-لاركر."))
+
+    # ------------------------------------------------------------------ #
+    # Cross-loading table
+    # ------------------------------------------------------------------ #
+    cross_rows: List[Dict[str, object]] = []
+    for a, (factor_id, factor_name, columns) in enumerate(primary):
+        for position, column in enumerate(columns):
+            row: Dict[str, object] = {"item": column,
+                                      "home_factor": primary_labels[a]}
+            item_row = index[column]
+            for b, other_id in enumerate(primary_ids):
+                row[primary_labels[b]] = _structure_coefficient(
+                    alpha_source, item_row, rows_of[other_id])
+            home = row[primary_labels[a]]
+            foreign = [float(row[primary_labels[b]]) for b in range(f)
+                       if b != a and np.isfinite(float(row[primary_labels[b]]))]
+            largest = max((abs(v) for v in foreign), default=float("nan"))
+            row["home_correlation"] = home
+            row["max_cross_correlation"] = largest
+            flagged = bool(np.isfinite(largest) and np.isfinite(float(home))
+                           and largest > float(home) - CROSS_LOADING_MARGIN)
+            row["flagged"] = flagged
+            if flagged:
+                flags.append(_bilingual(
+                    f"Item '{column}' correlates with a factor other than "
+                    f"'{primary_labels[a]}' almost as strongly as with its "
+                    f"own ({largest:.3f} against {float(home):.3f}).",
+                    f"البند '{column}' يرتبط بعامل آخر غير "
+                    f"'{primary_labels[a]}' بقوة تكاد تماثل ارتباطه بعامله "
+                    f"الأصلي ({largest:.3f} مقابل {float(home):.3f})."))
+            cross_rows.append(row)
+    cross_loading_table = pd.DataFrame(cross_rows)
+    if not cross_loading_table.empty:
+        ordered = (["item", "home_factor"] + primary_labels
+                   + ["home_correlation", "max_cross_correlation", "flagged"])
+        seen: List[str] = []
+        for name in ordered:
+            if name in cross_loading_table.columns and name not in seen:
+                seen.append(name)
+        cross_loading_table = cross_loading_table[seen]
+
+    return ValidityReport(
+        per_factor=per_factor,
+        factor_correlations=factor_correlations,
+        fornell_larcker=fornell_larcker,
+        fornell_larcker_passed=bool(fl_passed),
+        htmt=htmt,
+        htmt_passed=bool(htmt_passed),
+        htmt_threshold=float(htmt_threshold),
+        cross_loading_table=cross_loading_table,
+        flags=flags,
+    )
