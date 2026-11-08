@@ -539,6 +539,7 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "v.where": ("الموضع", "Location"),
     "v.blocked": ("لا يمكن التشغيل قبل معالجة الأخطاء",
                   "Fix the errors before running"),
+    "v.missing_ref": ("⚠ مرجع محذوف", "⚠ deleted reference"),
 
     # ---- dialogs ------------------------------------------------------ #
     "dlg.unsaved.title": ("تغييرات غير محفوظة", "Unsaved changes"),

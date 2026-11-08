@@ -680,3 +680,478 @@ def _band(value: float, direction: Optional[str], good: Optional[float],
     if value <= acceptable:
         return "borderline"
     return "fail"
+
+
+# --------------------------------------------------------------------------- #
+# The result object
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class FitIndices:
+    """Every global fit index a reviewer is likely to ask for.
+
+    Attributes
+    ----------
+    chi_square : float
+        ``(N - 1) F_ML``, the likelihood-ratio test of exact fit.
+    df : int
+        ``p(p + 1)/2 - n_free``.
+    p_value : float
+        ``P(chi2_df > chi_square)``; ``nan`` when ``df == 0``.
+    chi_square_df_ratio : float
+        ``chi_square / df``; ``nan`` when ``df == 0``.
+    rmsea, rmsea_ci_lower, rmsea_ci_upper : float
+        Root mean square error of approximation and its 90% interval.
+    rmsea_pclose : float
+        ``P`` value for the test of close fit, ``H0: RMSEA <= .05``.
+    cfi, tli, nfi, ifi, rfi : float
+        Incremental indices against the independence baseline, truncated to
+        ``[0, 1]``.
+    srmr : float
+        Standardised root mean square residual over the lower triangle
+        *including* the diagonal.
+    gfi, agfi : float
+        Joreskog-Sorbom goodness-of-fit index and its parsimony adjustment.
+    aic, bic, sabic : float
+        Information criteria in the ``chi2 + penalty`` metric, so only
+        differences between models fitted to the *same* data are meaningful.
+    baseline_chi_square : float
+        Chi-square of the independence model.
+    baseline_df : int
+        ``p(p - 1)/2``.
+    n : int
+        Sample size used for the scaling.
+    n_free : int
+        Number of free parameters.
+    fmin : float
+        The underlying ML discrepancy ``F_ML`` (added convenience; not part of
+        the published contract).
+    n_items : int
+        Number of observed variables ``p`` (added convenience).
+
+    References
+    ----------
+    Hu, L., & Bentler, P. M. (1999). Cutoff criteria for fit indexes in
+        covariance structure analysis. *Structural Equation Modeling*, 6(1),
+        1-55.
+    """
+
+    chi_square: float
+    df: int
+    p_value: float
+    chi_square_df_ratio: float
+    rmsea: float
+    rmsea_ci_lower: float
+    rmsea_ci_upper: float
+    rmsea_pclose: float
+    cfi: float
+    tli: float
+    nfi: float
+    ifi: float
+    rfi: float
+    srmr: float
+    gfi: float
+    agfi: float
+    aic: float
+    bic: float
+    sabic: float
+    baseline_chi_square: float
+    baseline_df: int
+    n: int
+    n_free: int
+    # ---- additions (appended, so positional construction stays valid) ----- #
+    fmin: float = float("nan")
+    n_items: int = 0
+
+    # ------------------------------------------------------------------ #
+
+    def verdict(self) -> FitLevel:
+        """Map the solution onto a :class:`~semsim.core.spec.FitLevel` band.
+
+        Uses the Hu & Bentler (1999) joint criteria, applied in order:
+
+        =============  ==========================================
+        ``EXCELLENT``  RMSEA <= .03 and CFI >= .98 and SRMR <= .04
+        ``GOOD``       RMSEA <= .06 and CFI >= .95 and SRMR <= .08
+        ``ACCEPTABLE`` RMSEA <= .08 and CFI >= .90
+        ``MARGINAL``   RMSEA <= .10
+        ``POOR``       otherwise
+        =============  ==========================================
+
+        Returns
+        -------
+        FitLevel
+            The band the solution falls in.  A non-finite RMSEA (which only
+            happens for a degenerate ``df <= 0`` solution) falls through to
+            ``POOR``.
+
+        References
+        ----------
+        Hu, L., & Bentler, P. M. (1999). Cutoff criteria for fit indexes in
+            covariance structure analysis. *Structural Equation Modeling*,
+            6(1), 1-55.
+        """
+        rmsea = float(self.rmsea)
+        cfi = float(self.cfi)
+        srmr = float(self.srmr)
+        if rmsea <= 0.03 and cfi >= 0.98 and srmr <= 0.04:
+            return FitLevel.EXCELLENT
+        if rmsea <= 0.06 and cfi >= 0.95 and srmr <= 0.08:
+            return FitLevel.GOOD
+        if rmsea <= 0.08 and cfi >= 0.90:
+            return FitLevel.ACCEPTABLE
+        if rmsea <= 0.10:
+            return FitLevel.MARGINAL
+        return FitLevel.POOR
+
+    def to_table(self, lang: str = "en") -> pd.DataFrame:
+        """Render the indices as the results table the UI and report show.
+
+        Parameters
+        ----------
+        lang : {"en", "ar"}, default "en"
+            Language of the ``label`` and ``verdict`` columns.  Both
+            interpretation columns are always present, so a bilingual report
+            needs only one call.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per index, with the columns
+
+            ``index``
+                Stable machine code, e.g. ``"rmsea"``.
+            ``label``
+                Human-readable name in ``lang``.
+            ``value``
+                The obtained value (``float``; ``df`` is carried as a float so
+                the column keeps one dtype).
+            ``threshold``
+                The conventional cutoff as it is usually printed.
+            ``verdict``
+                ``pass`` / ``borderline`` / ``fail`` / ``descriptive``,
+                localised.
+            ``interpretation_en``, ``interpretation_ar``
+                One-line methodological reading of the obtained value.
+
+        References
+        ----------
+        Hu, L., & Bentler, P. M. (1999). Cutoff criteria for fit indexes in
+            covariance structure analysis. *Structural Equation Modeling*,
+            6(1), 1-55.
+        Kline, R. B. (2016). *Principles and Practice of Structural Equation
+            Modeling* (4th ed.). Guilford Press.
+        """
+        arabic = str(lang).lower().startswith("ar")
+        records: List[Dict[str, object]] = []
+        for code, label_en, label_ar, threshold, direction, good, ok in _ROWS:
+            value = float(getattr(self, code))
+            band = _band(value, direction, good, ok)
+            texts = _INTERPRETATION.get(code, {})
+            pair = texts.get(band) or texts.get("info") or ("", "")
+            records.append({
+                "index": code,
+                "label": label_ar if arabic else label_en,
+                "value": value,
+                "threshold": threshold,
+                "verdict": _VERDICT_WORDS[band][1 if arabic else 0],
+                "interpretation_en": pair[0],
+                "interpretation_ar": pair[1],
+            })
+        table = pd.DataFrame.from_records(records, columns=[
+            "index", "label", "value", "threshold", "verdict",
+            "interpretation_en", "interpretation_ar"])
+        return table
+
+
+# --------------------------------------------------------------------------- #
+# The main entry point
+# --------------------------------------------------------------------------- #
+
+
+def compute(sample_cov: np.ndarray, sigma_hat: np.ndarray, n: int,
+            n_free: int, *, n_items: Optional[int] = None) -> FitIndices:
+    """Score a fitted solution with the full battery of global fit indices.
+
+    Parameters
+    ----------
+    sample_cov : numpy.ndarray
+        ``(p, p)`` observed covariance (or correlation) matrix ``S``.
+    sigma_hat : numpy.ndarray
+        ``(p, p)`` model-implied covariance matrix ``Sigma(theta_hat)``.
+    n : int
+        Sample size.  ``chi2 = (N - 1) F_ML``, the Wishart scaling, which is
+        what lavaan and LISREL report.
+    n_free : int
+        Number of free parameters ``q``; ``df = p(p + 1)/2 - q``.
+    n_items : int, optional
+        Redundant statement of ``p`` for callers that carry it separately.
+        When given it must equal ``sample_cov.shape[0]``, otherwise the
+        degrees of freedom would silently disagree with the matrices.
+
+    Returns
+    -------
+    FitIndices
+        All indices, plus the baseline model and the inputs needed to
+        reproduce them.
+
+    Raises
+    ------
+    semsim.core.errors.SpecificationError
+        Non-conformable / non-finite matrices, ``N < 2``, a negative
+        ``n_free``, an ``n_items`` that contradicts the matrices, or a
+        negative ``df`` (more free parameters than moments, i.e. an
+        under-identified model).
+    semsim.core.errors.EstimationError
+        ``S`` or ``Sigma`` singular / not positive definite.
+
+    Notes
+    -----
+    ``df == 0`` (a just-identified model) is allowed: the chi-square is zero,
+    RMSEA is reported as ``0.0`` and the ratio, ``p`` value and PCLOSE are
+    ``nan``, because a saturated solution has no restrictions left to test.
+
+    References
+    ----------
+    Joreskog, K. G., & Sorbom, D. (1981). *LISREL V*. National Educational
+        Resources.
+    Browne, M. W., & Cudeck, R. (1993). Alternative ways of assessing model
+        fit. In K. A. Bollen & J. S. Long (Eds.), *Testing Structural Equation
+        Models* (pp. 136-162). Sage.
+    Bentler, P. M. (1990). Comparative fit indexes in structural models.
+        *Psychological Bulletin*, 107(2), 238-246.
+    Hu, L., & Bentler, P. M. (1999). Cutoff criteria for fit indexes in
+        covariance structure analysis. *Structural Equation Modeling*, 6(1),
+        1-55.
+    Sclove, S. L. (1987). Application of model-selection criteria to some
+        problems in multivariate analysis. *Psychometrika*, 52(3), 333-343.
+    """
+    S = _validate_matrix(sample_cov, "The observed covariance matrix",
+                         "مصفوفة التغايرات المشاهدة")
+    Sigma = _validate_matrix(sigma_hat, "The model-implied covariance matrix",
+                             "مصفوفة التغايرات المُقدَّرة من النموذج")
+    if S.shape != Sigma.shape:
+        raise SpecificationError(
+            f"The observed matrix is {S.shape} but the implied matrix is "
+            f"{Sigma.shape}; they must have the same number of items.",
+            f"مصفوفة التغايرات المشاهدة بالشكل {S.shape} بينما المصفوفة المُقدَّرة "
+            f"بالشكل {Sigma.shape}؛ يجب أن يتساوى عدد البنود في الاثنتين.",
+            observed=S.shape, implied=Sigma.shape,
+        )
+    n_int = _check_sample_size(n)
+    q = int(n_free)
+    if q < 0:
+        raise SpecificationError(
+            f"The number of free parameters cannot be negative; got {q}.",
+            f"لا يمكن أن يكون عدد المعالم الحرة سالبًا، والقيمة المُمرَّرة هي {q}.",
+            n_free=q,
+        )
+    p = int(S.shape[0])
+    if n_items is not None and int(n_items) != p:
+        raise SpecificationError(
+            f"n_items={int(n_items)} contradicts the {p}x{p} covariance "
+            "matrices, so the degrees of freedom would be wrong.",
+            f"القيمة n_items={int(n_items)} لا تتفق مع مصفوفات التغاير ذات الحجم "
+            f"{p}×{p}، ولذلك ستكون درجات الحرية خاطئة.",
+            n_items=int(n_items), p=p,
+        )
+
+    moments = p * (p + 1) // 2
+    df = moments - q
+    if df < 0:
+        raise SpecificationError(
+            f"The model has {q} free parameters but only {moments} observed "
+            f"moments, so the degrees of freedom are negative ({df}). Fix a "
+            "parameter or add items before asking for fit indices.",
+            f"النموذج يحتوي على {q} معلمة حرة مقابل {moments} عزمًا مشاهدًا فقط، "
+            f"ولذلك جاءت درجات الحرية سالبة ({df}). ثبِّت أحد المعالم أو أضف بنودًا "
+            "قبل طلب مؤشرات المطابقة.",
+            df=df, n_free=q, moments=moments,
+        )
+
+    # ---- chi-square ---------------------------------------------------- #
+    fmin = ml_discrepancy(S, Sigma)
+    chi_square = float((n_int - 1) * fmin)
+    if df == 0:
+        chi_square = _snap(chi_square)
+    nan = float("nan")
+    if df > 0:
+        p_value = float(_chi2_dist.sf(chi_square, df))
+        ratio = chi_square / float(df)
+    else:
+        p_value = nan
+        ratio = nan
+
+    # ---- RMSEA and its interval ---------------------------------------- #
+    if df > 0:
+        rmsea = math.sqrt(max(chi_square - df, 0.0) / (df * (n_int - 1)))
+        ci_lower, ci_upper = rmsea_confidence_interval(chi_square, df, n_int)
+        pclose = 1.0 - _ncx2_cdf(
+            chi_square, df, (n_int - 1) * df * CLOSE_FIT_RMSEA ** 2)
+    else:
+        rmsea = 0.0
+        ci_lower = ci_upper = 0.0
+        pclose = nan
+
+    # ---- independence baseline ----------------------------------------- #
+    baseline_chi_square, baseline_df = baseline_fit(S, n_int)
+    incremental_ok = baseline_df > 0 and baseline_chi_square > 0.0
+    noncentral = max(chi_square - df, 0.0)
+    if incremental_ok:
+        baseline_noncentral = max(baseline_chi_square - baseline_df, 0.0)
+        denominator = max(baseline_noncentral, noncentral, 0.0)
+        cfi = 1.0 if denominator <= 0.0 else 1.0 - noncentral / denominator
+        nfi = (baseline_chi_square - chi_square) / baseline_chi_square
+        ifi_denominator = baseline_chi_square - df
+        ifi = ((baseline_chi_square - chi_square) / ifi_denominator
+               if abs(ifi_denominator) > 0.0 else nan)
+        baseline_ratio = baseline_chi_square / float(baseline_df)
+        if df > 0 and abs(baseline_ratio - 1.0) > 1e-12:
+            tli = (baseline_ratio - ratio) / (baseline_ratio - 1.0)
+            rfi = 1.0 - ratio / baseline_ratio
+        else:
+            tli = nan
+            rfi = nan
+    else:
+        cfi = tli = nfi = ifi = rfi = nan
+
+    def _truncate(value: float) -> float:
+        return value if not math.isfinite(value) else float(min(max(value, 0.0), 1.0))
+
+    cfi, tli, nfi, ifi, rfi = (_truncate(v) for v in (cfi, tli, nfi, ifi, rfi))
+
+    # ---- SRMR ----------------------------------------------------------- #
+    variances = np.diag(S)
+    if np.any(variances <= 0.0):
+        bad = [int(i) for i in np.flatnonzero(variances <= 0.0)]
+        raise EstimationError(
+            f"Items at positions {bad} have zero or negative observed "
+            "variance, so standardised residuals are undefined.",
+            f"البنود في المواضع {bad} تباينها المشاهد صفر أو سالب، ولذلك لا يمكن "
+            "حساب البواقي المعيارية.",
+            positions=bad,
+        )
+    scale = np.sqrt(np.outer(variances, variances))
+    standardised_residuals = (S - Sigma) / scale
+    rows, cols = np.tril_indices(p)
+    srmr = math.sqrt(float(np.sum(standardised_residuals[rows, cols] ** 2))
+                     / float(moments))
+    srmr = 0.0 if srmr < math.sqrt(PERFECT_FIT_TOLERANCE) * 1e-3 else srmr
+
+    # ---- GFI / AGFI ----------------------------------------------------- #
+    chol = _cholesky(Sigma, "The model-implied covariance matrix",
+                     "مصفوفة التغايرات المُقدَّرة من النموذج")
+    m_matrix = _sla.cho_solve((chol, True), S)
+    residual = m_matrix - np.eye(p)
+    trace_residual = float(np.sum(residual * residual.T))
+    trace_m = float(np.sum(m_matrix * m_matrix.T))
+    gfi = 1.0 - trace_residual / trace_m if trace_m > 0.0 else nan
+    if math.isfinite(gfi) and abs(1.0 - gfi) < PERFECT_FIT_TOLERANCE:
+        gfi = 1.0
+    if df > 0 and math.isfinite(gfi):
+        agfi = 1.0 - (moments / float(df)) * (1.0 - gfi)
+    else:
+        agfi = nan
+
+    # ---- information criteria ------------------------------------------ #
+    aic = chi_square + 2.0 * q
+    bic = chi_square + q * math.log(n_int)
+    sabic = chi_square + q * math.log((n_int + 2.0) / 24.0)
+
+    return FitIndices(
+        chi_square=chi_square,
+        df=int(df),
+        p_value=p_value,
+        chi_square_df_ratio=ratio,
+        rmsea=float(rmsea),
+        rmsea_ci_lower=float(ci_lower),
+        rmsea_ci_upper=float(ci_upper),
+        rmsea_pclose=float(pclose),
+        cfi=float(cfi),
+        tli=float(tli),
+        nfi=float(nfi),
+        ifi=float(ifi),
+        rfi=float(rfi),
+        srmr=float(srmr),
+        gfi=float(gfi),
+        agfi=float(agfi),
+        aic=float(aic),
+        bic=float(bic),
+        sabic=float(sabic),
+        baseline_chi_square=float(baseline_chi_square),
+        baseline_df=int(baseline_df),
+        n=int(n_int),
+        n_free=q,
+        fmin=float(fmin),
+        n_items=p,
+    )
+
+
+def thresholds_table(lang: str = "en") -> pd.DataFrame:
+    """The conventional cutoff table, for printing beside the obtained values.
+
+    Parameters
+    ----------
+    lang : {"en", "ar"}, default "en"
+        Language of the ``label`` column.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns ``index``, ``label``, ``direction`` (``"higher"`` /
+        ``"lower"`` / ``""``), ``excellent``, ``good``, ``acceptable``,
+        ``printed_threshold`` and ``source``.
+
+    References
+    ----------
+    Hu, L., & Bentler, P. M. (1999). Cutoff criteria for fit indexes in
+        covariance structure analysis. *Structural Equation Modeling*, 6(1),
+        1-55.
+    Browne, M. W., & Cudeck, R. (1993). Alternative ways of assessing model
+        fit. In K. A. Bollen & J. S. Long (Eds.), *Testing Structural Equation
+        Models* (pp. 136-162). Sage.
+    Kline, R. B. (2016). *Principles and Practice of Structural Equation
+        Modeling* (4th ed.). Guilford Press.
+    """
+    arabic = str(lang).lower().startswith("ar")
+    excellent = {
+        "rmsea": 0.03, "rmsea_ci_upper": 0.05, "cfi": 0.98, "tli": 0.98,
+        "nfi": 0.98, "ifi": 0.98, "rfi": 0.98, "srmr": 0.04, "gfi": 0.97,
+        "agfi": 0.95, "chi_square_df_ratio": 2.0,
+    }
+    source = {
+        "rmsea": "Browne & Cudeck (1993); Hu & Bentler (1999)",
+        "rmsea_ci_upper": "Browne & Cudeck (1993)",
+        "rmsea_pclose": "Browne & Cudeck (1993)",
+        "cfi": "Bentler (1990); Hu & Bentler (1999)",
+        "tli": "Tucker & Lewis (1973); Hu & Bentler (1999)",
+        "nfi": "Bentler & Bonett (1980)",
+        "ifi": "Bollen (1989)",
+        "rfi": "Bollen (1986)",
+        "srmr": "Hu & Bentler (1999)",
+        "gfi": "Joreskog & Sorbom (1981)",
+        "agfi": "Joreskog & Sorbom (1981)",
+        "chi_square": "Joreskog (1969)",
+        "chi_square_df_ratio": "Kline (2016)",
+        "p_value": "Joreskog (1969)",
+        "df": "Bollen (1989)",
+        "aic": "Akaike (1974)",
+        "bic": "Schwarz (1978)",
+        "sabic": "Sclove (1987)",
+    }
+    records: List[Dict[str, object]] = []
+    for code, label_en, label_ar, threshold, direction, good, ok in _ROWS:
+        records.append({
+            "index": code,
+            "label": label_ar if arabic else label_en,
+            "direction": {"ge": "higher", "le": "lower"}.get(direction or "", ""),
+            "excellent": excellent.get(code, float("nan")),
+            "good": good if good is not None else float("nan"),
+            "acceptable": ok if ok is not None else float("nan"),
+            "printed_threshold": threshold,
+            "source": source.get(code, ""),
+        })
+    return pd.DataFrame.from_records(records, columns=[
+        "index", "label", "direction", "excellent", "good", "acceptable",
+        "printed_threshold", "source"])

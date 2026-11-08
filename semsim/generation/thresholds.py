@@ -681,7 +681,7 @@ def polychoric_attenuation(thresholds: np.ndarray) -> float:
     latents; to first order
 
     .. math::
-        r(x_i, x_j) \\approx \\rho(y^*_i, y^*_j) \; \\kappa_i \\, \\kappa_j
+        r(x_i, x_j) \\approx \\rho(y^*_i, y^*_j) \\; \\kappa_i \\, \\kappa_j
 
     where ``kappa`` is the factor this function returns for each variable.
     The calibration loop divides a requested loading by ``kappa`` to

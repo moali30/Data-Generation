@@ -604,13 +604,16 @@ def solve(skewness: float, kurtosis: float, *,
 
     b, c, d = (float(best_x[0]), float(best_x[1]), float(best_x[2]))
     if b < 0.0:
-        # The全-negation branch (b, c, d) -> (-b, -c, -d) keeps the variance and
-        # the kurtosis and flips the skewness twice over; normalise to b > 0.
+        # The full-negation branch (b, c, d) -> (-b, -c, -d) preserves the
+        # variance and the kurtosis and flips the skewness twice over, so it is
+        # the same distribution; normalise to b > 0.
         b, c, d = -b, -c, -d
     if flip:
         c = -c
+    if c == 0.0:
+        c = 0.0          # kill a negative zero so a == -c == 0.0 exactly
     return FleishmanCoefficients(
-        a=-c, b=b, c=c, d=d,
+        a=-c if c != 0.0 else 0.0, b=b, c=c, d=d,
         skewness=skew_in, kurtosis=kurt_in,
         converged=bool(best_res <= tol), iterations=int(best_iters),
         residual=float(best_res),
