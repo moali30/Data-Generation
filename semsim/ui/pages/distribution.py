@@ -31,9 +31,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget,
-)
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from semsim.core.spec import (
     GenerationEngine, Item, MissingMechanism, ResponseStyle,
@@ -42,8 +40,8 @@ from semsim.ui import theme
 from semsim.ui.i18n import translator
 from semsim.ui.pages.base import IdCombo, StagePage, construct_choices
 from semsim.ui.widgets.common import (
-    Card, EnumCombo, Field, InfoBanner, TButton, TCheckBox, TKey,
-    current_theme, float_spin, int_spin, percent_spin, percent_value,
+    EnumCombo, Field, InfoBanner, TButton, TCheckBox, TKey, current_theme,
+    float_spin, int_spin, percent_spin, percent_value,
 )
 
 #: ``NoiseSpec.careless_style`` is a bare string, not an enum; these are its
@@ -52,6 +50,22 @@ CARELESS_STYLES: Tuple[str, str, str] = ("random", "straightline", "mixed")
 
 #: numpy's default_rng accepts anything up to 2**32-1; a spin box is int-sized.
 MAX_SEED: int = 2_147_483_647
+
+
+def enum_value(combo: EnumCombo, enum_cls, default):
+    """The combo's selection as a real enum member.
+
+    Qt stores the item data as a QVariant, and every enum in the spec derives
+    from :class:`str`, so what comes back out of a combo is the bare value
+    ``"scores"`` rather than ``GenerationEngine.SCORES``.  That reads the same
+    in a comparison with ``==`` and differently with ``is`` -- and
+    :meth:`ModelSpec.resolved_engine` tests with ``is`` -- so the member is
+    rebuilt here before it ever reaches the spec.
+    """
+    try:
+        return enum_cls(combo.value())
+    except (ValueError, TypeError):
+        return default
 
 
 # --------------------------------------------------------------------------- #
@@ -183,7 +197,7 @@ class DistributionPage(StagePage):
     # ------------------------------------------------------------------ #
 
     def _build_global(self) -> None:
-        card = self.add_card("d.nonnormality", both=True)
+        card = self.add_card("d.nonnormality")
         card.add(InfoBanner("d.nonnormality.explain"))
 
         self.skew = float_spin(-3.0, 3.0, 0.0, decimals=2, step=0.1)
@@ -302,7 +316,7 @@ class DistributionPage(StagePage):
 
     def _update_preview(self) -> None:
         n_categories = int(self.n_cats.value())
-        style = self.style.value() or ResponseStyle.SYMMETRIC
+        style = enum_value(self.style, ResponseStyle, ResponseStyle.SYMMETRIC)
         proportions, hint_key = self._proportions_for(n_categories, style)
         self.chart.set_proportions(proportions)
         # Digits only, pinned left-to-right by the Field: nothing to translate.
@@ -318,7 +332,7 @@ class DistributionPage(StagePage):
     def _apply_scale(self, items: Sequence[Item]) -> None:
         if not items:
             return
-        style = self.style.value() or ResponseStyle.SYMMETRIC
+        style = enum_value(self.style, ResponseStyle, ResponseStyle.SYMMETRIC)
         n_categories = int(self.n_cats.value())
         for item in items:
             item.scale.response_style = style
@@ -401,8 +415,8 @@ class DistributionPage(StagePage):
         noise.careless_style = str(self.careless_style.value() or "random")
         noise.outlier_proportion = percent_value(self.outliers)
         noise.outlier_magnitude_sd = float(self.outlier_sd.value())
-        noise.missing_mechanism = (self.missing_mechanism.value()
-                                   or MissingMechanism.NONE)
+        noise.missing_mechanism = enum_value(
+            self.missing_mechanism, MissingMechanism, MissingMechanism.NONE)
         noise.missing_proportion = percent_value(self.missing_proportion)
         noise.mar_driver = self.mar_driver.value()
         noise.measurement_jitter_sd = float(self.jitter.value())
@@ -415,9 +429,10 @@ class DistributionPage(StagePage):
         for editor in self._noise_editors:
             editor.setEnabled(enabled)
         # Only MAR needs a driver: MCAR is indifferent and NONE drops nothing.
-        self.mar_driver.setEnabled(
-            enabled
-            and self.missing_mechanism.value() is MissingMechanism.MAR)
+        mechanism = enum_value(self.missing_mechanism, MissingMechanism,
+                               MissingMechanism.NONE)
+        self.mar_driver.setEnabled(enabled
+                                   and mechanism is MissingMechanism.MAR)
 
     # ------------------------------------------------------------------ #
     # 4. Reproducibility
@@ -444,8 +459,13 @@ class DistributionPage(StagePage):
         self.engine.value_changed.connect(lambda _v: self._on_engine())
         card.add(Field("d.engine", self.engine, hint_key="d.engine.hint"))
 
+        # Deliberately not the ``mono`` role: that font has no Arabic
+        # shaping, and the engine names are prose in both languages.
         self.resolved = QLabel()
-        theme.set_role(self.resolved, "mono")
+        self.resolved.setWordWrap(True)
+        resolved_font = self.resolved.font()
+        resolved_font.setBold(True)
+        self.resolved.setFont(resolved_font)
         card.add(Field("d.engine.resolved", self.resolved, ltr_editor=False))
 
         self.note_forced = InfoBanner("d.engine.forced_scores", kind="warning")
@@ -472,7 +492,8 @@ class DistributionPage(StagePage):
     def _on_engine(self) -> None:
         if self._updating:
             return
-        self.spec.engine = self.engine.value() or GenerationEngine.AUTO
+        self.spec.engine = enum_value(self.engine, GenerationEngine,
+                                      GenerationEngine.AUTO)
         self._update_engine_note()
         self.edit()
 
@@ -482,7 +503,7 @@ class DistributionPage(StagePage):
         except Exception:
             resolved = self.spec.engine
         self.resolved.setText(translator.enum("d.engine", resolved))
-        chosen = self.spec.engine
+        chosen = enum_value(self.engine, GenerationEngine, GenerationEngine.AUTO)
         # A latent product cannot live in a covariance matrix, so moderation
         # is the one thing that overrides the researcher's choice.
         if self.spec.has_interactions():
@@ -550,4 +571,4 @@ class DistributionPage(StagePage):
         self.chart.set_theme(name)
 
 
-__all__ = ["DistributionPage"]
+__all__ = ["DistributionPage", "enum_value"]

@@ -127,6 +127,11 @@ class CompiledModel:
     factor_index: Dict[str, int]
     method_factor_index: Optional[int]
     home_factor: List[int]
+    #: ``(item_id, factor_id)`` pairs drawn by the cross-loading policy, as
+    #: distinct from the ones the user declared. Counting free parameters from
+    #: the non-zero entries of ``Lambda`` would miss a loading that happens to
+    #: be exactly zero, so the pattern is recorded rather than inferred.
+    auto_cross_loadings: List[Tuple[str, str]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
     # -- convenience ------------------------------------------------------- #
@@ -391,7 +396,8 @@ def _auto_cross_loadings(spec: ModelSpec, Lambda: np.ndarray,
                          method_index: Optional[int],
                          explicit_rows: Set[int],
                          rng: np.random.Generator,
-                         warnings: List[str]) -> None:
+                         warnings: List[str],
+                         drawn: Optional[List[Tuple[str, str]]] = None) -> None:
     """Draw cross-loadings from ``spec.cross_loading_policy`` in place.
 
     Mimics fuzzy item wording: a random share of items picks up a small
@@ -448,6 +454,8 @@ def _auto_cross_loadings(spec: ModelSpec, Lambda: np.ndarray,
             if policy.allow_negative and bool(rng.integers(0, 2)):
                 magnitude = -magnitude
             Lambda[j, int(fi)] = magnitude
+            if drawn is not None:
+                drawn.append((item_ids[j], factor_ids[int(fi)]))
 
     warnings.append(_bilingual(
         f"AUTO_CROSSLOADINGS: {wanted} item(s) received an automatically drawn "
@@ -774,9 +782,10 @@ def compile_model(spec: ModelSpec,
         Lambda[j, fi] = float(cl.loading)
         explicit_rows.add(j)
 
+    auto_cross_loadings: List[Tuple[str, str]] = []
     _auto_cross_loadings(spec, Lambda, item_ids, home_factor, factor_ids,
                          owner_of, item_construct, method_factor_index,
-                         explicit_rows, rng, warnings)
+                         explicit_rows, rng, warnings, auto_cross_loadings)
 
     if use_method:
         if cmb.item_ids:
@@ -900,6 +909,7 @@ def compile_model(spec: ModelSpec,
         factor_index=factor_index,
         method_factor_index=method_factor_index,
         home_factor=home_factor,
+        auto_cross_loadings=auto_cross_loadings,
         warnings=warnings,
     )
     return compiled

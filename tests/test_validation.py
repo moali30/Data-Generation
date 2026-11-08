@@ -131,8 +131,8 @@ def _distinct_pairs(names, k):
 def test_clean_spec_has_no_errors():
     s = clean_spec()
     assert s.count_moments() == 78, s.count_moments()
-    assert s.count_free_parameters() == 29, s.count_free_parameters()
-    assert s.degrees_of_freedom() == 49, s.degrees_of_freedom()
+    assert s.count_free_parameters() == 27, s.count_free_parameters()
+    assert s.degrees_of_freedom() == 51, s.degrees_of_freedom()
 
     report = validate(s)
     assert report.errors() == [], [d.code for d in report.errors()]
@@ -244,10 +244,12 @@ def test_negative_df_at_hand_counted_boundary():
     s = _two_factor_six_items()
     names = [it.name for it in s.all_items()]
     assert s.count_moments() == 21
-    assert s.count_free_parameters() == 14      # 6 + 6 + 1 path + 1 psi
-    for a, b in _distinct_pairs(names, 8):
+    # 6 loadings + 6 unique variances + 1 structural path. The latent
+    # variances are scaling constraints, not estimates, so they are not here.
+    assert s.count_free_parameters() == 13, s.count_free_parameters()
+    for a, b in _distinct_pairs(names, 9):
         s.add_error_covariance(a, b, correlation=0.15)
-    # each residual covariance adds exactly one free parameter: 14 + 8 = 22
+    # each residual covariance adds exactly one free parameter: 13 + 9 = 22
     assert s.count_free_parameters() == 22, s.count_free_parameters()
     assert s.degrees_of_freedom() == -1, s.degrees_of_freedom()
     report = _record(validate(s))
@@ -260,9 +262,9 @@ def test_negative_df_at_hand_counted_boundary():
 def test_zero_df_and_fit_target_impossible():
     s = _two_factor_six_items()
     names = [it.name for it in s.all_items()]
-    for a, b in _distinct_pairs(names, 7):
+    for a, b in _distinct_pairs(names, 8):
         s.add_error_covariance(a, b, correlation=0.15)
-    assert s.count_free_parameters() == 21
+    assert s.count_free_parameters() == 21, s.count_free_parameters()
     assert s.degrees_of_freedom() == 0, s.degrees_of_freedom()
     report = _record(validate(s))
     assert report.has("ZERO_DF")
@@ -279,7 +281,7 @@ def test_sample_size_too_small_at_the_five_per_parameter_boundary():
     s = clean_spec()
     q = s.count_free_parameters()
     need = MIN_CASES_PER_PARAMETER * q
-    assert (q, need) == (29, 145)
+    assert (q, need) == (27, 135)
 
     s.power.n = need
     assert not validate(s).has("SAMPLE_SIZE_TOO_SMALL")
@@ -287,7 +289,7 @@ def test_sample_size_too_small_at_the_five_per_parameter_boundary():
     report = _record(validate(s))
     assert report.has("SAMPLE_SIZE_TOO_SMALL")
     msg = report.by_code("SAMPLE_SIZE_TOO_SMALL")[0].message_en
-    assert "N = 144" in msg and "N = 145" in msg
+    assert "N = 134" in msg and "N = 135" in msg
 
 
 # --------------------------------------------------------------------------- #

@@ -362,8 +362,8 @@ def thresholds_from_counts(counts: Sequence[float] | np.ndarray) -> np.ndarray:
 
     Examples
     --------
-    >>> thresholds_from_counts([25, 25, 25, 25]).round(6)
-    array([-0.67449 ,  0.      ,  0.67449 ])
+    >>> thresholds_from_counts([25, 25, 25, 25]).round(5)
+    array([-0.67449,  0.     ,  0.67449])
 
     References
     ----------

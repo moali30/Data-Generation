@@ -751,36 +751,77 @@ class ModelSpec:
     # Degrees of freedom (CFA + structural, ML on the covariance matrix)
     # ------------------------------------------------------------------ #
 
-    def count_free_parameters(self) -> int:
-        """Free parameters under the usual marker-free, standardised-latent
-        identification (every latent variance fixed to 1 by scaling, every
-        loading free)."""
-        n_load = 0
-        for c in self.constructs:
-            if c.is_second_order:
-                for d in c.dimensions:
-                    n_load += d.n_items          # item loadings
-                n_load += len(c.dimensions)      # second-order loadings
-            else:
-                n_load += len(c.items)
-        n_load += len(self.cross_loadings)
-        if self.common_method_bias.enabled:
-            affected = (len(self.common_method_bias.item_ids)
-                        or self.n_items)
-            n_load += affected
-        n_theta = self.n_items                   # unique variances
-        n_theta += len(self.error_covariances)   # residual covariances
-        n_paths = len(self.paths) + len(self.interactions)
-        n_psi = len(self.endogenous_construct_ids())   # disturbance variances
+    def expected_auto_cross_loadings(self) -> int:
+        """How many cross-loadings the auto policy will draw.
+
+        The actual draw happens in the compiler with a seeded generator, so
+        this is the count that policy implies, not a figure read back from a
+        compiled model.  Pass a :class:`CompiledModel` to
+        :meth:`count_free_parameters` when the exact number matters.
+        """
+        policy = self.cross_loading_policy
+        if not policy.enabled or self.n_items == 0:
+            return 0
+        affected = round(policy.proportion_of_items * self.n_items)
+        return int(affected * max(policy.max_per_item, 1))
+
+    def count_free_parameters(self, compiled: Any = None) -> int:
+        """Free parameters in the model as it would be *fitted*.
+
+        Counted under the completely standardised identification this spec
+        works in: every latent has unit variance by construction, so an
+        exogenous latent's variance is a scaling constraint and an endogenous
+        latent's disturbance variance is derived from its predictors
+        (``1 - explained``).  Neither is estimated, so neither is counted --
+        adding one free disturbance per endogenous construct on top of its
+        free loadings double-counts and understates the degrees of freedom.
+        The marker-variable parameterisation an estimator uses reaches the
+        same total: it fixes one loading per factor and frees that factor's
+        variance instead.
+
+        A second-order loading is a *regression of a dimension on its
+        construct*, so it lives in ``B`` alongside the structural paths, not
+        in ``Lambda``.  Latent interactions are excluded: a product of two
+        latent variables cannot be expressed in a covariance matrix, so no
+        covariance-structure estimator fits one and it contributes no
+        parameter to the fitted model's degrees of freedom.
+
+        Parameters
+        ----------
+        compiled
+            An optional :class:`~semsim.core.compile.CompiledModel`.  When
+            given, the auto-generated cross-loadings it actually drew are
+            counted instead of the number the policy implies.
+        """
+        # Count what is ESTIMATED, not what happens to be non-zero. A path
+        # whose population coefficient is exactly zero -- an effect the
+        # researcher wants to come out non-significant -- is still a free
+        # parameter, so reading the count off the non-zero entries of B would
+        # drop it silently and overstate the degrees of freedom.
+        n_auto = (len(getattr(compiled, "auto_cross_loadings", ()))
+                  if compiled is not None
+                  else self.expected_auto_cross_loadings())
+        n_load = self._declared_item_loadings() + n_auto
+        n_struct = (sum(len(c.dimensions) for c in self.constructs)
+                    + len(self.paths))
+        n_theta = self.n_items + len(self.error_covariances)
         n_cov = len(self.latent_covariances)
-        return n_load + n_theta + n_paths + n_psi + n_cov
+        return n_load + n_struct + n_theta + n_cov
+
+    def _declared_item_loadings(self) -> int:
+        """Loadings of items on factors, excluding second-order loadings and
+        the auto policy's draws."""
+        n_load = self.n_items + len(self.cross_loadings)
+        if self.common_method_bias.enabled:
+            n_load += (len(self.common_method_bias.item_ids) or self.n_items)
+        return n_load
 
     def count_moments(self) -> int:
         p = self.n_items
         return p * (p + 1) // 2
 
-    def degrees_of_freedom(self) -> int:
-        return self.count_moments() - self.count_free_parameters()
+    def degrees_of_freedom(self, compiled: Any = None) -> int:
+        return self.count_moments() - self.count_free_parameters(compiled)
 
     # ------------------------------------------------------------------ #
     # Convenience builders used by the UI and the tests
