@@ -302,6 +302,226 @@ def _symmetric_pair_key(a: str, b: str) -> Tuple[str, str]:
 
 
 # --------------------------------------------------------------------------- #
+# The latent correlations the structural model *implies*
+# --------------------------------------------------------------------------- #
+#
+# Reading the latent correlations off the declared ``LatentCovariance`` rows
+# only -- and assuming ``R = I`` everywhere else -- is wrong, because a
+# structural model induces correlations of its own: in ``X -> M`` with a
+# coefficient of 0.80 the pair (X, M) correlates 0.80 even though the
+# researcher never declared a covariance, and two dimensions of one
+# second-order construct correlate through their parent.  Both the quadratic
+# form behind ``R2_EXCEEDS_ONE`` (``b' Phi_PP b``) and the one behind
+# ``HEYWOOD_RISK`` (``lambda' Phi lambda``) are evaluated in that implied
+# metric by :mod:`semsim.core.compile`, so validation must use the same matrix
+# or it reports Heywood cases the compiler does not see and misses the ones it
+# does.
+
+
+def _kahn_order(n: int, edges: Sequence[Tuple[int, int]],
+                endogenous: Sequence[bool]) -> Tuple[List[int], bool]:
+    """Topological node order, every exogenous latent first.
+
+    ``edges`` are ``(source, target)`` pairs.  Exogenous nodes (no incoming
+    edge) are emitted before any endogenous one so that the forward
+    accumulation below always has every predictor's row of ``Phi`` already
+    filled in; a plain Kahn queue can interleave the two and silently treat a
+    not-yet-processed predictor as uncorrelated.  The second return value is
+    ``True`` when the graph contains a cycle, in which case the nodes inside
+    the cycle are appended in index order.
+    """
+    indegree = [0] * n
+    successors: List[List[int]] = [[] for _ in range(n)]
+    for s, t in sorted({(int(s), int(t)) for s, t in edges}):
+        successors[s].append(t)
+        indegree[t] += 1
+
+    ready = [(1 if endogenous[i] else 0, i) for i in range(n) if indegree[i] == 0]
+    ready.sort()
+    order: List[int] = []
+    while ready:
+        _, node = ready.pop(0)
+        order.append(node)
+        for t in successors[node]:
+            indegree[t] -= 1
+            if indegree[t] == 0:
+                ready.append((1 if endogenous[t] else 0, t))
+                ready.sort()
+
+    if len(order) < n:
+        placed = set(order)
+        order.extend(i for i in range(n) if i not in placed)
+        return order, True
+    return order, False
+
+
+@dataclass
+class _LatentSolution:
+    """The latent correlation matrix a specification implies.
+
+    Attributes
+    ----------
+    index : dict
+        Factor id (construct *or* dimension) -> row in ``Phi``.
+    Phi : numpy.ndarray
+        ``(m, m)`` implied latent correlation matrix, unit diagonal.
+    explained : dict
+        Factor id -> ``b' Phi_PP b``, the structural :math:`R^2` *before* the
+        compiler's Heywood clamp, i.e. the number the researcher asked for.
+    coefficients : dict
+        Target id -> ``{source id: coefficient}`` after duplicate paths have
+        been resolved the way the compiler resolves them (the last path with a
+        given source and target wins).
+    duplicates : dict
+        Target id -> ``{source id: how many paths declared that effect}``.
+    cyclic : bool
+        ``True`` when the structural graph is non-recursive, in which case
+        ``Phi`` is a lower bound rather than the exact solution (the compiler
+        reaches it by fixed-point iteration).
+    """
+
+    index: Dict[str, int]
+    Phi: np.ndarray
+    explained: Dict[str, float]
+    coefficients: Dict[str, Dict[str, float]]
+    duplicates: Dict[str, Dict[str, int]]
+    cyclic: bool
+
+    def correlation(self, a: str, b: str) -> float:
+        """Implied correlation between two latent factors (0 if unknown)."""
+        ia = self.index.get(a)
+        ib = self.index.get(b)
+        if ia is None or ib is None:
+            return 0.0
+        return float(self.Phi[ia, ib])
+
+
+def _solve_latent_correlations(spec: ModelSpec) -> _LatentSolution:
+    """Reproduce ``compile.compile_model``'s steps 2-4 without compiling.
+
+    Walks the latent nodes (constructs plus the dimensions inside them) in
+    topological order and accumulates ``Phi[i, j] = b_i . Phi[P, j] + Psi[i, j]``
+    exactly as ``docs/ARCHITECTURE.md`` step 4 prescribes, including the
+    Heywood repair (shrink ``b`` and clamp the disturbance) so that a latent
+    further down the chain still sees admissible correlations.
+
+    Cost is O(m^2) with ``m`` the number of latent nodes plus one tiny
+    quadratic form per endogenous node, which keeps :func:`validate` far
+    inside its 20 ms budget on a 20-construct model.
+    """
+    constructs = list(getattr(spec, "constructs", None) or [])
+    lut = _construct_lookup(spec)
+
+    ids: List[str] = []
+    index: Dict[str, int] = {}
+    dims_of: List[Tuple[str, List[Any]]] = []
+    for c in constructs:
+        cid = str(getattr(c, "id", "") or "")
+        if not cid or cid in index:
+            continue
+        index[cid] = len(ids)
+        ids.append(cid)
+        dims = list(getattr(c, "dimensions", None) or [])
+        dims_of.append((cid, dims))
+        for dim in dims:
+            did = str(getattr(dim, "id", "") or "")
+            if not did or did in index:
+                continue
+            index[did] = len(ids)
+            ids.append(did)
+
+    m = len(ids)
+    B = np.zeros((m, m), dtype=float)
+    edges: List[Tuple[int, int]] = []
+
+    # A second-order loading is a regression of the dimension ON the construct
+    # (ARCHITECTURE step 2), which is what makes two dimensions of one parent
+    # correlated: Phi[d1, d2] = sol_1 * sol_2.
+    for cid, dims in dims_of:
+        ci = index[cid]
+        for dim in dims:
+            di = index.get(str(getattr(dim, "id", "") or ""))
+            if di is None or di == ci:
+                continue
+            B[di, ci] = _num(getattr(dim, "second_order_loading", 0.0))
+            edges.append((ci, di))
+
+    coefficients: Dict[str, Dict[str, float]] = {}
+    duplicates: Dict[str, Dict[str, int]] = {}
+    for p in list(getattr(spec, "paths", None) or []):
+        cs = lut.get(str(getattr(p, "source", "") or ""))
+        ct = lut.get(str(getattr(p, "target", "") or ""))
+        if cs is None or ct is None:
+            continue
+        sid = str(getattr(cs, "id", "") or "")
+        tid = str(getattr(ct, "id", "") or "")
+        if sid == tid:
+            continue
+        si, ti = index.get(sid), index.get(tid)
+        if si is None or ti is None:
+            continue
+        try:
+            coef = _num(p.resolved_coefficient())
+        except Exception:
+            coef = _num(getattr(p, "coefficient", 0.0))
+        # Assignment, not accumulation: compile.py step 2 writes
+        # ``B[t, s] = path.resolved_coefficient()``, so of two paths with the
+        # same source and target the last one is the model that gets compiled.
+        B[ti, si] = coef
+        coefficients.setdefault(tid, {})[sid] = coef
+        row = duplicates.setdefault(tid, {})
+        row[sid] = row.get(sid, 0) + 1
+        edges.append((si, ti))
+
+    Psi = np.eye(m, dtype=float)
+    for lc in list(getattr(spec, "latent_covariances", None) or []):
+        ca = lut.get(str(getattr(lc, "construct_a", "") or ""))
+        cb = lut.get(str(getattr(lc, "construct_b", "") or ""))
+        if ca is None or cb is None:
+            continue
+        ia = index.get(str(getattr(ca, "id", "") or ""))
+        ib = index.get(str(getattr(cb, "id", "") or ""))
+        if ia is None or ib is None or ia == ib:
+            continue
+        r = _num(getattr(lc, "correlation", 0.0))
+        if abs(r) >= 1.0:
+            continue
+        Psi[ia, ib] = Psi[ib, ia] = r
+
+    endogenous = [bool(np.any(B[i] != 0.0)) for i in range(m)]
+    order, cyclic = _kahn_order(m, edges, endogenous)
+
+    Phi = np.zeros((m, m), dtype=float)
+    explained: Dict[str, float] = {}
+    done: List[int] = []
+    done_mask = np.zeros(m, dtype=bool)
+    for i in order:
+        # In a cyclic model a predictor may not be processed yet; leaving it
+        # out understates R^2, which is the safe direction for a diagnostic.
+        preds = [int(j) for j in np.flatnonzero(B[i] != 0.0) if done_mask[j]]
+        if preds:
+            idx = np.asarray(preds, dtype=int)
+            b = B[i, idx]
+            r2 = float(b @ Phi[np.ix_(idx, idx)] @ b)
+            explained[ids[i]] = r2
+            if r2 > 1.0 - HEYWOOD_FLOOR:
+                b = b * math.sqrt((1.0 - HEYWOOD_FLOOR) / max(r2, 1e-300))
+            for j in done:
+                Phi[i, j] = Phi[j, i] = float(b @ Phi[idx, j]) + Psi[i, j]
+        else:
+            explained[ids[i]] = 0.0
+            for j in done:
+                Phi[i, j] = Phi[j, i] = Psi[i, j]
+        Phi[i, i] = 1.0
+        done.append(i)
+        done_mask[i] = True
+
+    return _LatentSolution(index=index, Phi=Phi, explained=explained,
+                           coefficients=coefficients, duplicates=duplicates,
+                           cyclic=cyclic)
+
+
+# --------------------------------------------------------------------------- #
 # Specification-level validation
 # --------------------------------------------------------------------------- #
 
@@ -358,6 +578,7 @@ def validate(spec: ModelSpec) -> ValidationReport:
     """
     out: List[Diagnostic] = []
     try:
+        _check_non_finite(spec, out)
         _check_measurement(spec, out)
         _check_complex_reality(spec, out)
         _check_structure(spec, out)
@@ -377,6 +598,282 @@ def validate(spec: ModelSpec) -> ValidationReport:
             hint_ar="أبلِغ عن هذا النموذج، وتراجَع مؤقتًا عن آخر تعديل أجريته.",
         ))
     return ValidationReport(out)
+
+
+# -- non-finite numbers ----------------------------------------------------- #
+#
+# ``_num`` deliberately swallows a non-finite value so that :func:`validate`
+# can keep inspecting a half-typed spec, but swallowing it silently is a
+# falsehood: a NaN loading used to validate completely clean and then
+# propagate through ``Lambda``, ``Sigma``, the Cholesky factor and the
+# generated data, where it surfaces as an empty column nobody can explain.
+# Every numeric field this module reads is therefore screened here first.
+
+
+def _non_finite_token(v: float) -> Tuple[str, str]:
+    """Human-readable name of a non-finite float, in both languages."""
+    if math.isnan(v):
+        return "NaN (not a number)", "قيمة غير معرَّفة (NaN)"
+    if v > 0.0:
+        return "+infinity", "ما لا نهاية (+∞)"
+    return "-infinity", "سالب ما لا نهاية (−∞)"
+
+
+def _flag_non_finite(value: Any, out: List[Diagnostic], *,
+                     field_en: str, field_ar: str,
+                     owner_en: str, owner_ar: str, where: str = "") -> bool:
+    """Append a ``NON_FINITE_VALUE`` error when ``value`` is NaN or infinite.
+
+    Returns ``True`` when a diagnostic was raised.  A value that is not a
+    number at all (an empty string, ``None``) is *not* reported here: the UI
+    binds those fields to numeric editors, and the field-specific range checks
+    already describe the fallback that ``_num`` substitutes.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    if math.isfinite(v):
+        return False
+    tok_en, tok_ar = _non_finite_token(v)
+    out.append(_d(
+        Severity.ERROR,
+        "NON_FINITE_VALUE",
+        f"The {field_en} of {owner_en} is {tok_en}, not a finite real number. "
+        f"The validator reads it as 0, and every quantity derived from it - "
+        f"the implied covariance matrix, the fit indices, the generated data - "
+        f"would be meaningless.",
+        f"قيمة {field_ar} في {owner_ar} هي {tok_ar}، وليست عددًا حقيقيًا "
+        f"منتهيًا. ويقرأ المدقِّق هذه القيمة صفرًا، ومن ثَمَّ تفقد كل الكميات "
+        f"المشتقة منها معناها: مصفوفة التغاير المُشتقة، ومؤشرات المطابقة، "
+        f"والبيانات المولَّدة.",
+        where=where,
+        hint_en="Enter a finite number in this field; a NaN usually comes "
+                "from an empty cell or a division by zero in the step that "
+                "produced the value.",
+        hint_ar="أدخِل عددًا منتهيًا في هذا الحقل؛ فالقيمة غير المعرَّفة تنشأ "
+                "عادةً من خلية فارغة أو من قسمة على صفر في الخطوة التي "
+                "أنتجت القيمة.",
+    ))
+    return True
+
+
+def _check_non_finite(spec: ModelSpec, out: List[Diagnostic]) -> None:
+    """Screen every numeric field :func:`validate` reads for NaN / infinity."""
+    constructs = list(getattr(spec, "constructs", None) or [])
+    lut = _construct_lookup(spec)
+
+    # -- items and their scales -------------------------------------------- #
+    try:
+        owned: List[Tuple[Any, Any, Any]] = list(spec.iter_items_with_owner())
+    except Exception:  # pragma: no cover - duck-typed spec
+        owned = [(it, None, None) for it in _safe_items(spec)]
+
+    for it, construct, _dim in owned:
+        iid = str(getattr(it, "id", "") or "")
+        iname = _label(it)
+        cname = _label(construct) if construct is not None else ""
+        own_en = f"item '{iname}'" + (f" of construct '{cname}'" if cname else "")
+        own_ar = (f"البند «{iname}»"
+                  + (f" التابع للمتغير الكامن «{cname}»" if cname else ""))
+        for attr, f_en, f_ar in (
+            ("loading", "standardised loading", "التشبع المعياري"),
+            ("skewness", "target skewness", "الالتواء المستهدف"),
+            ("kurtosis", "target excess kurtosis", "التفلطح الزائد المستهدف"),
+            ("extra_error_variance", "extra error variance",
+             "تباين الخطأ الإضافي"),
+        ):
+            _flag_non_finite(getattr(it, attr, 0.0), out, field_en=f_en,
+                             field_ar=f_ar, owner_en=own_en, owner_ar=own_ar,
+                             where=iid)
+        sc = getattr(it, "scale", None)
+        if sc is None:
+            continue
+        for attr, f_en, f_ar in (
+            ("mean", "reported mean", "المتوسط المُعلَن"),
+            ("sd", "reported standard deviation", "الانحراف المعياري المُعلَن"),
+        ):
+            _flag_non_finite(getattr(sc, attr, 0.0), out, field_en=f_en,
+                             field_ar=f_ar, owner_en=own_en, owner_ar=own_ar,
+                             where=iid)
+        for k, v in enumerate(list(getattr(sc, "thresholds", None) or [])):
+            _flag_non_finite(v, out, field_en=f"threshold number {k + 1}",
+                             field_ar=f"الحد الفاصل رقم {k + 1}",
+                             owner_en=own_en, owner_ar=own_ar, where=iid)
+        for k, v in enumerate(list(getattr(sc, "category_proportions", None) or [])):
+            _flag_non_finite(v, out,
+                             field_en=f"proportion of category {k + 1}",
+                             field_ar=f"نسبة الفئة رقم {k + 1}",
+                             owner_en=own_en, owner_ar=own_ar, where=iid)
+
+    # -- second-order loadings --------------------------------------------- #
+    for c in constructs:
+        cname = _label(c)
+        for dim in list(getattr(c, "dimensions", None) or []):
+            dname = _label(dim)
+            _flag_non_finite(
+                getattr(dim, "second_order_loading", 0.0), out,
+                field_en="second-order loading",
+                field_ar="تشبع البُعد على المتغير الكامن من الرتبة الثانية",
+                owner_en=f"dimension '{dname}' of construct '{cname}'",
+                owner_ar=f"البُعد «{dname}» التابع للمتغير الكامن «{cname}»",
+                where=str(getattr(dim, "id", "") or ""))
+
+    # -- cross-loadings and their policy ----------------------------------- #
+    item_by_id = {str(getattr(it, "id", "") or ""): it for it in _safe_items(spec)}
+    for cl in list(getattr(spec, "cross_loadings", None) or []):
+        iid = str(getattr(cl, "item_id", "") or "")
+        fid = str(getattr(cl, "factor_id", "") or "")
+        iname = _label(item_by_id.get(iid), iid or "?")
+        try:
+            fname = spec.factor_label(fid, "en") or fid
+        except Exception:
+            fname = fid
+        _flag_non_finite(
+            getattr(cl, "loading", 0.0), out,
+            field_en="cross-loading", field_ar="التشبع المتقاطع",
+            owner_en=f"item '{iname}' on factor '{fname}'",
+            owner_ar=f"البند «{iname}» على العامل «{fname}»",
+            where=iid)
+
+    pol = getattr(spec, "cross_loading_policy", None)
+    if pol is not None and getattr(pol, "enabled", False):
+        pol_en = "the automatic cross-loading policy"
+        pol_ar = "سياسة التشبعات المتقاطعة التلقائية"
+        _flag_non_finite(getattr(pol, "proportion_of_items", 0.0), out,
+                         field_en="proportion of affected items",
+                         field_ar="نسبة البنود المتأثرة",
+                         owner_en=pol_en, owner_ar=pol_ar)
+        try:
+            bounds = list(tuple(getattr(pol, "magnitude_range", ()) or ()))
+        except Exception:
+            bounds = []
+        for k, v in enumerate(bounds[:2]):
+            edge_en = "lower" if k == 0 else "upper"
+            edge_ar = "الأدنى" if k == 0 else "الأعلى"
+            _flag_non_finite(v, out,
+                             field_en=f"{edge_en} end of the magnitude range",
+                             field_ar=f"الطرف {edge_ar} لمدى المقدار",
+                             owner_en=pol_en, owner_ar=pol_ar)
+
+    # -- residual covariances and the method factor ------------------------ #
+    for ec in list(getattr(spec, "error_covariances", None) or []):
+        a = str(getattr(ec, "item_a", "") or "")
+        b = str(getattr(ec, "item_b", "") or "")
+        na = _label(item_by_id.get(a), a or "?")
+        nb = _label(item_by_id.get(b), b or "?")
+        _flag_non_finite(
+            getattr(ec, "correlation", 0.0), out,
+            field_en="residual correlation", field_ar="معامل ارتباط الأخطاء",
+            owner_en=f"the residual covariance between items '{na}' and '{nb}'",
+            owner_ar=f"تغاير أخطاء البندين «{na}» و«{nb}»",
+            where=a)
+
+    cmb = getattr(spec, "common_method_bias", None)
+    if cmb is not None and getattr(cmb, "enabled", False):
+        _flag_non_finite(
+            getattr(cmb, "loading", 0.0), out,
+            field_en="loading", field_ar="التشبع",
+            owner_en="the common method factor",
+            owner_ar="عامل طريقة القياس المشترك")
+
+    # -- structural coefficients ------------------------------------------- #
+    for p in list(getattr(spec, "paths", None) or []):
+        pid = str(getattr(p, "id", "") or "")
+        sname = _label(lut.get(str(getattr(p, "source", "") or "")),
+                       str(getattr(p, "source", "") or "?"))
+        tname = _label(lut.get(str(getattr(p, "target", "") or "")),
+                       str(getattr(p, "target", "") or "?"))
+        try:
+            coef = p.resolved_coefficient()
+        except Exception:
+            coef = getattr(p, "coefficient", 0.0)
+        _flag_non_finite(
+            coef, out,
+            field_en="standardised coefficient", field_ar="المعامل المعياري",
+            owner_en=f"the path '{sname}' -> '{tname}'",
+            owner_ar=f"المسار من «{sname}» إلى «{tname}»",
+            where=pid)
+
+    for ix in list(getattr(spec, "interactions", None) or []):
+        ixid = str(getattr(ix, "id", "") or "")
+        pname = _label(lut.get(str(getattr(ix, "predictor", "") or "")),
+                       str(getattr(ix, "predictor", "") or "?"))
+        mname = _label(lut.get(str(getattr(ix, "moderator", "") or "")),
+                       str(getattr(ix, "moderator", "") or "?"))
+        tname = _label(lut.get(str(getattr(ix, "target", "") or "")),
+                       str(getattr(ix, "target", "") or "?"))
+        try:
+            coef = ix.resolved_coefficient()
+        except Exception:
+            coef = getattr(ix, "coefficient", 0.0)
+        _flag_non_finite(
+            coef, out,
+            field_en="standardised coefficient", field_ar="المعامل المعياري",
+            owner_en=f"the interaction '{pname}' x '{mname}' -> '{tname}'",
+            owner_ar=f"الحد التفاعلي «{pname}» × «{mname}» على «{tname}»",
+            where=ixid)
+
+    for lc in list(getattr(spec, "latent_covariances", None) or []):
+        a = str(getattr(lc, "construct_a", "") or "")
+        b = str(getattr(lc, "construct_b", "") or "")
+        na = _label(lut.get(a), a or "?")
+        nb = _label(lut.get(b), b or "?")
+        _flag_non_finite(
+            getattr(lc, "correlation", 0.0), out,
+            field_en="latent correlation",
+            field_ar="معامل الارتباط بين المتغيرين الكامنين",
+            owner_en=f"the free covariance between '{na}' and '{nb}'",
+            owner_ar=f"التغاير الحر بين «{na}» و«{nb}»")
+
+    # -- global generation / targeting settings ---------------------------- #
+    sections: List[Tuple[Any, str, str, Sequence[Tuple[str, str, str]]]] = [
+        (getattr(spec, "distribution", None),
+         "the global distribution settings", "إعدادات التوزيع العامة",
+         (("default_skewness", "default skewness", "الالتواء الافتراضي"),
+          ("default_kurtosis", "default excess kurtosis",
+           "التفلطح الزائد الافتراضي"))),
+        (getattr(spec, "noise", None),
+         "the noise settings", "إعدادات التشويش",
+         (("unique_variance_inflation", "unique-variance inflation factor",
+           "معامل تضخيم التباين الفريد"),
+          ("careless_proportion", "proportion of careless responders",
+           "نسبة المستجيبين غير المبالين"),
+          ("outlier_proportion", "proportion of outlier cells",
+           "نسبة الخلايا الشاذة"),
+          ("missing_proportion", "proportion of missing data",
+           "نسبة البيانات المفقودة"),
+          ("measurement_jitter_sd", "measurement jitter (in SD units)",
+           "مقدار الاهتزاز القياسي (بوحدات الانحراف المعياري)"))),
+        (getattr(spec, "fit_target", None),
+         "the fit target", "هدف المطابقة",
+         (("rmsea", "target RMSEA", "قيمة RMSEA المستهدفة"),
+          ("cfi", "target CFI", "قيمة CFI المستهدفة"),
+          ("srmr", "target SRMR", "قيمة SRMR المستهدفة"),
+          ("tolerance", "calibration tolerance", "هامش التفاوت في المعايرة"))),
+        (getattr(spec, "significance_target", None),
+         "the significance target", "هدف الدلالة الإحصائية",
+         (("alpha", "significance level alpha", "مستوى الدلالة alpha"),
+          ("target_power", "target power", "القوة الإحصائية المستهدفة"),
+          ("null_coefficient", "null coefficient",
+           "معامل المسارات غير الدالة"))),
+        (getattr(spec, "power", None),
+         "the sample-size settings", "إعدادات حجم العينة",
+         (("n", "planned sample size", "حجم العينة المخطَّط"),
+          ("target_power", "target power", "القوة الإحصائية المستهدفة"),
+          ("alpha", "significance level alpha", "مستوى الدلالة alpha"),
+          ("rmsea_null", "null RMSEA", "قيمة RMSEA الصفرية"),
+          ("rmsea_alt", "alternative RMSEA", "قيمة RMSEA البديلة"))),
+    ]
+    for section, own_en, own_ar, fields in sections:
+        if section is None:
+            continue
+        for attr, f_en, f_ar in fields:
+            value = getattr(section, attr, None)
+            if value is None:
+                continue        # an unset optional target is not a bad number
+            _flag_non_finite(value, out, field_en=f_en, field_ar=f_ar,
+                             owner_en=own_en, owner_ar=own_ar)
 
 
 # -- measurement layer ------------------------------------------------------ #
@@ -870,15 +1367,18 @@ def _check_structure(spec: ModelSpec, out: List[Diagnostic]) -> None:
                 Severity.WARNING,
                 "DUPLICATE_PATH",
                 f"The path '{sname}' -> '{tname}' is declared more than once; "
-                f"the duplicate makes the coefficient indeterminate because "
-                f"the same effect appears twice in one equation.",
-                f"المسار من «{sname}» إلى «{tname}» مكرَّر؛ والتكرار يجعل "
-                f"المعامل غير قابل للتحديد لأن الأثر نفسه يظهر مرتين في "
-                f"المعادلة الواحدة.",
+                f"the compiler writes one coefficient per cell of B, so the "
+                f"last declaration wins and the earlier one is silently "
+                f"ignored rather than added to it.",
+                f"المسار من «{sname}» إلى «{tname}» مكرَّر؛ ولأن المُجمِّع "
+                f"يكتب معاملًا واحدًا في خلية مصفوفة المسارات فإن آخر مسار "
+                f"مُعلَن هو الذي يُعتمد، ويُهمَل المسار الأسبق دون أن يُضاف "
+                f"إليه.",
                 where=pid,
                 hint_en="Keep one path only and put the whole effect size in "
-                        "it.",
-                hint_ar="احتفظ بمسار واحد فقط واجمع حجم التأثير كله فيه.",
+                        "it; the two coefficients are not summed.",
+                hint_ar="احتفظ بمسار واحد فقط واجمع حجم التأثير كله فيه، "
+                        "فالمعاملان لا يُجمعان.",
             ))
         edges.append((sid, tid))
         outgoing[sid] = outgoing.get(sid, 0) + 1
@@ -1133,18 +1633,11 @@ def _check_structure(spec: ModelSpec, out: List[Diagnostic]) -> None:
 def _check_variance_bounds(spec: ModelSpec, out: List[Diagnostic]) -> None:
     lut = _construct_lookup(spec)
 
-    # ---- declared latent correlations, for the R^2 quadratic form -------- #
-    declared_r: Dict[Tuple[str, str], float] = {}
-    for lc in list(getattr(spec, "latent_covariances", None) or []):
-        ca = lut.get(str(getattr(lc, "construct_a", "") or ""))
-        cb = lut.get(str(getattr(lc, "construct_b", "") or ""))
-        if ca is None or cb is None:
-            continue
-        aid = str(getattr(ca, "id", ""))
-        bid = str(getattr(cb, "id", ""))
-        r = _num(getattr(lc, "correlation", 0.0))
-        if abs(r) < 1.0 and aid != bid:
-            declared_r[_symmetric_pair_key(aid, bid)] = r
+    # ---- the latent correlations the model itself implies ---------------- #
+    # Declared LatentCovariance rows are only part of the story; everything
+    # else the structural model induces (X -> M, two dimensions of one
+    # second-order construct, a chain X -> M -> Y) lives in this matrix.
+    solution = _solve_latent_correlations(spec)
 
     # ---- communality per item (Heywood risk) ----------------------------- #
     cmb = getattr(spec, "common_method_bias", None)
@@ -1152,38 +1645,48 @@ def _check_variance_bounds(spec: ModelSpec, out: List[Diagnostic]) -> None:
     cmb_loading = _num(getattr(cmb, "loading", 0.0)) if cmb_on else 0.0
     cmb_items = {str(x) for x in (getattr(cmb, "item_ids", None) or [])} if cmb_on else set()
 
-    cross_by_item: Dict[str, List[Tuple[str, float]]] = {}
+    #: item id -> {factor id: loading}.  A dict, not a list, because
+    #: compile.py writes ``Lambda[j, fi] = cl.loading``: two cross-loadings of
+    #: one item on one factor are not additive, the last one simply wins.
+    cross_by_item: Dict[str, Dict[str, float]] = {}
     for cl in list(getattr(spec, "cross_loadings", None) or []):
         iid = str(getattr(cl, "item_id", "") or "")
         fid = str(getattr(cl, "factor_id", "") or "")
-        cross_by_item.setdefault(iid, []).append((fid, _num(getattr(cl, "loading", 0.0))))
-
-    #: dimension id -> owning construct id, so a dimension inherits the
-    #: construct's declared correlations when we look up cross-factor terms.
-    owner_of: Dict[str, str] = {}
-    for c in list(getattr(spec, "constructs", None) or []):
-        cid = str(getattr(c, "id", "") or "")
-        owner_of[cid] = cid
-        for dim in list(getattr(c, "dimensions", None) or []):
-            owner_of[str(getattr(dim, "id", "") or "")] = cid
+        cross_by_item.setdefault(iid, {})[fid] = _num(getattr(cl, "loading", 0.0))
 
     for it in _safe_items(spec):
         iid = str(getattr(it, "id", "") or "")
         iname = _label(it)
         home = _safe_home_factor(spec, iid)
         lam_h = _num(getattr(it, "loading", 0.0))
-        comm = lam_h * lam_h
 
-        for fid, lam_c in cross_by_item.get(iid, ()):
+        # The item's row of Lambda, as (factor id, loading) pairs, then the
+        # quadratic form ARCHITECTURE step 6 specifies:
+        # communality = Lambda[j] @ Phi @ Lambda[j].
+        row: List[Tuple[str, float]] = []
+        if home is not None:
+            row.append((home, lam_h))
+        for fid, lam_c in cross_by_item.get(iid, {}).items():
             if home is not None and fid == home:
-                continue
-            comm += lam_c * lam_c
-            if home is not None:
-                key = _symmetric_pair_key(owner_of.get(home, home),
-                                          owner_of.get(fid, fid))
-                r = declared_r.get(key, 0.0)
-                if r:
-                    comm += 2.0 * lam_h * lam_c * r
+                continue          # compile.py ignores a home-factor cross-loading
+            if fid not in solution.index:
+                continue          # unknown factor: CROSSLOAD_UNKNOWN_FACTOR covers it
+            row.append((fid, lam_c))
+
+        if row:
+            comm = 0.0
+            for fa, la in row:
+                for fb, lb in row:
+                    comm += la * lb * (1.0 if fa == fb
+                                       else solution.correlation(fa, fb))
+        else:
+            # No resolvable home factor (a malformed spec): fall back on the
+            # orthogonal sum of squares rather than reporting nothing at all.
+            comm = lam_h * lam_h + sum(
+                v * v for f, v in cross_by_item.get(iid, {}).items())
+        # The method factor is a separate latent with a unit variance and no
+        # paths or covariances, so it is orthogonal to every other factor and
+        # contributes exactly its squared loading.
         if cmb_on and (not cmb_items or iid in cmb_items):
             comm += cmb_loading * cmb_loading
 
@@ -1199,30 +1702,21 @@ def _check_variance_bounds(spec: ModelSpec, out: List[Diagnostic]) -> None:
                 f"هيوود (Heywood case).",
                 where=iid,
                 hint_en="Lower the primary loading, the cross-loadings, or "
-                        "the common-method loading until the sum of squared "
-                        "loadings is below 1.",
+                        "the common-method loading until the implied "
+                        "communality is below 1; remember that a cross-loading "
+                        "on a correlated factor adds 2*lambda_h*lambda_c*r, "
+                        "not just its own square.",
                 hint_ar="اخفض التشبع الأساسي أو التشبعات المتقاطعة أو تشبع "
-                        "عامل الطريقة المشتركة حتى يصبح مجموع مربعات التشبعات "
-                        "أقل من 1.",
+                        "عامل الطريقة المشتركة حتى يصبح الشيوع المُستنبَط أقل "
+                        "من 1، مع ملاحظة أن التشبع المتقاطع على عامل مرتبط "
+                        "بالعامل الأم يضيف المقدار 2×التشبع الأساسي×التشبع "
+                        "المتقاطع×معامل الارتباط، لا مربعه فقط.",
             ))
 
     # ---- R^2 per endogenous construct ------------------------------------ #
-    preds: Dict[str, List[Tuple[str, float]]] = {}
-    for p in list(getattr(spec, "paths", None) or []):
-        cs = lut.get(str(getattr(p, "source", "") or ""))
-        ct = lut.get(str(getattr(p, "target", "") or ""))
-        if cs is None or ct is None:
-            continue
-        sid = str(getattr(cs, "id", ""))
-        tid = str(getattr(ct, "id", ""))
-        if sid == tid:
-            continue
-        try:
-            coef = _num(p.resolved_coefficient())
-        except Exception:
-            coef = _num(getattr(p, "coefficient", 0.0))
-        preds.setdefault(tid, []).append((sid, coef))
-
+    # ``solution.explained`` already holds ``b' Phi_PP b`` for every latent
+    # node, evaluated in the implied metric and with duplicate paths resolved
+    # the compiler's way (last one wins).
     ix_extra: Dict[str, float] = {}
     for ix in list(getattr(spec, "interactions", None) or []):
         ct = lut.get(str(getattr(ix, "target", "") or ""))
@@ -1235,27 +1729,10 @@ def _check_variance_bounds(spec: ModelSpec, out: List[Diagnostic]) -> None:
         tid = str(getattr(ct, "id", ""))
         ix_extra[tid] = ix_extra.get(tid, 0.0) + coef * coef
 
-    for tid in set(list(preds.keys()) + list(ix_extra.keys())):
-        rows = preds.get(tid, [])
-        # aggregate duplicate predictors so a duplicate path does not
-        # double-count its own variance share
-        agg: Dict[str, float] = {}
-        for sid, coef in rows:
-            agg[sid] = agg.get(sid, 0.0) + coef
-        ids = list(agg.keys())
-        b = np.array([agg[s] for s in ids], dtype=float)
-        k = len(ids)
-        if k:
-            R = np.eye(k)
-            for i in range(k):
-                for j in range(i + 1, k):
-                    r = declared_r.get(_symmetric_pair_key(ids[i], ids[j]), 0.0)
-                    R[i, j] = R[j, i] = r
-            explained = float(b @ R @ b)
-        else:
-            explained = 0.0
-        explained += ix_extra.get(tid, 0.0)
-
+    targets = list(solution.coefficients.keys())
+    targets += [t for t in ix_extra if t not in solution.coefficients]
+    for tid in targets:
+        explained = solution.explained.get(tid, 0.0) + ix_extra.get(tid, 0.0)
         if explained >= 1.0 - _TOL:
             cname = _label(lut.get(tid), tid)
             out.append(_d(
@@ -1269,9 +1746,13 @@ def _check_variance_bounds(spec: ModelSpec, out: List[Diagnostic]) -> None:
                 f"variance) سالبًا، وهي حالة هيوود على المستوى البنائي.",
                 where=tid,
                 hint_en="Lower the incoming path coefficients, or lower the "
-                        "correlations among its predictors.",
+                        "correlations among its predictors - including the "
+                        "correlations the model itself induces, such as the "
+                        "one between X and M in X -> M -> Y.",
                 hint_ar="اخفض معاملات المسارات الداخلة إلى هذا المتغير، أو "
-                        "اخفض الارتباطات بين المتغيرات المتنبئة به.",
+                        "اخفض الارتباطات بين المتغيرات المتنبئة به، ومنها "
+                        "الارتباطات التي يولّدها النموذج نفسه مثل الارتباط بين "
+                        "المتغير المستقل والمتغير الوسيط في سلسلة الوساطة.",
             ))
 
 
@@ -1490,14 +1971,28 @@ def _check_identification(spec: ModelSpec, out: List[Diagnostic]) -> None:
     except (TypeError, ValueError):
         n = 0
     need = MIN_CASES_PER_PARAMETER * q
-    if q > 0 and n > 0 and n < need:
+    # The contract's condition is literally ``N < 5 * free parameters``, and
+    # N = 0 or N = -50 satisfy it just as N = 134 does.  The old ``n > 0``
+    # guard made the check non-monotone: tightening the sample size from 1 to
+    # 0 made the warning disappear, which is exactly backwards.  A non-positive
+    # N is reported under the same code (there is no sample at all), with the
+    # extra sentence the researcher needs.
+    if q > 0 and n < need:
+        if n <= 0:
+            extra_en = (" A sample size of zero or less cannot be drawn at "
+                        "all, so nothing can be generated or estimated.")
+            extra_ar = (" وحجم عينة يساوي صفرًا أو أقل لا يمكن سحبه أصلًا، "
+                        "فلا يمكن توليد بيانات ولا تقدير النموذج.")
+        else:
+            extra_en = extra_ar = ""
         out.append(_d(
             Severity.WARNING,
             "SAMPLE_SIZE_TOO_SMALL",
             f"The planned sample size (N = {n}) is below five cases per free "
-            f"parameter: {q} parameters require at least N = {need}.",
+            f"parameter: {q} parameters require at least N = {need}."
+            f"{extra_en}",
             f"حجم العينة المخطَّط (N = {n}) أقل من خمس حالات لكل معلمة حرة: "
-            f"فـ {q} معلمة تتطلب {need} حالة على الأقل.",
+            f"فـ {q} معلمة تتطلب {need} حالة على الأقل.{extra_ar}",
             hint_en=f"Raise N to at least {need} (the safer 10:1 rule asks "
                     f"for {10 * q}).",
             hint_ar=f"ارفع حجم العينة إلى {need} على الأقل (والقاعدة الأكثر "
@@ -1785,6 +2280,13 @@ def _check_compiled(cm: Any, out: List[Diagnostic]) -> None:
         int(Lambda.shape[1]) if Lambda is not None else 0)
     item_names = _names(cm, "item_names", "item_ids", size=p, prefix="Y")
     factor_names = _names(cm, "factor_names", "factor_ids", size=m, prefix="F")
+    # ``Diagnostic.where`` is declared in docs/ARCHITECTURE.md as the
+    # construct / item / path *id*, and the UI selects the offending object by
+    # it.  A display name there never matches anything (two items may even
+    # share a name), so the id goes in ``where`` and the name stays in the
+    # message, where a human reads it.
+    item_keys = _names(cm, "item_ids", "item_names", size=p, prefix="Y")
+    factor_keys = _names(cm, "factor_ids", "factor_names", size=m, prefix="F")
 
     # -- compiler warnings surfaced as INFO -------------------------------- #
     for w in list(getattr(cm, "warnings", None) or []):
@@ -1806,6 +2308,7 @@ def _check_compiled(cm: Any, out: List[Diagnostic]) -> None:
             v = float(theta_d[j])
             if v <= HEYWOOD_FLOOR * (1.0 + 1e-6):
                 name = item_names[j] if j < len(item_names) else f"Y{j + 1}"
+                key = item_keys[j] if j < len(item_keys) else name
                 out.append(_d(
                     Severity.ERROR,
                     "HEYWOOD_CASE",
@@ -1816,7 +2319,7 @@ def _check_compiled(cm: Any, out: List[Diagnostic]) -> None:
                     f"{v:.6f}، وهي حالة هيوود (Heywood case) محقَّقة فعلاً "
                     f"اضطر المُجمِّع إلى تثبيتها عند الحد الأدنى "
                     f"{HEYWOOD_FLOOR:g}.",
-                    where=name,
+                    where=key,
                     hint_en="Lower this item's loading (or its cross-loadings "
                             "and the method loading) so its communality stays "
                             "below 1.",
@@ -1839,6 +2342,7 @@ def _check_compiled(cm: Any, out: List[Diagnostic]) -> None:
             v = float(psi_d[i])
             if v <= HEYWOOD_FLOOR * (1.0 + 1e-6):
                 name = factor_names[i] if i < len(factor_names) else f"F{i + 1}"
+                key = factor_keys[i] if i < len(factor_keys) else name
                 out.append(_d(
                     Severity.ERROR,
                     "HEYWOOD_CASE",
@@ -1848,7 +2352,7 @@ def _check_compiled(cm: Any, out: List[Diagnostic]) -> None:
                     f"انتهى المتغير الكامن «{name}» بتباين بواقٍ (disturbance "
                     f"variance) يساوي {v:.6f}، وهي حالة هيوود على المستوى "
                     f"البنائي: أي أن متنبئاته تفسِّر تباينه كله تقريبًا.",
-                    where=name,
+                    where=key,
                     hint_en="Lower the path coefficients entering this latent "
                             "variable.",
                     hint_ar="اخفض معاملات المسارات الداخلة إلى هذا المتغير "
@@ -1866,6 +2370,7 @@ def _check_compiled(cm: Any, out: List[Diagnostic]) -> None:
             r2 = float(b @ Phi @ b)
             if r2 > 1.0 + 1e-8:
                 name = factor_names[i] if i < len(factor_names) else f"F{i + 1}"
+                key = factor_keys[i] if i < len(factor_keys) else name
                 out.append(_d(
                     Severity.ERROR,
                     "R2_EXCEEDS_ONE",
@@ -1875,7 +2380,7 @@ def _check_compiled(cm: Any, out: List[Diagnostic]) -> None:
                     f"معامل التحديد R² المحقَّق للمتغير الكامن «{name}» يساوي "
                     f"{r2:.4f} أي أكبر من 1، ومن ثَمَّ يكون تباين البواقي "
                     f"سالبًا.",
-                    where=name,
+                    where=key,
                     hint_en="Lower the incoming path coefficients, or reduce "
                             "the correlations among the predictors.",
                     hint_ar="اخفض معاملات المسارات الداخلة، أو اخفض الارتباطات "
@@ -1965,6 +2470,7 @@ def _check_compiled(cm: Any, out: List[Diagnostic]) -> None:
         c = float(comm_d[j])
         if c < LOW_COMMUNALITY_FLOOR:
             name = item_names[j] if j < len(item_names) else f"Y{j + 1}"
+            key = item_keys[j] if j < len(item_keys) else name
             out.append(_d(
                 Severity.WARNING,
                 "LOW_COMMUNALITY",
@@ -1976,7 +2482,7 @@ def _check_compiled(cm: Any, out: List[Diagnostic]) -> None:
                 f"الحد {LOW_COMMUNALITY_FLOOR:.2f}: أي أن العوامل تفسِّر أقل "
                 f"من {100 * LOW_COMMUNALITY_FLOOR:.0f}% من تباين البند، فهو "
                 f"لا يكاد يقيس شيئًا.",
-                where=name,
+                where=key,
                 hint_en="Raise this item's loading above 0.45, or drop the "
                         "item from the scale.",
                 hint_ar="ارفع تشبع هذا البند فوق 0.45، أو احذف البند من "

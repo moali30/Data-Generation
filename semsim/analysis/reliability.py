@@ -1386,19 +1386,19 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
         # that anything was wrong.  Heywood cases are the most informative
         # thing a measurement model can report, so they are recorded here --
         # naming the factor and the item -- *before* the clip is applied.
-        factor_label = factor_name or factor_id
+        heywood_label = factor_name or factor_id
         for position in heywood_items(lam):
             raw = float(lam[position])
             flags.append(_bilingual(
                 f"Heywood case: item '{columns[position]}' on factor "
-                f"'{factor_label}' has a standardised loading of {raw:.3f}, "
+                f"'{heywood_label}' has a standardised loading of {raw:.3f}, "
                 f"which implies a negative error variance of "
                 f"{1.0 - raw ** 2:.3f}. The solution is inadmissible and the "
                 f"reliability of this factor is overstated; the loading was "
                 f"clipped to {_MAX_ABS_LOADING:.3f} only so the coefficients "
                 f"below remain computable.",
                 f"حالة هيوود: البند '{columns[position]}' على العامل "
-                f"'{factor_label}' يحمل تشبُّعًا معياريًا مقداره {raw:.3f}، "
+                f"'{heywood_label}' يحمل تشبُّعًا معياريًا مقداره {raw:.3f}، "
                 f"وهو ما يستلزم تباينًا سالبًا لخطأ القياس مقداره "
                 f"{1.0 - raw ** 2:.3f}. والحل بهذه الصورة غير مقبول إحصائيًا، "
                 f"وثبات هذا العامل مُبالَغ فيه؛ ولم يُقصَر التشبُّع عند "

@@ -213,8 +213,13 @@ def from_dict(payload: Dict[str, Any]) -> ModelSpec:
 # --------------------------------------------------------------------------- #
 
 
-def save(spec: ModelSpec, path: "str | os.PathLike[str]") -> None:
-    """Write ``spec`` to ``path`` as UTF-8 JSON (Arabic labels stay readable)."""
+def save(spec: ModelSpec, path: "str | os.PathLike[str]") -> str:
+    """Write ``spec`` to ``path`` as UTF-8 JSON (Arabic labels stay readable).
+
+    Returns the path actually written, which may differ from the one given:
+    the project suffix is appended when it is missing, and a caller that has
+    to reopen or list the file would otherwise have to re-derive it.
+    """
     target = str(path)
     if not target.endswith(PROJECT_SUFFIX):
         target += PROJECT_SUFFIX
@@ -235,6 +240,7 @@ def save(spec: ModelSpec, path: "str | os.PathLike[str]") -> None:
             f"Could not write project file: {exc}",
             f"تعذّر حفظ ملف المشروع: {exc}",
         ) from exc
+    return target
 
 
 def load(path: "str | os.PathLike[str]") -> ModelSpec:

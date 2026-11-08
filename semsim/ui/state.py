@@ -206,10 +206,8 @@ class AppState(QObject):
         target = path or self._path
         if not target:
             raise ValueError("no path to save to")
-        project_io.save(self._spec, target)
-        if not target.endswith(project_io.PROJECT_SUFFIX):
-            target += project_io.PROJECT_SUFFIX
-        self._path = target
+        self._path = project_io.save(self._spec, target)
+        target = self._path
         self._dirty = False
         self.project_changed.emit()
         return target

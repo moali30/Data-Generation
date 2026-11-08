@@ -65,6 +65,7 @@ from semsim.analysis.reliability import (
     average_variance_extracted,
     composite_reliability,
     cronbach_alpha,
+    heywood_items,
     htmt_matrix,
     omega_total,
     principal_axis_loadings,
@@ -820,6 +821,256 @@ def test_analyse_consumes_a_real_estimation_result() -> None:
         assert abs(entry.composite_reliability
                    - composite_reliability(lam)) < 1e-9
     OBSERVED["estimator_ave"] = report.per_factor[0].ave
+
+
+# --------------------------------------------------------------------------- #
+# Regression tests: the seven defects repaired in this module
+# --------------------------------------------------------------------------- #
+
+
+def _reverse_coded_population(loading: float = 0.8, phi: float = 0.3,
+                              k: int = 4) -> np.ndarray:
+    """Two congeneric factors whose first item of FA is reverse-worded.
+
+    The compiler models a reverse-worded item as a negated loading (see
+    ``REVERSE_CODED`` in :mod:`semsim.core.compile`), so until the item is
+    recoded its raw responses run *against* its own factor.  That is the
+    ordinary simulated data on which the sign defects below fire.
+    """
+    L = np.zeros((2 * k, 2))
+    L[:k, 0] = loading
+    L[0, 0] = -loading
+    L[k:, 1] = loading
+    Phi = np.array([[1.0, phi], [phi, 1.0]])
+    R = L @ Phi @ L.T
+    np.fill_diagonal(R, 1.0)
+    return R
+
+
+def test_htmt_verdict_is_taken_on_the_magnitude_not_the_signed_ratio() -> None:
+    """Defect 1: two constructs correlated -0.95 must fail, not pass.
+
+    Discriminant validity is a claim about how *strongly* two constructs are
+    related.  HTMT = -0.944 is as fatal as +0.944; comparing the signed ratio
+    against 0.85 let the worst case through untouched.  The reported matrix
+    must still carry the sign, so the direction stays visible.
+    """
+    rng = np.random.default_rng(909)
+    spec = two_factor_spec(k=4, loading=0.7)
+    names = spec.all_item_names()
+    L = np.zeros((8, 2))
+    L[:4, 0] = 0.7
+    L[4:, 1] = 0.7
+    Phi = np.array([[1.0, -0.95], [-0.95, 1.0]])
+    R = L @ Phi @ L.T
+    np.fill_diagonal(R, 1.0)
+    x = rng.multivariate_normal(np.zeros(8), R, size=3000)
+    report = analyse(pd.DataFrame(x, columns=names), spec,
+                     htmt_threshold=0.85)
+
+    value = float(report.htmt.iloc[0, 1])
+    OBSERVED["htmt_negative_pair"] = value
+    assert value < -0.85, value                 # the sign is preserved
+    assert report.htmt_passed is False, value
+    assert any("HTMT" in flag for flag in report.flags)
+    # And a genuinely distinct pair still passes, so the fix is not a blanket
+    # failure of everything.
+    clean = analyse(pd.DataFrame(
+        rng.multivariate_normal(np.zeros(8), two_factor_population(0.7, 0.3),
+                                size=3000), columns=names), spec)
+    assert clean.htmt_passed is True
+
+
+def test_htmt_block_survives_two_factors_sharing_a_display_label() -> None:
+    """Defect 2: the HTMT item mapping must be keyed by factor id.
+
+    Labels are free text, so two constructs can carry the same one.  Keying
+    the mapping by label collapsed the two entries into one and the call died
+    with "at least two factors are needed".
+    """
+    rng = np.random.default_rng(4242)
+    spec = ModelSpec()
+    spec.add_construct("FA", label_en="Trust", n_items=4, loading=0.8)
+    spec.add_construct("FB", label_en="Trust", n_items=4, loading=0.8)
+    names = spec.all_item_names()
+    x = rng.multivariate_normal(np.zeros(8),
+                                two_factor_population(0.8, 0.3), size=1500)
+    report = analyse(pd.DataFrame(x, columns=names), spec)
+
+    assert report.htmt.shape == (2, 2)
+    observed = float(report.htmt.to_numpy(dtype=float)[0, 1])
+    OBSERVED["htmt_shared_label"] = observed
+    assert abs(observed - 0.3) < 0.05, observed
+    # The axes still read in the display labels the rest of the report uses.
+    assert list(report.htmt.index) == ["Trust", "Trust"]
+
+
+def test_cross_loading_flag_compares_magnitude_with_magnitude() -> None:
+    """Defect 3: a reverse-keyed item is not a cross-loading.
+
+    ``max_cross_correlation`` is a maximum over *absolute* foreign
+    correlations, so it has to be compared against the *absolute* home
+    correlation.  Compared against the signed one, every item with a negative
+    home correlation was flagged however weakly it touched any other factor.
+    The negative home correlation gets its own column and its own flag.
+    """
+    rng = np.random.default_rng(1515)
+    spec = two_factor_spec(k=4, loading=0.8)
+    names = spec.all_item_names()
+    R = _reverse_coded_population(0.8, 0.3)
+    x = rng.multivariate_normal(np.zeros(8), R, size=2500)
+    report = analyse(pd.DataFrame(x, columns=names), spec)
+
+    table = report.cross_loading_table.set_index("item")
+    row = table.loc[names[0]]
+    home = float(row["home_correlation"])
+    cross = float(row["max_cross_correlation"])
+    OBSERVED["reverse_item_home_r"] = home
+    OBSERVED["reverse_item_max_cross_r"] = cross
+    assert home < -0.3, home                    # it really is reverse-keyed
+    assert cross < abs(home) - 0.10, (cross, home)
+    assert bool(row["flagged"]) is False        # no spurious cross-loading
+    assert bool(row["negative_home_correlation"]) is True
+    assert not table["flagged"].any()
+    assert int(table["negative_home_correlation"].sum()) == 1
+    assert any("negatively" in flag for flag in report.flags)
+    for flag in report.flags:
+        assert " | " in flag and any(ord(ch) > 1500 for ch in flag), flag
+
+    # A real cross-loading is still caught: an item built half from each
+    # factor correlates with the foreign one about as strongly as with its own.
+    mixed = x.copy()
+    mixed[:, 0] = x[:, 1] * 0.5 + x[:, 4] * 0.5
+    flagged = analyse(pd.DataFrame(mixed, columns=names), spec)
+    first = flagged.cross_loading_table.set_index("item").loc[names[0]]
+    assert bool(first["flagged"]) is True, dict(first)
+
+
+def test_heywood_case_is_reported_rather_than_clipped_away() -> None:
+    """Defect 4: a negative unique variance must reach the report.
+
+    ``composite_reliability`` clips a negative ``theta`` to keep its
+    denominator usable -- with every ``theta`` negative that returns exactly
+    1.0, i.e. "perfect reliability" precisely when the solution is
+    inadmissible.  The clipped value is still returned, but the fact is now
+    recoverable with :func:`heywood_items` and :func:`analyse` names the
+    factor and the item.
+    """
+    assert composite_reliability([0.8] * 4, [-0.1] * 4) == 1.0
+    assert heywood_items([0.8] * 4, [-0.1] * 4) == [0, 1, 2, 3]
+    assert heywood_items([0.8, 0.8], [-0.2, 0.36]) == [0]
+    assert heywood_items([1.04, 0.8, 0.8]) == [0]
+    assert heywood_items([0.8, 0.8, 0.8]) == []
+    assert heywood_items([1.0]) == []           # a fixed single indicator
+    with pytest.raises(SpecificationError):
+        heywood_items([0.8, 0.8], [0.3])
+
+    rng = np.random.default_rng(72)
+    spec = two_factor_spec(k=4, loading=0.8)
+    names = spec.all_item_names()
+
+    class HeywoodEstimation:
+        loadings = pd.DataFrame({
+            "item": names,
+            "factor": ["FA"] * 4 + ["FB"] * 4,
+            "std": [1.04, 0.8, 0.8, 0.8] + [0.8] * 4,
+        })
+
+    x = rng.multivariate_normal(np.zeros(8), two_factor_population(0.8, 0.3),
+                                size=600)
+    report = analyse(pd.DataFrame(x, columns=names), spec, HeywoodEstimation())
+    heywood_flags = [flag for flag in report.flags if "Heywood" in flag]
+    OBSERVED["heywood_flags"] = float(len(heywood_flags))
+    assert len(heywood_flags) == 1, report.flags
+    assert names[0] in heywood_flags[0] and "FA" in heywood_flags[0]
+    assert "هيوود" in heywood_flags[0]
+    # The coefficients stay computable: the loading is still clipped.
+    assert 0.0 < report.per_factor[0].composite_reliability <= 1.0
+    # A proper solution raises no such flag.
+    clean = analyse(pd.DataFrame(x, columns=names), spec)
+    assert not any("Heywood" in flag for flag in clean.flags)
+
+
+def test_htmt_matrix_leaves_the_callers_correlation_frame_alone() -> None:
+    """Defect 5: ``correlations`` is read, never rewritten.
+
+    The function stringifies its axis labels; doing that to the caller's own
+    object left a correlation frame whose integer labels had silently become
+    strings, so the caller could no longer index it.
+    """
+    names = [1, 2, 3, 4]
+    corr = pd.DataFrame(np.array([[1.0, 0.6, 0.2, 0.2],
+                                  [0.6, 1.0, 0.2, 0.2],
+                                  [0.2, 0.2, 1.0, 0.6],
+                                  [0.2, 0.2, 0.6, 1.0]]),
+                        index=names, columns=names)
+    snapshot = corr.copy(deep=True)
+    table = htmt_matrix(pd.DataFrame(), {"A": [1, 2], "B": [3, 4]},
+                        correlations=corr)
+
+    assert list(corr.index) == names, list(corr.index)
+    assert list(corr.columns) == names, list(corr.columns)
+    assert corr.equals(snapshot)
+    assert float(corr.loc[1, 2]) == 0.6          # still indexable as before
+    # The result itself is unchanged by the copy.
+    assert abs(float(table.loc["A", "B"]) - 0.2 / 0.6) < 1e-12
+
+
+def test_polychoric_validates_before_short_circuiting_on_identity() -> None:
+    """Defect 6: a degenerate variable is rejected even against itself.
+
+    The identity short-circuit used to run before every check, so a constant
+    column correlated with itself returned 1.0 -- a correlation that is
+    undefined, there being no variance -- and an all-NaN column returned 1.0
+    on the strength of no observations at all.
+    """
+    with pytest.raises(SpecificationError) as constant:
+        polychoric_correlation(np.full(200, 3.0), np.full(200, 3.0))
+    assert any(ord(ch) > 1500 for ch in constant.value.message_ar)
+    with pytest.raises(SpecificationError):
+        polychoric_correlation(np.full(200, np.nan), np.full(200, np.nan))
+    with pytest.raises(SpecificationError):      # one complete pair only
+        x = np.full(200, np.nan)
+        x[0] = 2.0
+        polychoric_correlation(x, x)
+
+    # A well-behaved ordinal item against itself is still exactly 1.0.
+    rng = np.random.default_rng(66)
+    good = rng.integers(1, 6, size=400).astype(float)
+    assert polychoric_correlation(good, good) == 1.0
+    good[::13] = np.nan
+    assert polychoric_correlation(good, good) == 1.0
+
+
+def test_single_item_factor_matches_its_documented_values() -> None:
+    """Defect 7: AVE = CR = omega = 1 exactly, as the docstring states.
+
+    A single indicator is not estimated: the standard specification fixes
+    ``lambda = 1`` and ``theta = 0``, so these coefficients are one by
+    definition.  The generic loading clip (a guard against dividing by zero
+    in the *estimated* case, which cannot arise here) dragged them to
+    0.998001, a number matching neither the documentation nor the ``omega =
+    1`` printed beside it.
+    """
+    rng = np.random.default_rng(1001)
+    spec = ModelSpec()
+    spec.add_construct("SINGLE", n_items=1, loading=0.8)
+    spec.add_construct("FB", n_items=4, loading=0.8)
+    names = spec.all_item_names()
+    x = rng.normal(size=(300, len(names)))
+    report = analyse(pd.DataFrame(x, columns=names), spec)
+
+    entry = report.per_factor[0]
+    assert entry.n_items == 1
+    assert entry.ave == 1.0
+    assert entry.composite_reliability == 1.0
+    assert entry.omega_total == 1.0
+    assert entry.sqrt_ave == 1.0
+    assert np.isnan(entry.cronbach_alpha)
+    assert float(report.fornell_larcker.iloc[0, 0]) == 1.0
+    assert any("single item" in flag for flag in report.flags)
+    # The multi-item factor beside it is untouched by the special case.
+    assert report.per_factor[1].composite_reliability < 1.0
 
 
 # --------------------------------------------------------------------------- #

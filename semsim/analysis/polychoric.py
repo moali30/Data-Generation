@@ -440,7 +440,10 @@ def polychoric_correlation(x: np.ndarray, y: np.ndarray, *,
     -------
     float
         The polychoric correlation, in ``[-0.999, 0.999]``.  Exactly ``1.0``
-        when ``x`` and ``y`` are element-wise identical.
+        when ``x`` and ``y`` are element-wise identical *and* both pass the
+        checks below -- a constant or wholly missing variable is rejected
+        even when it is paired with itself, because there is no variance (or
+        no observation) from which a correlation of any value could follow.
 
     Raises
     ------
@@ -482,8 +485,16 @@ def polychoric_correlation(x: np.ndarray, y: np.ndarray, *,
             f"{x_arr.size} مقابل {y_arr.size}.",
             n_x=int(x_arr.size), n_y=int(y_arr.size),
         )
-    if x_arr.size and np.array_equal(x_arr, y_arr, equal_nan=True):
-        return 1.0
+    # Whether the two variables are the same variable is decided on the
+    # arrays as given, before any case is dropped, but it is *acted* on only
+    # after the validity checks below.  Short-circuiting first meant that a
+    # constant column against itself returned 1.0 -- the correlation of a
+    # variable with no variance is undefined, not perfect -- and that an
+    # all-NaN column against itself returned 1.0 as well, with not a single
+    # observation behind it.  A degenerate variable has to be rejected
+    # whatever it is being correlated with, itself included.
+    identical = bool(x_arr.size
+                     and np.array_equal(x_arr, y_arr, equal_nan=True))
 
     keep = np.isfinite(x_arr) & np.isfinite(y_arr)
     x_arr = x_arr[keep]
@@ -510,6 +521,14 @@ def polychoric_correlation(x: np.ndarray, y: np.ndarray, *,
                 f"ولا يوجد لديه تباين يمكن أن يرتبط بغيره.",
                 variable=name,
             )
+
+    if identical:
+        # Both variables have now been shown to be usable, so the estimate
+        # really is one: the latent variable underlying a set of categories
+        # correlates perfectly with itself.  Returning here also spares the
+        # optimiser a boundary problem, since the likelihood is maximised at
+        # the edge of [-0.999, 0.999] and would never reach exactly 1.0.
+        return 1.0
 
     table = np.bincount(codes_x * n_y + codes_y,
                         minlength=n_x * n_y).astype(float).reshape(n_x, n_y)

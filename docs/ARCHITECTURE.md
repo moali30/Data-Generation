@@ -596,7 +596,7 @@ def calibrate(spec: ModelSpec, *, n=None, seed=None, progress=None) -> Calibrati
 PROJECT_SUFFIX = ".semsim"
 def to_dict(spec: ModelSpec) -> dict
 def from_dict(payload: dict) -> ModelSpec        # tolerant of older spec_version
-def save(spec: ModelSpec, path: str | os.PathLike) -> None
+def save(spec: ModelSpec, path: str | os.PathLike) -> str   # the path actually written
 def load(path: str | os.PathLike) -> ModelSpec
 def describe_project(path) -> dict               # cheap header read for a recents list
 ```
