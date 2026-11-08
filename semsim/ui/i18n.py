@@ -195,6 +195,13 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "s.chain": ("سلسلة الوساطة", "Mediation chain"),
     "s.diagram": ("مخطط المسار", "Path diagram"),
     "s.auto_layout": ("ترتيب تلقائي", "Auto layout"),
+    "s.diagram.show_items": ("إظهار الأسئلة", "Show items"),
+    "s.diagram.mirror": ("اتجاه المخطط من اليمين لليسار",
+                         "Right-to-left diagram flow"),
+    "s.diagram.fit": ("ملء الشاشة", "Fit to view"),
+    "s.diagram.export": ("تصدير المخطط صورة", "Export diagram as image"),
+    "s.diagram.empty": ("لا يوجد متغيرات كامنة لعرضها بعد",
+                        "No latent variables to draw yet"),
 
     "effect.none": ("لا يوجد تأثير", "None"),
     "effect.trivial": ("ضئيل جدًا", "Trivial"),

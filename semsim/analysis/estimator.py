@@ -1305,3 +1305,733 @@ def _scaled_inverse(info: np.ndarray, n: int) -> Tuple[np.ndarray, bool]:
             except np.linalg.LinAlgError:
                 pass
         return scale * np.linalg.pinv(info, rcond=1e-12), True
+
+
+# --------------------------------------------------------------------------- #
+# The result
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class EstimationResult:
+    """Everything one model fit produced.
+
+    Attributes
+    ----------
+    converged : bool
+        Whether an optimiser reported success.
+    n_iter : int
+        Iterations used by the optimiser that produced the solution.
+    estimator : EstimatorKind
+        The discrepancy function that was minimised.
+    n, n_free, df : int
+        Complete cases, free parameters and degrees of freedom
+        ``p (p + 1) / 2 - n_free``.
+    fmin : float
+        Discrepancy at the optimum.
+    sigma_hat, sample_cov : numpy.ndarray
+        ``(p, p)`` model-implied and observed matrices.
+    parameters, standard_errors, z_values, p_values, standardised : dict
+        Free-parameter estimates keyed by label, all five sharing one key set.
+    loadings, path_estimates : pandas.DataFrame
+        Reporting tables carrying both metrics; fixed marker rows are included
+        and flagged.
+    r_squared : dict of str to float
+        ``1 - Psi_ii / Phi_ii`` per endogenous latent variable, keyed by name.
+    message : str
+        Bilingual notes: the optimiser used, pseudo-inverse fallbacks, omitted
+        latent interactions, listwise deletion, and so on.
+    """
+
+    converged: bool
+    n_iter: int
+    estimator: EstimatorKind
+    n: int
+    n_free: int
+    df: int
+    fmin: float
+    sigma_hat: np.ndarray
+    sample_cov: np.ndarray
+    parameters: Dict[str, float]
+    standard_errors: Dict[str, float]
+    z_values: Dict[str, float]
+    p_values: Dict[str, float]
+    standardised: Dict[str, float]
+    loadings: pd.DataFrame
+    path_estimates: pd.DataFrame
+    r_squared: Dict[str, float]
+    message: str
+    # -- additions (never positional for the published contract) ----------- #
+    chi_square: float = 0.0
+    item_names: List[str] = field(default_factory=list)
+    factor_names: List[str] = field(default_factory=list)
+    theta: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    parameter_labels: List[str] = field(default_factory=list)
+    parameter_kinds: Dict[str, str] = field(default_factory=dict)
+    fixed_parameters: Dict[str, float] = field(default_factory=dict)
+    standardised_all: Dict[str, float] = field(default_factory=dict)
+    standard_errors_observed: Dict[str, float] = field(default_factory=dict)
+    acov: Optional[np.ndarray] = None
+    acov_observed: Optional[np.ndarray] = None
+    se_method: str = "expected_information"
+    optimiser: str = ""
+    start_used: str = ""
+    r_squared_by_id: Dict[str, float] = field(default_factory=dict)
+    second_order_loadings: Optional[pd.DataFrame] = None
+    latent_covariance: Optional[np.ndarray] = None
+    warnings: List[str] = field(default_factory=list)
+
+    def parameter_table(self) -> pd.DataFrame:
+        """Every reported parameter in one long table.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Columns ``label, kind, lhs, rhs, est, se, z, p, std, fixed``.
+
+        References
+        ----------
+        Rosseel, Y. (2012). lavaan: An R package for structural equation
+            modeling. *Journal of Statistical Software*, 48(2), 1-36.
+        """
+        frames = [self.loadings, self.path_estimates, self._variance_table]
+        return pd.concat([f for f in frames if f is not None],
+                         ignore_index=True, sort=False)
+
+    _variance_table: Optional[pd.DataFrame] = None
+
+
+# --------------------------------------------------------------------------- #
+# Standardisation
+# --------------------------------------------------------------------------- #
+
+
+def _standardise(par: _Parameterisation, theta: np.ndarray
+                 ) -> Tuple[Dict[str, float], Dict[str, float], np.ndarray,
+                            np.ndarray]:
+    """Standardised values for every free and fixed parameter.
+
+    Applies the completely standardised transformation of Bollen (1989,
+    section 8.1)::
+
+        lambda*_jk = lambda_jk sqrt(Phi_kk) / sqrt(Sigma_jj)
+        beta*_ij   = beta_ij   sqrt(Phi_jj) / sqrt(Phi_ii)
+
+    with variances expressed as proportions of the total variance of the
+    variable they belong to and covariances as correlations.
+
+    Parameters
+    ----------
+    par : _Parameterisation
+        The parameterisation.
+    theta : numpy.ndarray
+        Unstandardised estimates.
+
+    Returns
+    -------
+    (dict, dict, numpy.ndarray, numpy.ndarray)
+        Standardised values of the free parameters, of the fixed marker
+        entries, and the implied ``Phi`` and ``Sigma``.
+
+    References
+    ----------
+    Bollen, K. A. (1989). *Structural Equations with Latent Variables*,
+        section 8.1. Wiley.
+    """
+    cm = par.cm
+    Lambda, B, Psi, Theta = par.matrices(theta)
+    with _quiet():
+        Phi = par.phi(B, Psi)
+        if Phi is None:
+            Phi = np.eye(par.m)
+        Sigma = _symmetrise(Lambda @ Phi @ Lambda.T + Theta)
+        sd_f = np.sqrt(np.clip(np.diag(Phi), 1e-300, None))
+        sd_y = np.sqrt(np.clip(np.diag(Sigma), 1e-300, None))
+
+    free: Dict[str, float] = {}
+    for idx, prm in enumerate(par.parameters):
+        value = float(theta[idx])
+        if prm.kind == KIND_LOADING:
+            free[prm.label] = value * sd_f[prm.j] / sd_y[prm.i]
+        elif prm.kind in (KIND_PATH, KIND_SECOND_ORDER):
+            free[prm.label] = value * sd_f[prm.j] / sd_f[prm.i]
+        elif prm.kind == KIND_LATENT_VARIANCE:
+            free[prm.label] = (1.0 if not par.endogenous[prm.i]
+                               else value / (sd_f[prm.i] ** 2))
+        elif prm.kind == KIND_LATENT_COVARIANCE:
+            free[prm.label] = value / (sd_f[prm.i] * sd_f[prm.j])
+        elif prm.kind == KIND_RESIDUAL_VARIANCE:
+            free[prm.label] = value / (sd_y[prm.i] ** 2)
+        elif prm.kind == KIND_RESIDUAL_COVARIANCE:
+            free[prm.label] = value / (sd_y[prm.i] * sd_y[prm.j])
+
+    fixed: Dict[str, float] = {}
+    for (j, f), value in par.lambda_fixed.items():
+        label = f"{cm.factor_names[f]}=~{cm.item_names[j]}"
+        fixed[label] = float(value) * sd_f[f] / sd_y[j]
+    for (i, k), value in par.b_fixed.items():
+        label = f"{cm.factor_names[i]}~{cm.factor_names[k]}"
+        fixed[label] = float(value) * sd_f[k] / sd_f[i]
+    return free, fixed, Phi, Sigma
+
+
+# --------------------------------------------------------------------------- #
+# Sample moments
+# --------------------------------------------------------------------------- #
+
+
+def _extract_matrix(data: pd.DataFrame, cm: "CompiledModel",
+                    notes: List[str]) -> Tuple[np.ndarray, int]:
+    """Pull the model's items out of a data frame as a complete-case array."""
+    if not isinstance(data, pd.DataFrame):
+        try:
+            data = pd.DataFrame(np.asarray(data, dtype=float),
+                                columns=list(cm.item_names))
+        except Exception as exc:  # pragma: no cover - defensive
+            raise SpecificationError(
+                "The data could not be read as a table of item scores.",
+                "تعذّر قراءة البيانات كجدول من درجات البنود.",
+                detail=str(exc),
+            ) from exc
+
+    columns: List[Any] = []
+    missing: List[str] = []
+    for name, iid in zip(cm.item_names, cm.item_ids):
+        if name in data.columns:
+            columns.append(name)
+        elif iid in data.columns:
+            columns.append(iid)
+        else:
+            missing.append(name)
+    if missing:
+        raise SpecificationError(
+            "The data does not contain a column for the following item(s): "
+            + ", ".join(missing)
+            + ". Make sure the column names match the item names in the model.",
+            "لا تحتوي البيانات على أعمدة للبنود التالية: "
+            + "، ".join(missing)
+            + ". تأكد من تطابق أسماء الأعمدة مع أسماء البنود في النموذج.",
+            missing=missing,
+        )
+
+    frame = data.loc[:, columns]
+    try:
+        values = frame.apply(pd.to_numeric, errors="raise").to_numpy(dtype=float)
+    except (ValueError, TypeError) as exc:
+        raise SpecificationError(
+            "At least one item column contains non-numeric values, so a "
+            "covariance matrix cannot be computed from it.",
+            "أحد أعمدة البنود على الأقل يحتوي على قيم غير رقمية، لذلك لا يمكن "
+            "حساب مصفوفة التغاير منه.",
+            detail=str(exc),
+        ) from exc
+
+    n_rows = values.shape[0]
+    complete = np.all(np.isfinite(values), axis=1)
+    values = values[complete]
+    dropped = int(n_rows - values.shape[0])
+    if dropped:
+        notes.append(_bilingual(
+            f"LISTWISE_DELETION: {dropped} case(s) with missing values were "
+            "excluded, leaving "
+            f"{values.shape[0]} complete case(s).",
+            f"الحذف بالقائمة: تم استبعاد {dropped} حالة تحتوي على قيم مفقودة، "
+            f"وبقيت {values.shape[0]} حالة كاملة.",
+        ))
+
+    n = int(values.shape[0])
+    p = cm.n_items
+    if n < 3:
+        raise SpecificationError(
+            f"Only {n} complete case(s) are available; a covariance matrix "
+            "cannot be estimated.",
+            f"لا تتوفر سوى {n} حالة كاملة، ولا يمكن حساب مصفوفة التغاير منها.",
+            n=n,
+        )
+    if n <= p:
+        raise IdentificationError(
+            f"The number of complete cases ({n}) does not exceed the number of "
+            f"items ({p}), so the sample covariance matrix is singular. "
+            "Increase the sample size or reduce the number of items.",
+            f"عدد الحالات الكاملة ({n}) لا يزيد على عدد البنود ({p})، لذلك تكون "
+            "مصفوفة تغاير العينة مفردة. ارفع حجم العينة أو قلّل عدد البنود.",
+            n=n, p=p,
+        )
+    return values, n
+
+
+def _resolve_polychoric(spec: ModelSpec, estimator: EstimatorKind,
+                        use_polychoric: Optional[bool]) -> bool:
+    """Decide whether the fit should run on a polychoric correlation matrix."""
+    if use_polychoric is not None:
+        return bool(use_polychoric)
+    if estimator is not EstimatorKind.DWLS:
+        return False
+    if not spec.analysis.use_polychoric_for_ordinal:
+        return False
+    items = spec.all_items()
+    return bool(items) and all(it.scale.kind is ScaleKind.LIKERT
+                               for it in items)
+
+
+def _sample_moments(values: np.ndarray, cm: "CompiledModel",
+                    want_polychoric: bool, notes: List[str]) -> np.ndarray:
+    """Sample covariance matrix, or the polychoric correlation matrix.
+
+    The polychoric estimator lives in :mod:`semsim.analysis.polychoric`, which
+    is imported lazily and duck-typed so this module keeps working while that
+    one is still being written; a Pearson covariance matrix is then used and
+    the substitution is recorded in the notes.
+    """
+    if want_polychoric:
+        try:  # pragma: no cover - depends on a sibling module
+            from semsim.analysis import polychoric as _poly  # type: ignore
+            frame = pd.DataFrame(values, columns=list(cm.item_names))
+            matrix = np.asarray(
+                getattr(_poly, "polychoric_matrix")(frame), dtype=float)
+            if matrix.shape == (cm.n_items, cm.n_items):
+                notes.append(_bilingual(
+                    "POLYCHORIC: the model was fitted to the polychoric "
+                    "correlation matrix of the ordinal items.",
+                    "ارتباط متعدد التصنيف: تم تقدير النموذج على مصفوفة الارتباط "
+                    "متعدد التصنيف للبنود الرتبية.",
+                ))
+                return _symmetrise(matrix)
+        except Exception as exc:
+            notes.append(_bilingual(
+                "POLYCHORIC_UNAVAILABLE: the polychoric correlation matrix "
+                "could not be computed, so the Pearson covariance matrix was "
+                f"used instead ({type(exc).__name__}).",
+                "تعذّر حساب مصفوفة الارتباط متعدد التصنيف، فتم استخدام مصفوفة "
+                f"تغاير بيرسون بدلًا منها ({type(exc).__name__}).",
+            ))
+    with _quiet():
+        cov = np.cov(values, rowvar=False, ddof=1)
+    return _symmetrise(np.atleast_2d(np.asarray(cov, dtype=float)))
+
+
+# --------------------------------------------------------------------------- #
+# Reporting tables
+# --------------------------------------------------------------------------- #
+
+_TABLE_COLUMNS = ["est", "se", "z", "p", "std"]
+
+
+def _row(label: str, kind: str, lhs: str, rhs: str, lhs_id: str, rhs_id: str,
+         est: float, se: float, z: float, pval: float, std: float,
+         fixed: bool) -> Dict[str, Any]:
+    """One row of a reporting table."""
+    return {
+        "label": label, "kind": kind,
+        "lhs": lhs, "rhs": rhs, "lhs_id": lhs_id, "rhs_id": rhs_id,
+        "est": float(est), "se": float(se), "z": float(z), "p": float(pval),
+        "std": float(std), "fixed": bool(fixed),
+    }
+
+
+def _build_tables(par: _Parameterisation, theta: np.ndarray,
+                  se: Dict[str, float], z: Dict[str, float],
+                  pv: Dict[str, float], std_free: Dict[str, float],
+                  std_fixed: Dict[str, float]
+                  ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame,
+                             pd.DataFrame]:
+    """Assemble the loading, structural and variance tables."""
+    cm = par.cm
+    nan = float("nan")
+
+    loading_rows: List[Dict[str, Any]] = []
+    for (j, f), value in sorted(par.lambda_fixed.items()):
+        label = f"{cm.factor_names[f]}=~{cm.item_names[j]}"
+        loading_rows.append(_row(
+            label, KIND_LOADING, cm.item_names[j], cm.factor_names[f],
+            cm.item_ids[j], cm.factor_ids[f], value, nan, nan, nan,
+            std_fixed.get(label, nan), True))
+    for idx, prm in enumerate(par.parameters):
+        if prm.kind != KIND_LOADING:
+            continue
+        loading_rows.append(_row(
+            prm.label, KIND_LOADING, prm.lhs, prm.rhs, prm.lhs_id, prm.rhs_id,
+            float(theta[idx]), se.get(prm.label, nan), z.get(prm.label, nan),
+            pv.get(prm.label, nan), std_free.get(prm.label, nan), False))
+    loadings = pd.DataFrame(loading_rows)
+    if not loadings.empty:
+        loadings = loadings.sort_values(
+            by=["rhs", "lhs"], kind="stable").reset_index(drop=True)
+        loadings = loadings.rename(columns={"lhs": "item", "rhs": "factor"})
+        loadings = loadings[["item", "factor"] + _TABLE_COLUMNS
+                            + ["label", "kind", "lhs_id", "rhs_id", "fixed"]]
+
+    path_rows: List[Dict[str, Any]] = []
+    for (i, k), value in sorted(par.b_fixed.items()):
+        label = f"{cm.factor_names[i]}~{cm.factor_names[k]}"
+        path_rows.append(_row(
+            label, KIND_SECOND_ORDER, cm.factor_names[i], cm.factor_names[k],
+            cm.factor_ids[i], cm.factor_ids[k], value, nan, nan, nan,
+            std_fixed.get(label, nan), True))
+    for idx, prm in enumerate(par.parameters):
+        if prm.kind not in (KIND_PATH, KIND_SECOND_ORDER):
+            continue
+        path_rows.append(_row(
+            prm.label, prm.kind, prm.lhs, prm.rhs, prm.lhs_id, prm.rhs_id,
+            float(theta[idx]), se.get(prm.label, nan), z.get(prm.label, nan),
+            pv.get(prm.label, nan), std_free.get(prm.label, nan), False))
+    paths = pd.DataFrame(path_rows)
+    if not paths.empty:
+        paths = paths.rename(columns={"rhs": "source", "lhs": "target"})
+        paths = paths.sort_values(by=["kind", "source", "target"],
+                                  kind="stable").reset_index(drop=True)
+        paths = paths[["source", "target"] + _TABLE_COLUMNS
+                      + ["label", "kind", "lhs_id", "rhs_id", "fixed"]]
+        second_order = paths[paths["kind"] == KIND_SECOND_ORDER].reset_index(
+            drop=True)
+    else:
+        second_order = paths
+
+    variance_rows: List[Dict[str, Any]] = []
+    for idx, prm in enumerate(par.parameters):
+        if prm.kind in (KIND_LOADING, KIND_PATH, KIND_SECOND_ORDER):
+            continue
+        variance_rows.append(_row(
+            prm.label, prm.kind, prm.lhs, prm.rhs, prm.lhs_id, prm.rhs_id,
+            float(theta[idx]), se.get(prm.label, nan), z.get(prm.label, nan),
+            pv.get(prm.label, nan), std_free.get(prm.label, nan), False))
+    variances = pd.DataFrame(variance_rows)
+    return loadings, paths, second_order, variances
+
+
+# --------------------------------------------------------------------------- #
+# The public entry point
+# --------------------------------------------------------------------------- #
+
+
+def estimate(data: pd.DataFrame, spec: ModelSpec, *,
+             estimator: EstimatorKind = EstimatorKind.ML,
+             use_polychoric: Optional[bool] = None,
+             start_from: Optional["CompiledModel"] = None,
+             observed_se: bool = True) -> EstimationResult:
+    """Fit ``spec`` to ``data`` and return the full parameter solution.
+
+    The model is identified by the marker-variable scheme (the first loading
+    of every factor, and the second-order loading of every second-order
+    construct's first dimension, fixed to one; every latent and disturbance
+    variance free) and the solution is standardised afterwards for reporting.
+    Latent interactions are omitted, because a product of two latent variables
+    has no representation in a covariance structure; the omission is named in
+    :attr:`EstimationResult.message`.
+
+    Optimisation starts from the compiled population values, rescaled into the
+    marker metric, and falls back on a two-step factor-analytic start.  Within
+    each start L-BFGS-B is tried first, then Nelder-Mead, then Powell.
+    Standard errors come from the expected (Fisher) information,
+    ``ACOV = (2 / (N - 1)) [Delta' (D' (Sigma^-1 (x) Sigma^-1) D) Delta]^-1``;
+    the observed-information counterpart ``(2 / (N - 1)) H^-1`` is computed
+    alongside it and reported in
+    :attr:`EstimationResult.standard_errors_observed`.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Observed item scores.  Columns are matched on item name first and item
+        id second; cases with missing values are dropped listwise.
+    spec : ModelSpec
+        The model to fit.
+    estimator : EstimatorKind, default ``EstimatorKind.ML``
+        ``ML`` and ``MLR`` minimise ``F_ML``, ``ULS`` minimises
+        ``0.5 tr((S - Sigma)^2)`` and ``DWLS`` the diagonally weighted
+        residual sum of squares.
+    use_polychoric : bool, optional
+        Fit the polychoric correlation matrix instead of the Pearson
+        covariance matrix.  ``None`` enables it for ``DWLS`` on fully ordinal
+        data when ``spec.analysis.use_polychoric_for_ordinal`` is set.
+    start_from : CompiledModel, optional
+        A pre-compiled model supplying both the matrix patterns and the
+        starting values.  Compiled from ``spec`` when omitted.
+    observed_se : bool, default True
+        Also compute the observed-information standard errors.  Skipped
+        automatically for models with more than 150 free parameters.
+
+    Returns
+    -------
+    EstimationResult
+        Estimates, standard errors, Wald tests, the standardised solution,
+        per-construct ``R**2`` and the reporting tables.
+
+    Raises
+    ------
+    semsim.core.errors.SpecificationError
+        The data lacks an item column, holds non-numeric values, or leaves too
+        few complete cases.
+    semsim.core.errors.IdentificationError
+        A latent variable has no scale-fixing indicator, the sample is smaller
+        than the number of items, or the degrees of freedom are negative.
+    semsim.core.errors.ConvergenceError
+        The discrepancy function could not be evaluated anywhere, so no
+        solution exists to report.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> from semsim.core import examples
+    >>> from semsim.core.compile import compile_model
+    >>> from semsim.core.implied import implied_covariance
+    >>> spec = examples.minimal_cfa()
+    >>> cm = compile_model(spec)
+    >>> rng = np.random.default_rng(7)
+    >>> x = rng.multivariate_normal(np.zeros(cm.n_items),
+    ...                             implied_covariance(cm), size=800)
+    >>> result = estimate(pd.DataFrame(x, columns=cm.item_names), spec)
+    >>> result.df
+    8
+
+    References
+    ----------
+    Joreskog, K. G. (1969). A general approach to confirmatory maximum
+        likelihood factor analysis. *Psychometrika*, 34(2), 183-202.
+    Browne, M. W. (1974). Generalized least squares estimators in the analysis
+        of covariance structures. *South African Statistical Journal*, 8, 1-24.
+    Bollen, K. A. (1989). *Structural Equations with Latent Variables*,
+        chapters 4 and 8. Wiley.
+    Rosseel, Y. (2012). lavaan: An R package for structural equation modeling.
+        *Journal of Statistical Software*, 48(2), 1-36.
+    """
+    notes: List[str] = []
+    cm = start_from if start_from is not None else compile_model(spec)
+    par = _build_parameterisation(cm, notes)
+
+    if spec.interactions:
+        notes.append(_bilingual(
+            f"INTERACTION_NOT_ESTIMATED: {len(spec.interactions)} latent "
+            "interaction term(s) cannot be fitted from a covariance matrix and "
+            "were omitted from the estimated model; only the main effects were "
+            "estimated.",
+            f"حد التفاعل غير مُقدَّر: لا يمكن تقدير {len(spec.interactions)} من "
+            "حدود التفاعل الكامنة انطلاقًا من مصفوفة التغاير، لذلك استُثنيت من "
+            "النموذج المُقدَّر، ولم تُقدَّر إلا الآثار الرئيسة.",
+        ))
+
+    values, n = _extract_matrix(data, cm, notes)
+    want_poly = _resolve_polychoric(spec, estimator, use_polychoric)
+    S = _sample_moments(values, cm, want_poly, notes)
+
+    logdet_sample, chol_sample = _logdet_cholesky(S)
+    if chol_sample is None:
+        raise SpecificationError(
+            "The sample covariance matrix is singular, usually because an item "
+            "is constant or two items are identical. Remove the constant or "
+            "duplicated items and estimate again.",
+            "مصفوفة تغاير العينة مفردة (غير قابلة للعكس)، وغالبًا لأن أحد البنود "
+            "ثابت أو لأن بندين متطابقان تمامًا. احذف البنود الثابتة أو المكررة ثم "
+            "أعد التقدير.",
+        )
+
+    n_moments = par.p * (par.p + 1) // 2
+    n_free = par.q
+    df = n_moments - n_free
+    if df < 0:
+        raise IdentificationError(
+            f"The model has {n_free} free parameters but the covariance matrix "
+            f"supplies only {n_moments} moments, so the degrees of freedom are "
+            f"{df}. Fix some parameters or add items.",
+            f"النموذج يحتوي على {n_free} معلمة حرة بينما لا توفر مصفوفة التغاير "
+            f"سوى {n_moments} معلومة، فدرجات الحرية تساوي {df}. ثبّت بعض المعالم "
+            "أو أضف بنودًا.",
+            n_free=n_free, n_moments=n_moments, df=df,
+        )
+
+    problem = _Problem(par=par, kind=estimator, sample_cov=S,
+                       logdet_sample=float(logdet_sample),
+                       weights=_normal_theory_weights(S))
+
+    candidates: List[Tuple[str, np.ndarray]] = [
+        ("compiled", par.start_vector()),
+        ("two_step", _two_step_start(par, S, values)),
+    ]
+    best: Optional[Tuple[np.ndarray, float, bool, int, str, str]] = None
+    for name, x0 in candidates:
+        theta, fmin, converged, n_iter, method = _run_optimiser(problem, x0)
+        candidate = (theta, fmin, converged, n_iter, method, name)
+        if best is None:
+            best = candidate
+        else:
+            better = ((converged and not best[2])
+                      or (converged == best[2] and np.isfinite(fmin)
+                          and fmin < best[1]))
+            if better:
+                best = candidate
+        if converged:
+            break
+    assert best is not None  # one candidate is always produced
+    theta_hat, fmin, converged, n_iter, method, start_used = best
+
+    if not np.isfinite(fmin):
+        raise ConvergenceError(
+            "The discrepancy function could not be evaluated at any parameter "
+            "values, because the model-implied covariance matrix never became "
+            "positive definite. Review the model specification and the "
+            "starting values.",
+            "تعذّر حساب دالة التناقض عند أي قيم للمعالم، لأن مصفوفة التغاير "
+            "المُشتقة من النموذج لم تكن موجبة التحديد في أي مرة. راجع مواصفات "
+            "النموذج وقيم البداية.",
+            estimator=str(estimator.value),
+        )
+    fmin = max(float(fmin), 0.0)
+    if not converged:
+        notes.append(_bilingual(
+            "NOT_CONVERGED: none of L-BFGS-B, Nelder-Mead or Powell reported a "
+            "successful termination; the reported solution is the best one "
+            "found and should be treated with caution.",
+            "لم يتحقق التقارب: لم يُبلّغ أي من خوارزميات L-BFGS-B أو نيلدر-ميد أو "
+            "باول عن انتهاء ناجح؛ الحل المعروض هو أفضل ما تم الوصول إليه ويجب "
+            "التعامل معه بحذر.",
+        ))
+    notes.append(_bilingual(
+        f"OPTIMISER: {method} from the {start_used} start, F = {fmin:.6g}.",
+        f"خوارزمية التحسين: {method} انطلاقًا من قيم البداية "
+        f"({start_used})، وقيمة دالة التناقض {fmin:.6g}.",
+    ))
+
+    sigma_hat = par.sigma(theta_hat)
+    if sigma_hat is None:  # pragma: no cover - guarded by the finite fmin above
+        raise ConvergenceError(
+            "The model-implied covariance matrix at the optimum is singular.",
+            "مصفوفة التغاير المُشتقة عند الحل الأمثل مفردة (غير قابلة للعكس).",
+        )
+
+    # -- standard errors ---------------------------------------------------- #
+    labels = par.labels
+    delta = _sigma_jacobian(par, theta_hat)
+    acov, used_pinv = expected_information_acov(delta, sigma_hat, n)
+    with _quiet():
+        variances = np.diag(acov).astype(float)
+        se_values = np.sqrt(np.where(variances > 0.0, variances, np.nan))
+    if used_pinv:
+        notes.append(_bilingual(
+            "SINGULAR_INFORMATION: the expected information matrix was "
+            "singular, so the standard errors were obtained from a "
+            "Moore-Penrose pseudo-inverse; one or more parameters may be "
+            "empirically under-identified.",
+            "مصفوفة المعلومات المتوقعة مفردة، لذلك تم حساب الأخطاء المعيارية "
+            "باستخدام المعكوس المعمَّم (مور-بنروز)؛ وقد يكون أحد المعالم أو أكثر "
+            "غير محدَّد تجريبيًا.",
+        ))
+
+    se = {lab: float(v) for lab, v in zip(labels, se_values)}
+    with _quiet():
+        z_values = {lab: float(theta_hat[k] / se_values[k])
+                    for k, lab in enumerate(labels)}
+        p_values = {lab: float(2.0 * _norm.sf(abs(z_values[lab])))
+                    for lab in labels}
+
+    se_observed: Dict[str, float] = {}
+    acov_observed: Optional[np.ndarray] = None
+    if observed_se and n_free <= 150 and estimator in (EstimatorKind.ML,
+                                                       EstimatorKind.MLR,
+                                                       EstimatorKind.ULS,
+                                                       EstimatorKind.DWLS):
+        hessian = _numerical_hessian(problem, theta_hat)
+        acov_observed, obs_pinv = observed_information_acov(hessian, n)
+        with _quiet():
+            obs_var = np.diag(acov_observed).astype(float)
+            obs_se = np.sqrt(np.where(obs_var > 0.0, obs_var, np.nan))
+        se_observed = {lab: float(v) for lab, v in zip(labels, obs_se)}
+        if obs_pinv:
+            notes.append(_bilingual(
+                "SINGULAR_OBSERVED_INFORMATION: the numerical Hessian was "
+                "singular, so the observed-information standard errors used a "
+                "pseudo-inverse.",
+                "مصفوفة هسه العددية مفردة، لذلك استُخدم المعكوس المعمَّم في حساب "
+                "الأخطاء المعيارية المبنية على المعلومات المشاهدة.",
+            ))
+    elif observed_se:
+        notes.append(_bilingual(
+            f"OBSERVED_SE_SKIPPED: the model has {n_free} free parameters, so "
+            "the numerical Hessian was not computed.",
+            f"تم تخطي الأخطاء المعيارية المشاهدة: النموذج يحتوي على {n_free} "
+            "معلمة حرة، لذلك لم تُحسب مصفوفة هسه العددية.",
+        ))
+
+    if estimator in (EstimatorKind.ULS, EstimatorKind.DWLS):
+        notes.append(_bilingual(
+            "NORMAL_THEORY_SE: the standard errors use the normal-theory "
+            "(maximum likelihood) information matrix, which is an "
+            "approximation for a least-squares fit.",
+            "الأخطاء المعيارية محسوبة بمصفوفة المعلومات وفق نظرية التوزيع "
+            "الطبيعي (الإمكان الأقصى)، وهي تقريب في حالة التقدير بالمربعات "
+            "الصغرى.",
+        ))
+    if estimator is EstimatorKind.MLR:
+        notes.append(_bilingual(
+            "MLR_NOT_ROBUST: the point estimates are maximum likelihood, but "
+            "the Satorra-Bentler robust corrections are not applied by this "
+            "module.",
+            "مقدّرات MLR: القيم المقدَّرة هي مقدّرات الإمكان الأقصى، لكن تصحيحات "
+            "ساتورا-بنتلر القوية غير مطبَّقة في هذه الوحدة.",
+        ))
+
+    # -- standardisation, R-squared and tables ------------------------------ #
+    std_free, std_fixed, Phi_hat, _ = _standardise(par, theta_hat)
+    _, _, Psi_hat, _ = par.matrices(theta_hat)
+    r_squared: Dict[str, float] = {}
+    r_squared_by_id: Dict[str, float] = {}
+    with _quiet():
+        for f in range(par.m):
+            if not par.endogenous[f]:
+                continue
+            total = float(Phi_hat[f, f])
+            value = (1.0 - float(Psi_hat[f, f]) / total
+                     if total > 0.0 else float("nan"))
+            r_squared[cm.factor_names[f]] = value
+            r_squared_by_id[cm.factor_ids[f]] = value
+
+    loadings, paths, second_order, variance_table = _build_tables(
+        par, theta_hat, se, z_values, p_values, std_free, std_fixed)
+
+    standardised_all = dict(std_free)
+    standardised_all.update(std_fixed)
+    fixed_parameters: Dict[str, float] = {}
+    for (j, f), value in par.lambda_fixed.items():
+        fixed_parameters[f"{cm.factor_names[f]}=~{cm.item_names[j]}"] = float(value)
+    for (i, k), value in par.b_fixed.items():
+        fixed_parameters[f"{cm.factor_names[i]}~{cm.factor_names[k]}"] = float(value)
+
+    return EstimationResult(
+        converged=bool(converged),
+        n_iter=int(n_iter),
+        estimator=estimator,
+        n=int(n),
+        n_free=int(n_free),
+        df=int(df),
+        fmin=float(fmin),
+        sigma_hat=sigma_hat,
+        sample_cov=S,
+        parameters={lab: float(theta_hat[k]) for k, lab in enumerate(labels)},
+        standard_errors=se,
+        z_values=z_values,
+        p_values=p_values,
+        standardised=std_free,
+        loadings=loadings,
+        path_estimates=paths,
+        r_squared=r_squared,
+        message=" ;; ".join(notes),
+        chi_square=float(max(n - 1, 1) * fmin),
+        item_names=list(cm.item_names),
+        factor_names=list(cm.factor_names),
+        theta=np.asarray(theta_hat, dtype=float),
+        parameter_labels=list(labels),
+        parameter_kinds={prm.label: prm.kind for prm in par.parameters},
+        fixed_parameters=fixed_parameters,
+        standardised_all=standardised_all,
+        standard_errors_observed=se_observed,
+        acov=acov,
+        acov_observed=acov_observed,
+        se_method=("expected_information_pinv" if used_pinv
+                   else "expected_information"),
+        optimiser=method,
+        start_used=start_used,
+        r_squared_by_id=r_squared_by_id,
+        second_order_loadings=second_order,
+        latent_covariance=Phi_hat,
+        warnings=list(cm.warnings),
+        _variance_table=variance_table,
+    )
