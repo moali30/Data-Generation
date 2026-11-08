@@ -849,7 +849,10 @@ class FitIndices:
             value = float(getattr(self, code))
             band = _band(value, direction, good, ok)
             texts = _INTERPRETATION.get(code, {})
-            pair = texts.get(band) or texts.get("info") or ("", "")
+            pair = texts.get(band) or texts.get("info")
+            if not pair and texts:
+                pair = next(iter(texts.values()))
+            pair = pair or ("", "")
             records.append({
                 "index": code,
                 "label": label_ar if arabic else label_en,
