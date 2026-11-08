@@ -753,7 +753,8 @@ def average_variance_extracted(loadings: Sequence[float] | np.ndarray) -> float:
 
 def principal_axis_loadings(correlation_matrix: np.ndarray, *,
                             max_iter: int = 50,
-                            tol: float = 1e-7) -> np.ndarray:
+                            tol: float = 1e-7,
+                            clip: bool = True) -> np.ndarray:
     """One-factor loadings by iterated principal axis factoring.
 
     Parameters
@@ -833,13 +834,13 @@ def principal_axis_loadings(correlation_matrix: np.ndarray, *,
         try:
             eigenvalues, eigenvectors = np.linalg.eigh(reduced)
         except np.linalg.LinAlgError:          # pragma: no cover - defensive
-            return _first_principal_component(R)
+            return _first_principal_component(R, clip=clip)
         theta = float(eigenvalues[-1])
         if not np.isfinite(theta) or theta <= 0:
-            return _first_principal_component(R)
+            return _first_principal_component(R, clip=clip)
         candidate = eigenvectors[:, -1] * np.sqrt(theta)
         if not np.isfinite(candidate).all():   # pragma: no cover - defensive
-            return _first_principal_component(R)
+            return _first_principal_component(R, clip=clip)
         new_h = np.clip(candidate ** 2, 1e-6, 0.998)
         shift = float(np.max(np.abs(new_h - communalities)))
         communalities = new_h
@@ -849,17 +850,19 @@ def principal_axis_loadings(correlation_matrix: np.ndarray, *,
 
     if float(loadings.sum()) < 0:
         loadings = -loadings
-    return np.clip(loadings, -_MAX_ABS_LOADING, _MAX_ABS_LOADING)
+    return (np.clip(loadings, -_MAX_ABS_LOADING, _MAX_ABS_LOADING)
+            if clip else loadings)
 
 
-def _first_principal_component(R: np.ndarray) -> np.ndarray:
+def _first_principal_component(R: np.ndarray, *, clip: bool = True) -> np.ndarray:
     """Loadings from the leading eigenpair of an unreduced correlation matrix."""
     eigenvalues, eigenvectors = np.linalg.eigh(0.5 * (R + R.T))
     theta = max(float(eigenvalues[-1]), 0.0)
     loadings = eigenvectors[:, -1] * np.sqrt(theta)
     if float(loadings.sum()) < 0:
         loadings = -loadings
-    return np.clip(loadings, -_MAX_ABS_LOADING, _MAX_ABS_LOADING)
+    return (np.clip(loadings, -_MAX_ABS_LOADING, _MAX_ABS_LOADING)
+            if clip else loadings)
 
 
 # --------------------------------------------------------------------------- #
@@ -1035,6 +1038,22 @@ def _factor_correlation(R: np.ndarray, rows_a: Sequence[int],
         return float("nan")
     return float(np.clip(float((outer * block).sum()) / denominator,
                          -1.0, 1.0))
+
+
+def _unique_labels(ids: Sequence[str], labels: Sequence[str]) -> Dict[str, str]:
+    """``factor_id -> display label``, made unique.
+
+    Labels are free text, so two constructs can carry the same one. Using
+    them as dictionary or column keys silently merges the two factors; this
+    suffixes the repeats instead, so every factor keeps its own column.
+    """
+    counts: Dict[str, int] = {}
+    out: Dict[str, str] = {}
+    for identifier, label in zip(ids, labels):
+        name = str(label)
+        counts[name] = counts.get(name, 0) + 1
+        out[identifier] = name if counts[name] == 1 else f"{name} ({counts[name]})"
+    return out
 
 
 def _structure_coefficient(S: np.ndarray, i: int,
@@ -1376,7 +1395,11 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
                 estimation, factor_id, factor_name, columns, spec)
         if lam is None:
             block = correlation[np.ix_(rows, rows)]
-            lam = principal_axis_loadings(block)
+            # Unclipped on purpose: the clip is applied a few lines below,
+            # AFTER the Heywood scan, because principal_axis_loadings used to
+            # clip internally and so made the scan unreachable on this path --
+            # the exact silence the scan exists to end.
+            lam = principal_axis_loadings(block, clip=False)
         lam = np.asarray(lam, dtype=float)
 
         # The clip below keeps every downstream coefficient defined, but it
@@ -1618,16 +1641,21 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
     cross_rows: List[Dict[str, object]] = []
     for a, (factor_id, factor_name, columns) in enumerate(primary):
         for position, column in enumerate(columns):
+            # Keyed by factor ID, not by display label. Labels are free
+            # text: two constructs sharing one collapsed the dict, so a row's
+            # "home" correlation silently became another factor's and every
+            # item was reported as cross-loading. The ids are renamed to the
+            # labels once, when the table is assembled.
             row: Dict[str, object] = {"item": column,
                                       "home_factor": primary_labels[a]}
             item_row = index[column]
             for b, other_id in enumerate(primary_ids):
-                row[primary_labels[b]] = _structure_coefficient(
+                row[other_id] = _structure_coefficient(
                     alpha_source, item_row, rows_of[other_id])
-            home = row[primary_labels[a]]
+            home = row[primary_ids[a]]
             home_value = float(home)
-            foreign = [float(row[primary_labels[b]]) for b in range(f)
-                       if b != a and np.isfinite(float(row[primary_labels[b]]))]
+            foreign = [float(row[primary_ids[b]]) for b in range(f)
+                       if b != a and np.isfinite(float(row[primary_ids[b]]))]
             largest = max((abs(v) for v in foreign), default=float("nan"))
             row["home_correlation"] = home
             row["max_cross_correlation"] = largest
@@ -1674,7 +1702,12 @@ def analyse(data: pd.DataFrame, spec: ModelSpec,
             cross_rows.append(row)
     cross_loading_table = pd.DataFrame(cross_rows)
     if not cross_loading_table.empty:
-        ordered = (["item", "home_factor"] + primary_labels
+        # The per-factor columns are keyed by id while the table is built;
+        # rename them to the display labels only now, disambiguating any
+        # label two constructs happen to share so no column is lost.
+        display = _unique_labels(primary_ids, primary_labels)
+        cross_loading_table = cross_loading_table.rename(columns=display)
+        ordered = (["item", "home_factor"] + [display[i] for i in primary_ids]
                    + ["home_correlation", "max_cross_correlation",
                       "negative_home_correlation", "flagged"])
         seen: List[str] = []

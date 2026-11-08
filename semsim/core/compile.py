@@ -186,7 +186,8 @@ def _topological_order(n: int, edges: Iterable[Tuple[int, int]]
     Returns
     -------
     (list of int, bool)
-        A node order in which every source precedes its targets, and a flag
+        A node order in which every source precedes its targets *and* every
+        structurally exogenous node precedes every endogenous one, plus a flag
         that is ``True`` when the graph contains a cycle (in which case the
         remaining nodes are appended in their original order).
 
@@ -202,16 +203,29 @@ def _topological_order(n: int, edges: Iterable[Tuple[int, int]]
         successors[s].append(t)
         indegree[t] += 1
 
-    heap = [i for i in range(n) if indegree[i] == 0]
+    # Every structurally exogenous latent must be emitted before any
+    # endogenous one. A plain Kahn heap breaks ties by index, so for
+    # X -> Y with X, Y, Z at indices 0, 1, 2 it pops X, then Y (which has
+    # just become ready) BEFORE Z. Step 4 then takes Z's exogenous branch and
+    # writes Phi[Z, j] = Psi[Z, j] for every already-processed j -- which is
+    # zero for Y -- silently discarding the correlation the structural model
+    # induces between Y and Z. With a declared covariance X ~ Z = 0.5 and
+    # X -> Y = 0.6, Phi[Y, Z] came out 0.0 where the algebra gives 0.3, and
+    # the resulting model could be inadmissible with no warning at all.
+    #
+    # Ranking by (became-ready-later, index) fixes it: every node that starts
+    # with indegree zero carries rank 0 and so precedes every node that only
+    # becomes ready once its predecessors are placed.
+    heap = [(0, i) for i in range(n) if indegree[i] == 0]
     heapq.heapify(heap)
     order: List[int] = []
     while heap:
-        node = heapq.heappop(heap)
+        _rank, node = heapq.heappop(heap)
         order.append(node)
         for t in successors[node]:
             indegree[t] -= 1
             if indegree[t] == 0:
-                heapq.heappush(heap, t)
+                heapq.heappush(heap, (1, t))
 
     if len(order) < n:
         placed = set(order)
