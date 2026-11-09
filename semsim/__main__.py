@@ -129,6 +129,7 @@ def _self_test() -> int:
     step("reliability", reliability)
     step("power (exercises scipy.stats.ncx2)", lambda: _power_line(spec))
     step("report", lambda: f"{len(_render_report(spec))} bytes of HTML")
+    step("interface", _build_interface)
 
     passed = sum(steps)
     print(f"\n{passed}/{len(steps)} checks passed")
@@ -148,6 +149,27 @@ def _render_report(spec) -> str:
     return render_html(ReportBundle(spec=spec,
                                     dataset=generate_dataset(spec, n=120),
                                     generated_at="self-test"), lang="ar")
+
+
+def _build_interface() -> str:
+    """Build the real window and fail if any stage page could not be loaded.
+
+    The window replaces a page that fails to load with a placeholder showing
+    the error, so a bundle missing every page still starts without complaint.
+    """
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+    from semsim.ui.app import MainWindow, PAGE_SPECS
+
+    app = QApplication.instance() or QApplication(["semsim"])  # noqa: F841
+    window = MainWindow()
+    errors = window._page_errors
+    if errors:
+        raise RuntimeError("; ".join(f"{PAGE_SPECS[index][0]}: {message}"
+                                     for index, message in errors.items()))
+    return f"{len(PAGE_SPECS)} pages built"
 
 
 if __name__ == "__main__":

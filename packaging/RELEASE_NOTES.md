@@ -60,7 +60,7 @@ Get-FileHash .\SEMSimulator.exe -Algorithm SHA256
 
 The full test suite runs on the Windows runner before the build, and the finished bundle is then
 verified by running a complete simulation inside it — compile, generate, estimate, fit indices,
-reliability, power, report:
+reliability, power, report, and building every interface page:
 
 ```
 python 3.12.10 on Windows (frozen bundle)
@@ -71,7 +71,8 @@ ok    estimate + fit (exercises scipy): RMSEA = 0.0000, CFI = 1.0000, chi2 = 71.
 ok    reliability: Job satisfac alpha=0.819, Work engagem alpha=0.850, Task perform alpha=0.796
 ok    power (exercises scipy.stats.ncx2): recommended N = 597
 ok    report: 15049 bytes of HTML
-7/7 checks passed
+ok    interface: 6 pages built
+8/8 checks passed
 ```
 
 Those numbers are identical to the same self-test run from source on Linux. Checking that a

@@ -29,7 +29,6 @@ Notes that matter for this particular application
 
 import os
 import sys
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 BLOCK_CIPHER = None
 
@@ -59,7 +58,20 @@ hidden = [
     # spreadsheet export
     "openpyxl.cell._writer",
 ]
-hidden += collect_submodules("semsim")
+
+# The interface pages are imported by name at run time (PAGE_SPECS in
+# semsim/ui/app.py), so static analysis cannot find them and they must be listed
+# here. Walk the source tree instead of calling collect_submodules("semsim"):
+# that needs semsim to be importable while this spec runs, and it is not
+# installed then, so it returned an empty list without any error and v1.0.0
+# shipped with every page replaced by a ModuleNotFoundError placeholder.
+for folder, subfolders, files in os.walk(os.path.join(ROOT, "semsim")):
+    subfolders[:] = [name for name in subfolders if name != "__pycache__"]
+    package = os.path.relpath(folder, ROOT).replace(os.sep, ".")
+    for name in files:
+        if name.endswith(".py"):
+            hidden.append(package if name == "__init__.py"
+                          else f"{package}.{name[:-3]}")
 
 datas = []
 resources = os.path.join(ROOT, "semsim", "resources")
