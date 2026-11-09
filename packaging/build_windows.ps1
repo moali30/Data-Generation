@@ -23,11 +23,28 @@ pyinstaller packaging\semsim.spec --noconfirm --clean
 Write-Host ""
 Write-Host "Done. The executable is at dist\SEMSimulator.exe"
 Write-Host "Verifying the bundle..."
-& .\dist\SEMSimulator.exe --list-examples
+# Start-Process -Wait, not a bare call. console=False makes this a
+# GUI-subsystem executable: PowerShell launches one and returns immediately
+# without waiting, its stdout is not attached to the console, and
+# $LASTEXITCODE belongs to some earlier command -- so a bare call verifies
+# nothing. Redirecting gives the process a real handle and -Wait -PassThru
+# gives its true exit code.
+function Invoke-Bundle([string[]] $arguments, [string] $label) {
+    $out = Join-Path $env:TEMP "$label.out.txt"
+    $err = Join-Path $env:TEMP "$label.err.txt"
+    $proc = Start-Process -FilePath ".\dist\SEMSimulator.exe" `
+        -ArgumentList $arguments -Wait -PassThru -NoNewWindow `
+        -RedirectStandardOutput $out -RedirectStandardError $err
+    Get-Content $out -ErrorAction SilentlyContinue | Write-Host
+    $stderr = Get-Content $err -Raw -ErrorAction SilentlyContinue
+    if ($stderr) { Write-Host "stderr:`n$stderr" }
+    Remove-Item $out, $err -ErrorAction SilentlyContinue
+    if ($proc.ExitCode -ne 0) { throw "$label exited with $($proc.ExitCode)" }
+}
+Invoke-Bundle @("--list-examples") "list"
 # A packaged build can open its window and list its examples while being
 # quietly broken: PyInstaller misses the scipy submodules imported lazily, so
 # the failure lands the first time a p-value is computed. --self-test runs a
 # whole simulation headlessly, so a bad bundle fails here.
-& .\dist\SEMSimulator.exe --self-test
-if ($LASTEXITCODE -ne 0) { throw "self-test failed" }
+Invoke-Bundle @("--self-test") "selftest"
 Write-Host "Verification passed."

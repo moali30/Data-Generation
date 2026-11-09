@@ -55,9 +55,32 @@ jobs:
         # compiles a model, generates data, estimates it and computes the fit
         # indices, so a bundle that would die the moment a researcher pressed
         # Run fails here instead of in their hands.
+        #
+        # Start-Process -Wait, not a bare call. The spec sets console=False so
+        # the .exe is a GUI-subsystem binary: PowerShell launches one and
+        # returns IMMEDIATELY without waiting, and its stdout is not attached
+        # to the runner's console. A bare `.\dist\SEMSimulator.exe --self-test`
+        # therefore printed nothing, never blocked, and left $LASTEXITCODE
+        # belonging to some earlier command -- so the step passed green while
+        # verifying nothing at all. Redirecting to a file gives the process a
+        # real handle to write to, and -Wait plus -PassThru gives us its true
+        # exit code.
         run: |
-          .\dist\SEMSimulator.exe --list-examples
-          .\dist\SEMSimulator.exe --self-test
+          function Invoke-Bundle([string[]] $arguments, [string] $label) {
+            $out = "$env:RUNNER_TEMP\$label.out.txt"
+            $err = "$env:RUNNER_TEMP\$label.err.txt"
+            $proc = Start-Process -FilePath ".\dist\SEMSimulator.exe" `
+              -ArgumentList $arguments -Wait -PassThru -NoNewWindow `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+            Get-Content $out -ErrorAction SilentlyContinue | Write-Host
+            $stderr = Get-Content $err -Raw -ErrorAction SilentlyContinue
+            if ($stderr) { Write-Host "stderr:`n$stderr" }
+            if ($proc.ExitCode -ne 0) {
+              throw "$label exited with $($proc.ExitCode)"
+            }
+          }
+          Invoke-Bundle @("--list-examples") "list"
+          Invoke-Bundle @("--self-test") "selftest"
         shell: pwsh
 
       - name: Report the size

@@ -27,12 +27,21 @@ pyinstaller packaging\semsim.spec --noconfirm --clean || goto :fail
 echo.
 echo Done. The executable is at dist\SEMSimulator.exe
 echo Verifying the bundle...
-dist\SEMSimulator.exe --list-examples || goto :fail
+REM "start /wait /b" and a redirect, not a bare call. The build sets
+REM console=False, so this is a GUI-subsystem executable: cmd launches one
+REM and returns immediately without waiting, its output goes nowhere, and
+REM ERRORLEVEL belongs to whatever ran before. Redirecting gives the process
+REM a real handle; /wait makes cmd block and collect the real exit code.
+start /wait /b "" dist\SEMSimulator.exe --list-examples > selftest.log 2>&1
+if errorlevel 1 (type selftest.log & goto :fail)
 REM A packaged build can open its window and list its examples while being
 REM quietly broken: PyInstaller misses the scipy submodules imported lazily,
 REM so the failure lands the first time a p-value is computed. --self-test
 REM runs a whole simulation headlessly, so a bad bundle fails here.
-dist\SEMSimulator.exe --self-test || goto :fail
+start /wait /b "" dist\SEMSimulator.exe --self-test > selftest.log 2>&1
+if errorlevel 1 (type selftest.log & goto :fail)
+type selftest.log
+del selftest.log
 echo Verification passed.
 goto :eof
 
