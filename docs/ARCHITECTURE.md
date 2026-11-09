@@ -622,6 +622,19 @@ proportions and one role: control, descriptive, group comparison or multi-group.
   and one-way ANOVA, and configural, metric and structural invariance tests.
   Scalar invariance is not offered because the model has no mean structure.
 
+## `semsim/io/ai_template.py`
+
+A JSON document an AI assistant fills from a plain description of a study.
+`build_template()` holds the instructions, the allowed values and a valid
+worked example. It uses construct names rather than internal ids, so an
+assistant never has to invent or match ids.
+
+`from_text()` accepts an answer wrapped in chat text and collects every problem
+before raising `AiTemplateError`, each with its location and both languages.
+After the structural read it runs `validate()`, so a template is held to the
+same rules as a model built by hand. Changing a key means updating `_TOP_KEYS`
+or the matching `reader.keys(...)` call, the instructions and the example.
+
 ## `semsim/io/project.py`
 
 ```python

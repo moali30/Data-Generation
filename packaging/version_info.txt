@@ -18,12 +18,12 @@ VSVersionInfo(
         '040904B0',
         [StringStruct('CompanyName', 'SEM Data Simulation Engine'),
          StringStruct('FileDescription', 'SEM Data Simulation Engine'),
-         StringStruct('FileVersion', '1.1.0'),
+         StringStruct('FileVersion', '1.2.0'),
          StringStruct('InternalName', 'SEMSimulator'),
          StringStruct('LegalCopyright', 'MIT Licence'),
          StringStruct('OriginalFilename', 'SEMSimulator.exe'),
          StringStruct('ProductName', 'SEM Data Simulation Engine'),
-         StringStruct('ProductVersion', '1.1.0')])
+         StringStruct('ProductVersion', '1.2.0')])
     ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]

@@ -1,8 +1,13 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.1.0
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.2.0
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.2.0
+
+- قالب JSON للذكاء الاصطناعي من قائمة ملف: احفظه أو انسخه، وأرسله إلى أي مساعد مع شرح البيانات التي تحتاجها، ثم استورد ما يرجعه من ملف أو من الحافظة.
+- لو في القالب أخطاء يعرضها البرنامج كلها بمكانها، وزر واحد ينسخها لترسلها إلى المساعد ليصححها.
 
 ### الجديد في 1.1.0
 
@@ -53,9 +58,14 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.1.0
+## SEM Data Simulation Engine — v1.2.0
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.2.0
+
+- An AI template in the File menu: save or copy it, send it to any assistant with a description of the data you need, and import the answer from a file or the clipboard.
+- Problems in a filled template are all listed with their locations, and one button copies them to send back to the assistant.
 
 ### What's new in 1.1.0
 

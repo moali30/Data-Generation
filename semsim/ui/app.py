@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from semsim.core import examples as example_models
 from semsim.core.errors import SemSimError
 from semsim.core.spec import ModelSpec
+from semsim.io import ai_template
 from semsim.io import project as project_io
 from semsim.ui import theme
 from semsim.ui.i18n import ARABIC, ENGLISH, LANGUAGE_NAMES, translator
@@ -340,6 +341,14 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(action("menu.file.export", self.export_results))
         file_menu.addSeparator()
+        ai_menu = file_menu.addMenu("")
+        self._menus["menu.file.ai"] = ai_menu
+        ai_menu.addAction(action("menu.file.ai.save", self.save_ai_template))
+        ai_menu.addAction(action("menu.file.ai.copy", self.copy_ai_template))
+        ai_menu.addSeparator()
+        ai_menu.addAction(action("menu.file.ai.import_file", self.import_ai_file))
+        ai_menu.addAction(action("menu.file.ai.import_paste", self.import_ai_paste))
+        file_menu.addSeparator()
         file_menu.addAction(action("menu.file.exit", self.close,
                                    QKeySequence.StandardKey.Quit))
 
@@ -582,6 +591,68 @@ class MainWindow(QMainWindow):
         if warnings:
             QMessageBox.information(self, translator.t("menu.file.open"),
                                     "\n".join(warnings[:6]))
+
+    def save_ai_template(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, translator.t("menu.file.ai.save"), "semsim_ai_template.json",
+            "JSON (*.json)")
+        if not path:
+            return
+        try:
+            saved = ai_template.save_template(path)
+        except SemSimError as exc:
+            self._error_box(exc)
+            return
+        QMessageBox.information(self, translator.t("menu.file.ai"),
+                                translator.t("ai.saved_help", path=saved))
+
+    def copy_ai_template(self) -> None:
+        QApplication.clipboard().setText(ai_template.template_text())
+        self._flash_status("status.ai_copied")
+
+    def import_ai_file(self, path: str = "") -> None:
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, translator.t("menu.file.ai.import_file"), "",
+                "JSON (*.json);;All files (*)")
+        if path:
+            self._import_ai(lambda: ai_template.load_file(path))
+
+    def import_ai_paste(self) -> None:
+        text = QApplication.clipboard().text()
+        if not text.strip():
+            QMessageBox.information(self, translator.t("menu.file.ai"),
+                                    translator.t("ai.clipboard_empty"))
+            return
+        self._import_ai(lambda: ai_template.from_text(text))
+
+    def _import_ai(self, read) -> None:
+        # Read first: a rejected template must not cost the user their project.
+        try:
+            result = read()
+        except ai_template.AiTemplateError as exc:
+            self._show_ai_problems("ai.problems_title", "ai.problems_intro",
+                                   exc.problems)
+            return
+        except SemSimError as exc:
+            self._error_box(exc)
+            return
+        if not self._confirm_discard():
+            return
+        self.state.set_spec(result.spec, dirty=True)
+        self._rebuild_pages()
+        self.nav.setCurrentRow(0)
+        self._flash_status("status.ai_imported")
+        if result.warnings:
+            self._show_ai_problems("ai.warnings_title", "ai.warnings_intro",
+                                   result.warnings)
+
+    def _show_ai_problems(self, title_key: str, intro_key: str, problems) -> None:
+        from semsim.ui.widgets.problems_dialog import ProblemsDialog
+        lang = ARABIC if translator.is_rtl else ENGLISH
+        ProblemsDialog(translator.t(title_key), translator.t(intro_key),
+                       "\n".join(p.text(lang) for p in problems),
+                       ai_template.problems_for_ai(problems), self).exec()
 
     def save_project(self) -> bool:
         if not self.state.path:

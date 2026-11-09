@@ -79,6 +79,40 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "menu.file.recent": ("المشاريع الأخيرة", "Recent projects"),
     "menu.file.recent.empty": ("لا توجد مشاريع حديثة", "No recent projects"),
     "menu.file.export": ("تصدير البيانات…", "Export data…"),
+    "menu.file.ai": ("قالب الذكاء الاصطناعي", "AI template"),
+    "menu.file.ai.save": ("حفظ القالب لإرساله إلى الذكاء الاصطناعي…",
+                          "Save the template for an AI assistant…"),
+    "menu.file.ai.copy": ("نسخ القالب", "Copy the template"),
+    "menu.file.ai.import_file": ("استيراد قالب معبّأ من ملف…",
+                                 "Import a filled template from a file…"),
+    "menu.file.ai.import_paste": ("استيراد قالب معبّأ من الحافظة",
+                                  "Import a filled template from the clipboard"),
+    "ai.saved_help": (
+        "تم حفظ القالب في:\n{path}\n\n"
+        "1. أرسل الملف إلى مساعد الذكاء الاصطناعي.\n"
+        "2. اشرح له البيانات التي تحتاجها بالضبط.\n"
+        "3. استورد ما يرجعه من قائمة ملف ← قالب الذكاء الاصطناعي.",
+        "The template was saved to:\n{path}\n\n"
+        "1. Send the file to an AI assistant.\n"
+        "2. Explain exactly what data you need.\n"
+        "3. Import its answer from File → AI template."),
+    "ai.clipboard_empty": ("الحافظة فارغة. انسخ رد مساعد الذكاء الاصطناعي أولًا.",
+                           "The clipboard is empty. Copy the assistant's answer first."),
+    "ai.problems_title": ("تعذّر استيراد القالب", "The template could not be imported"),
+    "ai.problems_intro": (
+        "النموذج الحالي لم يتغير. انسخ هذه المشكلات وأرسلها إلى مساعد الذكاء "
+        "الاصطناعي ليصححها.",
+        "Your current model is unchanged. Copy these problems and send them to "
+        "the assistant to correct."),
+    "ai.warnings_title": ("ملاحظات على القالب", "Notes on the template"),
+    "ai.warnings_intro": (
+        "تم استيراد النموذج. راجع هذه الملاحظات.",
+        "The model was imported. Review these notes."),
+    "ai.copy_problems": ("نسخ للذكاء الاصطناعي", "Copy for the assistant"),
+    "ai.copied": ("تم النسخ", "Copied"),
+    "ai.close": ("إغلاق", "Close"),
+    "status.ai_copied": ("تم نسخ القالب", "Template copied"),
+    "status.ai_imported": ("تم استيراد القالب المعبّأ", "Filled template imported"),
     "menu.file.exit": ("إغلاق", "Exit"),
     "menu.model": ("النموذج", "Model"),
     "menu.model.validate": ("فحص النموذج", "Validate model"),
