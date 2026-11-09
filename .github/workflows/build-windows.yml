@@ -14,6 +14,14 @@ on:
         description: "Run the full test suite before building"
         type: boolean
         default: true
+      publish_release:
+        description: "Publish the built .exe as a GitHub Release"
+        type: boolean
+        default: false
+      release_tag:
+        description: "Tag for the release (used only when publishing)"
+        type: string
+        default: "v1.0.0"
 
 permissions:
   contents: read
@@ -22,6 +30,10 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 60
+    # Needed only to create the release; the default read-only token covers
+    # everything else this job does.
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -97,3 +109,27 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 9
+
+      # Publishing goes through the workflow rather than from a developer
+      # machine: a 106 MB binary should be uploaded by whatever built it, and
+      # the release then carries the same artefact the tests ran against.
+      # Only this job gets contents: write, and only on an explicit dispatch.
+      - name: Publish the release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ inputs.release_tag }}"
+          $sha = (Get-FileHash .\dist\SEMSimulator.exe -Algorithm SHA256).Hash
+          $notes = Get-Content packaging\RELEASE_NOTES.md -Raw
+          $notes = $notes -replace 'SHA256_PLACEHOLDER', $sha
+          $notes = $notes -replace 'RUN_ID_PLACEHOLDER', "${{ github.run_id }}"
+          $notes = $notes -replace 'COMMIT_PLACEHOLDER', "${{ github.sha }}".Substring(0, 7)
+          Set-Content -Path notes.md -Value $notes -Encoding utf8
+          gh release create $tag .\dist\SEMSimulator.exe `
+            --title "$tag - SEM Data Simulation Engine" `
+            --notes-file notes.md `
+            --target "${{ github.sha }}"
+          gh release view $tag --json url,assets `
+            --jq '"published: \(.url)\nassets: \(.assets | map(.name + " " + (.size/1048576 | floor | tostring) + " MB") | join(", "))"'
+        shell: pwsh
