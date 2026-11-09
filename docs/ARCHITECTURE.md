@@ -591,6 +591,37 @@ def calibrate(spec: ModelSpec, *, n=None, seed=None, progress=None) -> Calibrati
 
 ---
 
+## Demographics and control variables
+
+`ModelSpec.demographics` holds `DemographicVariable`s. Each has categories with
+proportions and one role: control, descriptive, group comparison or multi-group.
+
+- `semsim/generation/demographics.py` assigns categories from its own random
+  stream (`default_rng([abs(seed), 104729])`), so adding a descriptive variable
+  never changes the questionnaire items. `ModelSpec.quota_exact` selects exact
+  quotas (largest remainder) or weighted random sampling.
+- `ModelSpec.expanded()` turns each active control term into a synthetic
+  single-indicator `Construct(covariate=True)`, appended after the substantive
+  constructs, with `Path`s that keep the `ControlPath` ids and free covariances
+  among the terms and with the exogenous constructs. It returns `self` when no
+  control is active, so models without controls generate identical numbers.
+- The compiler excludes covariates from Heywood handling, reliability
+  inflation, automatic cross-loadings and common method variance. Noise and
+  response scales act on questionnaire items only.
+- A nominal control is dummy-coded with its first category as the reference.
+  Within one variable the terms correlate at
+  `-sqrt(p_i p_j / ((1 - p_i) (1 - p_j)))`.
+- `Dataset.data` is items only. `Dataset.demographics` holds codes and dummies,
+  `Dataset.model_frame` is control terms plus items for estimation, and
+  `Dataset.full_frame` is every demographic plus items for export and preview.
+- The estimator starts control terms on their coded metric
+  (`_rescale_covariate_starts`). With control terms present, an inadmissible
+  point returns a finite penalty rather than `+inf`, and a run that never left
+  the start is not accepted as converged.
+- `semsim/analysis/demographics.py` produces the frequency table, Welch t-tests
+  and one-way ANOVA, and configural, metric and structural invariance tests.
+  Scalar invariance is not offered because the model has no mean structure.
+
 ## `semsim/io/project.py`
 
 ```python

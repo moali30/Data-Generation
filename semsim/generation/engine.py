@@ -34,7 +34,7 @@ silently dropped.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -66,10 +66,30 @@ class GeneratedDataset:
     noise_report: object = None
     model_error: object = None
     warnings: List[str] = field(default_factory=list)
+    #: Category codes per respondent, and any dummy columns.  Kept apart from
+    #: ``data`` so reliability and item statistics see questionnaire items only.
+    demographics: Optional[pd.DataFrame] = None
 
     @property
     def item_names(self) -> List[str]:
         return list(self.data.columns)
+
+    @property
+    def model_frame(self) -> pd.DataFrame:
+        """The columns the fitted model needs: control terms, then items."""
+        wanted = self.compiled.spec.control_columns() \
+            if not self.compiled.covariate_rows else [
+                self.compiled.item_names[j] for j in self.compiled.covariate_rows]
+        if self.demographics is None or not wanted:
+            return self.data
+        return pd.concat([self.demographics[wanted], self.data], axis=1)
+
+    @property
+    def full_frame(self) -> pd.DataFrame:
+        """Everything a researcher gets in a file: demographics, then items."""
+        if self.demographics is None or self.demographics.empty:
+            return self.data
+        return pd.concat([self.demographics, self.data], axis=1)
 
     @property
     def has_missing(self) -> bool:
@@ -137,6 +157,12 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
     cm = compiled if compiled is not None else compile_model(spec)
     warnings.extend(cm.warnings)
 
+    demographics = None
+    if spec.demographics:
+        from semsim.generation.demographics import draw_demographics
+        demographics = draw_demographics(spec, n_cases, actual_seed)
+    controls = _standardised_controls(cm, demographics)
+
     sigma_population = implied_module.implied_covariance(cm)
     sigma_generating = sigma_population
     model_error = None
@@ -154,33 +180,50 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
     report("status.generating", 0.30)
 
     if engine is GenerationEngine.SCORES:
-        y_star, eta = _generate_from_scores(spec, cm, n_cases, rng, warnings)
+        y_star, eta = _generate_from_scores(spec, cm, n_cases, rng, warnings,
+                                            controls)
+    elif controls is not None:
+        y_star = _generate_given_controls(spec, cm, sigma_generating, controls,
+                                          rng, warnings)
+        eta = None
     else:
         y_star = _generate_from_covariance(spec, cm, sigma_generating,
                                            n_cases, rng, warnings)
         eta = None
 
+    # From here on only the questionnaire items are scored and contaminated.
+    # The control terms keep the exact codes the quotas assigned.
+    full_star = y_star
+    items_cm = cm
+    if cm.covariate_rows:
+        y_star = y_star[:, :cm.n_substantive_items]
+        items_cm = _questionnaire_view(cm)
+
     report("status.generating", 0.55)
-    observed = _apply_scales(spec, cm, y_star, warnings)
+    observed = _apply_scales(spec, items_cm, y_star, warnings)
 
     report("status.generating", 0.70)
     noise_report = None
     if spec.noise.enabled:
         try:
             from semsim.generation.noise import apply_noise
-            observed, noise_report = apply_noise(observed, spec, cm, rng)
+            observed, noise_report = apply_noise(observed, spec, items_cm, rng)
         except ImportError:
             warnings.append("NOISE_UNAVAILABLE: the noise module is not "
                             "installed; the dataset carries no contamination.")
 
-    data = pd.DataFrame(observed, columns=cm.item_names)
-    shadow = (pd.DataFrame(y_star, columns=[f"{c}_star" for c in cm.item_names])
+    data = pd.DataFrame(observed, columns=items_cm.item_names)
+    shadow = (pd.DataFrame(y_star, columns=[f"{c}_star"
+                                            for c in items_cm.item_names])
               if spec.export.include_continuous_shadow else None)
     latent = None
     if eta is not None and spec.export.include_latent_scores:
         latent = pd.DataFrame(eta, columns=cm.factor_names)
     elif spec.export.include_latent_scores:
-        latent = _factor_score_estimates(cm, y_star)
+        latent = _factor_score_estimates(cm, full_star)
+    if latent is not None and cm.covariate_factors:
+        latent = latent.drop(columns=[latent.columns[f]
+                                      for f in cm.covariate_factors])
 
     report("status.done", 1.0)
     return GeneratedDataset(
@@ -190,8 +233,111 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
         n=n_cases, seed=actual_seed, engine_used=engine,
         latent_scores=latent, continuous_shadow=shadow,
         noise_report=noise_report, model_error=model_error,
-        warnings=warnings,
+        warnings=warnings, demographics=demographics,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Control terms
+# --------------------------------------------------------------------------- #
+
+
+def _standardised_controls(cm: CompiledModel,
+                           demographics: Optional[pd.DataFrame]
+                           ) -> Optional[np.ndarray]:
+    """Control terms as z-scores, in the order of ``cm.covariate_rows``.
+
+    Standardising on the sample's own mean and variance is what makes the
+    requested coefficient the standardised coefficient of the observed coded
+    variable, whatever the coding and whatever the quota.
+    """
+    if not cm.covariate_rows:
+        return None
+    if demographics is None:
+        raise SpecificationError(
+            "The model uses control variables but no demographics were drawn.",
+            "النموذج يستخدم متغيرات ضابطة لكن لم يتم توليد المتغيرات "
+            "الديموغرافية.")
+    names = [cm.item_names[j] for j in cm.covariate_rows]
+    values = demographics[names].to_numpy(dtype=float)
+    spread = values.std(axis=0, ddof=1)
+    constant = [name for name, sd in zip(names, spread) if sd < 1e-9]
+    if constant:
+        raise SpecificationError(
+            "These control terms have no variance in this sample, so they "
+            f"cannot have an effect: {', '.join(constant)}. Raise the sample "
+            "size or the share of the smallest category.",
+            "هذه الحدود الضابطة بلا تباين في هذه العينة، فلا يمكن أن يكون لها "
+            f"أثر: {'، '.join(constant)}. زِد حجم العينة أو نسبة أصغر فئة.",
+            terms=constant)
+    return (values - values.mean(axis=0)) / spread
+
+
+def _questionnaire_view(cm: CompiledModel) -> CompiledModel:
+    """The compiled model as seen by the scoring and noise steps."""
+    p = cm.n_substantive_items
+    return replace(
+        cm, item_ids=cm.item_ids[:p], item_names=cm.item_names[:p],
+        Lambda=cm.Lambda[:p], Theta=cm.Theta[:p, :p],
+        item_index={iid: j for iid, j in cm.item_index.items() if j < p},
+        home_factor=cm.home_factor[:p], covariate_rows=[],
+        covariate_factors=[])
+
+
+def _generate_given_controls(spec: ModelSpec, cm: CompiledModel,
+                             sigma: np.ndarray, controls: np.ndarray,
+                             rng: np.random.Generator,
+                             warnings: List[str]) -> np.ndarray:
+    """Draw the items conditionally on the control terms already assigned.
+
+    With ``c`` the standardised control terms and ``S_cc`` their sample
+    correlation, the items are ``y = W c + e`` where ``W = Sigma_yc S_cc^-1``
+    and ``e`` has covariance ``Sigma_yy - W Sigma_cy``.  Each control keeps its
+    categorical distribution, which a joint normal draw could not do, and each
+    target regression recovers the requested coefficient on the observed coded
+    variable, so no correction for dichotomising is needed.
+
+    References
+    ----------
+    Anderson, T. W. (2003). *An Introduction to Multivariate Statistical
+        Analysis* (3rd ed.), section 2.5. Wiley.
+    """
+    p = sigma.shape[0]
+    rows = np.arange(cm.n_substantive_items)
+    cols = np.asarray(cm.covariate_rows, dtype=int)
+    S_cc = np.atleast_2d(np.corrcoef(controls, rowvar=False))
+    sigma_yc = sigma[np.ix_(rows, cols)]
+    W = np.linalg.solve(S_cc, sigma_yc.T).T
+    conditional = sigma[np.ix_(rows, rows)] - W @ sigma_yc.T
+    conditional = 0.5 * (conditional + conditional.T)
+    sd = np.sqrt(np.clip(np.diag(conditional), 1e-9, None))
+    correlation = conditional / np.outer(sd, sd)
+    np.fill_diagonal(correlation, 1.0)
+    if not implied_module.is_positive_definite(correlation):
+        correlation = implied_module.nearest_positive_definite(correlation)
+        np.fill_diagonal(correlation, 1.0)
+
+    from semsim.generation import vale_maurelli as vm
+    n = controls.shape[0]
+    skew, kurt = _marginal_targets(spec, cm)
+    skew, kurt = skew[rows], kurt[rows]
+    if (spec.distribution.use_non_normal_engine
+            and (np.any(np.abs(skew) > 1e-9) or np.any(np.abs(kurt) > 1e-9))):
+        try:
+            errors = vm.generate(n, correlation, skew, kurt, rng)
+        except SemSimError as exc:
+            warnings.append(
+                f"NON_NORMAL_FALLBACK: {exc.message_en} Falling back on a "
+                "normal draw, so the requested skewness and kurtosis were not "
+                "applied.")
+            errors = vm.generate_normal(n, correlation, rng)
+    else:
+        errors = vm.generate_normal(n, correlation, rng)
+
+    out = np.zeros((n, p))
+    out[:, rows] = controls @ W.T + errors * sd
+    out[:, cols] = controls
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -300,13 +446,22 @@ def _clamp_feasible(skew: np.ndarray,
 
 def _generate_from_scores(spec: ModelSpec, cm: CompiledModel, n: int,
                           rng: np.random.Generator,
-                          warnings: List[str]) -> Tuple[np.ndarray, np.ndarray]:
+                          warnings: List[str],
+                          controls: Optional[np.ndarray] = None
+                          ) -> Tuple[np.ndarray, np.ndarray]:
     """Draw the latents and push them through the structural equations."""
     m = len(cm.factor_ids)
     eta = np.zeros((n, m))
 
-    exogenous = [i for i in range(m) if not bool(cm.endogenous[i])]
+    # Control terms are exogenous too, but their values are already assigned.
+    given = set(cm.covariate_factors)
+    exogenous = [i for i in range(m)
+                 if not bool(cm.endogenous[i]) and i not in given]
     endogenous = [i for i in range(m) if bool(cm.endogenous[i])]
+    if controls is not None:
+        by_row = {cm.home_factor[j]: k for k, j in enumerate(cm.covariate_rows)}
+        for factor, k in by_row.items():
+            eta[:, factor] = controls[:, k]
 
     if exogenous:
         psi_exo = cm.Psi[np.ix_(exogenous, exogenous)]
@@ -350,6 +505,8 @@ def _generate_from_scores(spec: ModelSpec, cm: CompiledModel, n: int,
     sd = y_star.std(axis=0, ddof=1)
     sd[sd < 1e-9] = 1.0
     y_star = (y_star - y_star.mean(axis=0)) / sd
+    if controls is not None:
+        y_star[:, cm.covariate_rows] = controls
     return y_star, eta
 
 
@@ -470,13 +627,14 @@ def _apply_scales(spec: ModelSpec, cm: CompiledModel, y_star: np.ndarray,
     """Turn the continuous responses into the scores a respondent would give."""
     from semsim.generation import thresholds as th
     n, p = y_star.shape
-    any_ordinal = any(item.scale.kind is ScaleKind.LIKERT
-                      for item in spec.all_items())
+    covariates = spec.covariate_item_ids()
+    items = [item for item in spec.all_items() if item.id not in covariates]
+    any_ordinal = any(item.scale.kind is ScaleKind.LIKERT for item in items)
     out = np.empty((n, p), dtype=int if any_ordinal else float)
     if any_ordinal:
         out = np.empty((n, p), dtype=float)
 
-    for item in spec.all_items():
+    for item in items:
         index = cm.item_index.get(item.id)
         if index is None:
             continue
@@ -486,7 +644,7 @@ def _apply_scales(spec: ModelSpec, cm: CompiledModel, y_star: np.ndarray,
         out[:, index] = th.apply_scale(y_star[:, index], item.scale)
 
     if any_ordinal and all(item.scale.kind is ScaleKind.LIKERT
-                           for item in spec.all_items()):
+                           for item in items):
         out = out.astype(int)
     return out
 

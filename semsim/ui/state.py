@@ -35,6 +35,7 @@ class Results:
     power: Any = None              # PowerResult
     calibration: Any = None        # CalibrationResult
     warnings: List[str] = field(default_factory=list)
+    demographics: Any = None       # DemographicAnalysis
 
     def clear(self) -> None:
         self.dataset = None
@@ -45,6 +46,7 @@ class Results:
         self.power = None
         self.calibration = None
         self.warnings = []
+        self.demographics = None
 
     @property
     def has_data(self) -> bool:

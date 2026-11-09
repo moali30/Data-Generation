@@ -1,8 +1,16 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.0.2
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.1.0
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.1.0
+
+- تبويب جديد للديموغرافيا والمتغيرات الضابطة: تحدد المتغيرات وفئاتها بحرية، ودور كل متغير (متغير ضابط، وصف إحصائي، اختبار فروق، تحليل متعدد المجموعات).
+- نسب دقيقة لكل فئة بأسلوب العينة الحصصية، أو سحب عشوائي مرجّح.
+- المتغير الضابط يدخل النموذج الهيكلي بمسارات ترسمها أنت، وتتحكم في حجم أثرها ومعنويتها دون أن تتغير العلاقات الأساسية.
+- صفحة النتائج تعرض التكرارات المطلوبة والمحققة، واختبارات T و ANOVA، وثبات النموذج عبر المجموعات.
+- تصدير البيانات والتقرير وأكواد lavaan و Mplus يشمل المتغيرات الديموغرافية.
 
 ### الجديد في 1.0.2
 
@@ -45,9 +53,17 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.0.2
+## SEM Data Simulation Engine — v1.1.0
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.1.0
+
+- A new Demographics and controls tab: define variables and their categories freely, and give each one a role (control, descriptive, group comparison, multi-group analysis).
+- Exact category percentages as a quota sample, or weighted random sampling.
+- Control variables enter the structural model through paths you draw, with their effect size and significance under your control and the substantive relationships left as specified.
+- The results page shows requested and achieved frequencies, T-tests and ANOVA, and multi-group invariance.
+- Data exports, the report and the lavaan and Mplus syntax now include the demographics.
 
 ### What's new in 1.0.2
 

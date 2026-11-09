@@ -733,7 +733,10 @@ def _build_parameterisation(cm: "CompiledModel",
         ))
 
     # -- 5. residual variances --------------------------------------------- #
+    covariates = set(cm.covariate_rows)
     for j in range(p):
+        if j in covariates:
+            continue        # a control term is observed without error
         parameters.append(_FreeParameter(
             kind=KIND_RESIDUAL_VARIANCE,
             label=f"{cm.item_names[j]}~~{cm.item_names[j]}",
@@ -766,6 +769,41 @@ def _build_parameterisation(cm: "CompiledModel",
         second_order_children=second_order_children,
         endogenous=endogenous, p=p, m=m,
     )
+
+
+def _rescale_covariate_starts(par: _Parameterisation,
+                              sample_cov: np.ndarray) -> None:
+    """Put the compiled starts of control terms on their coded metric.
+
+    The compiler works in standardised units, but a control term enters the
+    fit in its own codes: a 1/2 variable has a variance near 0.25.  Its
+    variance, covariances and outgoing paths are converted so the optimiser
+    starts near the solution.
+
+    Parameters
+    ----------
+    par : _Parameterisation
+        Its parameters' ``start`` values are updated in place.
+    sample_cov : numpy.ndarray
+        ``(p, p)`` sample covariance matrix.
+
+    References
+    ----------
+    Bollen, K. A. (1989). *Structural Equations with Latent Variables*,
+        chapter 4. Wiley. (Rescaling a latent variable's metric.)
+    """
+    cm = par.cm
+    if not cm.covariate_rows:
+        return
+    sd = {cm.home_factor[j]: float(np.sqrt(max(sample_cov[j, j], VARIANCE_FLOOR)))
+          for j in cm.covariate_rows}
+    for prm in par.parameters:
+        if prm.kind == KIND_PATH and prm.j in sd:
+            prm.start /= sd[prm.j]
+        elif prm.kind == KIND_LATENT_VARIANCE and prm.i in sd:
+            prm.start *= sd[prm.i] ** 2
+        elif prm.kind == KIND_LATENT_COVARIANCE:
+            prm.start *= sd.get(prm.i, 1.0) * sd.get(prm.j, 1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -861,6 +899,7 @@ def _two_step_start(par: _Parameterisation, sample_cov: np.ndarray,
             continue
         idx = np.asarray(items, dtype=int)
         std_loadings[idx] = _principal_axis_loadings(R[np.ix_(idx, idx)])
+    std_loadings[list(cm.covariate_rows)] = 1.0
 
     # Latent standard deviations in the marker metric: sqrt(Phi_ff) is the
     # unstandardised loading of the marker, i.e. lambda*_marker * sd_marker.
@@ -1025,6 +1064,12 @@ class _Problem:
                               logdet_sample=self.logdet_sample)
 
 
+#: Finite stand-in for an inadmissible point when control terms are in the
+#: model.  Their variances are small, so the first line-search step easily
+#: leaves the admissible region, and an infinite value there makes L-BFGS-B
+#: stop at the start and report success.
+_INADMISSIBLE_PENALTY = 1.0e8
+
 _OPTIMISER_CHAIN: Tuple[Tuple[str, Dict[str, Any]], ...] = (
     ("L-BFGS-B", {"maxiter": 4000, "maxfun": 200000,
                   "ftol": 1e-14, "gtol": 1e-10}),
@@ -1075,11 +1120,18 @@ def _run_optimiser(problem: _Problem, x0: np.ndarray
     best_iter = 0
     best_method = "start"
     current = best_x
+    has_covariates = bool(par.cm.covariate_rows)
+
+    def objective(theta: np.ndarray) -> float:
+        value = problem.value(theta)
+        if has_covariates and not np.isfinite(value):
+            return _INADMISSIBLE_PENALTY
+        return value
 
     with _quiet():
         for method, options in _OPTIMISER_CHAIN:
             try:
-                res = _opt.minimize(problem.value, current, method=method,
+                res = _opt.minimize(objective, current, method=method,
                                     bounds=bounds, options=dict(options))
             except (ValueError, np.linalg.LinAlgError, FloatingPointError):
                 continue
@@ -1089,7 +1141,10 @@ def _run_optimiser(problem: _Problem, x0: np.ndarray
                 best_f, best_x = f, x
                 best_iter = int(getattr(res, "nit", 0) or getattr(res, "nfev", 0))
                 best_method = method
-            if bool(res.success) and np.isfinite(f):
+            # Reporting the unmoved start as a solution would hand back the
+            # generating values as if they had been estimated.
+            stalled = has_covariates and best_method == "start"
+            if bool(res.success) and np.isfinite(f) and not stalled:
                 return best_x, best_f, True, max(best_iter, 1), best_method
             if np.isfinite(f):
                 current = x
@@ -1811,8 +1866,12 @@ def estimate(data: pd.DataFrame, spec: ModelSpec, *,
         ))
 
     values, n = _extract_matrix(data, cm, notes)
-    want_poly = _resolve_polychoric(spec, estimator, use_polychoric)
+    # Polychoric correlations assume every column is ordinal, which a coded
+    # control term is not, so a model with controls is fitted to covariances.
+    want_poly = (_resolve_polychoric(spec, estimator, use_polychoric)
+                 and not cm.covariate_rows)
     S = _sample_moments(values, cm, want_poly, notes)
+    _rescale_covariate_starts(par, S)
 
     logdet_sample, chol_sample = _logdet_cholesky(S)
     if chol_sample is None:
@@ -1986,6 +2045,10 @@ def estimate(data: pd.DataFrame, spec: ModelSpec, *,
 
     loadings, paths, second_order, variance_table = _build_tables(
         par, theta_hat, se, z_values, p_values, std_free, std_fixed)
+    if cm.covariate_rows and not loadings.empty:
+        # A control's marker loading of 1 is an identity, not a measurement.
+        names = [cm.item_names[j] for j in cm.covariate_rows]
+        loadings = loadings[~loadings["item"].isin(names)].reset_index(drop=True)
 
     standardised_all = dict(std_free)
     standardised_all.update(std_fixed)

@@ -120,6 +120,8 @@ def calibrate(spec: ModelSpec, *, n: Optional[int] = None,
                     else (spec.seed if spec.seed is not None else 0))
 
     report("status.compiling", 0.03)
+    # Control paths are structural paths: targeted and checked like the rest.
+    spec = spec.expanded()
     compiled = compile_model(spec)
     df = spec.degrees_of_freedom(compiled)
 
@@ -352,7 +354,7 @@ def _fit(dataset: GeneratedDataset, spec: ModelSpec,
     if estimate is None:
         return None, None
     try:
-        estimation = estimate(dataset.data, spec,
+        estimation = estimate(dataset.model_frame, spec,
                               estimator=spec.analysis.estimator)
     except Exception as exc:
         warnings.append(f"ESTIMATION_FAILED: {type(exc).__name__}: {exc}")

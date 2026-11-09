@@ -43,6 +43,7 @@ from semsim.ui.widgets.common import Notice, TButton, TCheckBox
 CONSTRUCT_W, CONSTRUCT_H = 148.0, 62.0
 DIMENSION_W, DIMENSION_H = 118.0, 46.0
 ITEM_W, ITEM_H = 56.0, 24.0
+CONTROL_W, CONTROL_H = 132.0, 40.0
 LAYER_GAP = 230.0
 COLUMN_GAP = 118.0        # clear space between two layers of constructs
 DIM_GAP = 64.0            # construct to its dimensions
@@ -57,7 +58,7 @@ ITEM_GAP = 6.0
 class _Node:
     key: str
     label: str
-    kind: str                 # "construct" | "dimension" | "item"
+    kind: str                 # "construct" | "dimension" | "item" | "control"
     role: Optional[ConstructRole] = None
     layer: int = 0
     order: int = 0
@@ -108,6 +109,14 @@ def _assign_layers(spec: ModelSpec) -> Dict[str, int]:
                 changed = True
         if not changed:
             break
+    # A control sits one column before the construct it adjusts, so its arrow
+    # is short instead of crossing the whole model.
+    for construct in spec.constructs:
+        if construct.covariate:
+            targets = [layer[target] for source, target in edges
+                       if source == construct.id]
+            if targets:
+                layer[construct.id] = max(min(targets) - 1, 0)
     return layer
 
 
@@ -122,6 +131,7 @@ def build_layout(spec: ModelSpec, *, show_items: bool,
     the next layer.
     """
     lang = translator.language
+    spec = spec.expanded()
     layers = _assign_layers(spec)
     by_layer: Dict[int, List[Construct]] = {}
     for construct in spec.constructs:
@@ -182,6 +192,13 @@ def build_layout(spec: ModelSpec, *, show_items: bool,
             x = x_of[layer_index]
             y = top + block_height / 2.0
             top += block_height + NODE_GAP
+            if construct.covariate:
+                nodes[construct.id] = _Node(
+                    key=construct.id,
+                    label=construct.label.get(lang) or construct.name,
+                    kind="control", layer=layer_index, x=x, y=y,
+                    w=CONTROL_W, h=CONTROL_H)
+                continue
             nodes[construct.id] = _Node(
                 key=construct.id,
                 label=construct.label.get(lang) or construct.name,
@@ -204,6 +221,11 @@ def build_layout(spec: ModelSpec, *, show_items: bool,
                                strength=abs(coefficient),
                                dashed=not path.target_significant))
     for cov in spec.latent_covariances:
+        # Controls may covary freely; drawing every pair would bury the model.
+        if nodes.get(cov.construct_a) and nodes[cov.construct_a].kind == "control":
+            continue
+        if nodes.get(cov.construct_b) and nodes[cov.construct_b].kind == "control":
+            continue
         if cov.construct_a in nodes and cov.construct_b in nodes:
             edges.append(_Edge(cov.construct_a, cov.construct_b,
                                f"{cov.correlation:+.2f}", kind="covariance",
@@ -227,6 +249,8 @@ def build_layout(spec: ModelSpec, *, show_items: bool,
 
 def _block_height(construct: Construct, side: str) -> float:
     """Vertical room one construct needs, indicators included."""
+    if construct.covariate:
+        return CONTROL_H
     item_run = ITEM_H + ITEM_GAP
     if construct.is_second_order:
         dims = construct.dimensions or [None]
@@ -394,7 +418,7 @@ class _DiagramScene(QGraphicsScene):
 
     def _draw_node(self, painter: QPainter, node: _Node, pal) -> None:
         rect = node.rect
-        if node.kind == "item":
+        if node.kind in ("item", "control"):
             fill, border = pal.diagram_item, pal.diagram_edge
         elif node.kind == "dimension":
             fill, border = pal.diagram_dimension, pal.diagram_node_border
@@ -404,7 +428,7 @@ class _DiagramScene(QGraphicsScene):
         pen = QPen(QColor(border))
         pen.setWidthF(2.0 if node.kind == "construct" else 1.4)
         painter.setPen(pen)
-        if node.kind == "item":
+        if node.kind in ("item", "control"):
             # Observed variables are rectangles; latent ones are ellipses.
             painter.drawRoundedRect(rect, 3, 3)
         else:
@@ -491,7 +515,7 @@ def _edge_point(node: _Node, towards: QPointF) -> QPointF:
     dy = towards.y() - node.y
     if dx == 0 and dy == 0:
         return node.centre
-    if node.kind == "item":
+    if node.kind in ("item", "control"):
         # Rectangle: clip to the nearer edge.
         scale_x = (node.w / 2) / abs(dx) if dx else float("inf")
         scale_y = (node.h / 2) / abs(dy) if dy else float("inf")

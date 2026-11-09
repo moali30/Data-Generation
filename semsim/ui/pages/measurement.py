@@ -62,6 +62,10 @@ class MeasurementPage(StagePage):
         self._structural = StructuralEditor(self.state)
         tabs.addTab(self._structural, "")
 
+        from semsim.ui.pages.demographics import DemographicsEditor
+        self._demographics = DemographicsEditor(self.state)
+        tabs.addTab(self._demographics, "")
+
         try:
             from semsim.ui.widgets.path_diagram import PathDiagramView
             self._diagram = PathDiagramView(self.state)
@@ -77,8 +81,9 @@ class MeasurementPage(StagePage):
         try:
             self._tabs.setTabText(0, translator.t("stage.1.title"))
             self._tabs.setTabText(1, translator.t("s.structural"))
+            self._tabs.setTabText(2, translator.t("dem.tab"))
             if self._diagram is not None:
-                self._tabs.setTabText(2, translator.t("s.diagram"))
+                self._tabs.setTabText(3, translator.t("s.diagram"))
             self._btn_up.setToolTip(translator.t("m.move_up"))
             self._btn_down.setToolTip(translator.t("m.move_down"))
         except RuntimeError:
@@ -152,6 +157,8 @@ class MeasurementPage(StagePage):
         self._on_select()
         if hasattr(self, "_structural"):
             self._structural.rebuild()
+        if hasattr(self, "_demographics"):
+            self._demographics.rebuild()
         if getattr(self, "_diagram", None) is not None:
             self._diagram.refresh()
 
@@ -163,6 +170,8 @@ class MeasurementPage(StagePage):
             loader()
         if hasattr(self, "_structural"):
             self._structural.refresh()
+        if hasattr(self, "_demographics"):
+            self._demographics.refresh()
 
     def set_theme(self, name: str) -> None:
         super().set_theme(name)
@@ -410,6 +419,9 @@ class MeasurementPage(StagePage):
             # would carry references to a construct that no longer exists.
             self.spec.paths = [p for p in self.spec.paths
                                if identifier not in (p.source, p.target)]
+            for variable in self.spec.demographics:
+                variable.control_paths = [p for p in variable.control_paths
+                                          if p.target != identifier]
             self.spec.latent_covariances = [
                 lc for lc in self.spec.latent_covariances
                 if identifier not in (lc.construct_a, lc.construct_b)]

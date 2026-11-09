@@ -72,9 +72,9 @@ try:  # pragma: no cover - packaging detail
     try:
         PROGRAM_VERSION = _pkg_version("semsim")
     except PackageNotFoundError:
-        PROGRAM_VERSION = "1.0.2"
+        PROGRAM_VERSION = "1.1.0"
 except Exception:  # pragma: no cover - very old interpreters
-    PROGRAM_VERSION = "1.0.2"
+    PROGRAM_VERSION = "1.1.0"
 
 #: SPSS variable names are limited to 64 *bytes* (not characters).
 SPSS_MAX_NAME_BYTES = 64
@@ -175,7 +175,10 @@ def _frame_of(ds: Any, *, what_en: str = "export",
     ----------
     Wickham, H. (2014). Tidy data. *Journal of Statistical Software*, 59(10).
     """
-    data = getattr(ds, "data", None)
+    # Files carry the demographic columns in front of the item responses.
+    data = getattr(ds, "full_frame", None)
+    if data is None:
+        data = getattr(ds, "data", None)
     if data is None:
         raise ExportError(
             f"The object passed to the {what_en} writer carries no dataset "
@@ -600,6 +603,11 @@ def export_xlsx(ds: "GeneratedDataset", path: Any, *,
     titles.append(params.title)
     _write_sheet(params, parameter_table(ds, spec))
 
+    if spec is not None and spec.demographics:
+        codebook = workbook.create_sheet(_sheet_title("Codebook", titles))
+        titles.append(codebook.title)
+        _write_sheet(codebook, demographic_codebook(spec, lang=lang))
+
     for attribute, title in (("latent_scores", "LatentScores"),
                              ("continuous_shadow", "ContinuousShadow")):
         extra = getattr(ds, attribute, None)
@@ -724,6 +732,41 @@ def specification_table(ds: Any, spec: Optional[ModelSpec] = None, *,
     return pd.DataFrame(
         {_label(lang, "الخاصية", "property"): [r[0] for r in rows],
          _label(lang, "القيمة", "value"): [_flat(r[1]) for r in rows]})
+
+
+def demographic_codebook(spec: ModelSpec, *, lang: str = "ar") -> pd.DataFrame:
+    """What each code of each demographic column means.
+
+    Parameters
+    ----------
+    spec
+        The specification holding the demographic variables.
+    lang
+        Language of the labels.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per category: column, role, code, label and target percent.
+
+    References
+    ----------
+    ICPSR (2020). *Guide to Social Science Data Preparation and Archiving*
+        (6th ed.). (What a codebook must document.)
+    """
+    rows = []
+    for variable in spec.demographics:
+        for code, (category, share) in enumerate(
+                zip(variable.categories, variable.normalised_proportions()),
+                start=1):
+            rows.append({
+                _label(lang, "العمود", "column"): variable.name,
+                _label(lang, "الدور", "role"): variable.role.value,
+                _label(lang, "الكود", "code"): code,
+                _label(lang, "الفئة", "category"): category.label.get(lang),
+                _label(lang, "النسبة المطلوبة %", "target_percent"): share * 100.0,
+            })
+    return pd.DataFrame(rows)
 
 
 def parameter_table(ds: Any, spec: Optional[ModelSpec] = None) -> pd.DataFrame:
@@ -915,12 +958,23 @@ def export_sav(ds: "GeneratedDataset", path: Any, spec: Optional[ModelSpec] = No
             f"SPSS name for {original!r} is {new!r}.")
 
     items = _item_by_column(spec)
+    demographics = {variable.name: variable
+                    for variable in getattr(spec, "demographics", None) or []}
     frame = data.rename(columns=mapping)
     column_labels: List[str] = []
     value_labels: Dict[str, Dict[int, str]] = {}
     measures: Dict[str, str] = {}
     for original in (str(c) for c in data.columns):
         name = mapping[original]
+        variable = demographics.get(original)
+        if variable is not None:
+            column_labels.append(variable.label.get(lang) or original)
+            value_labels[name] = {code: category.label.get(lang)
+                                  for code, category in enumerate(
+                                      variable.categories, start=1)}
+            measures[name] = ("ordinal" if variable.kind.value == "ordinal"
+                              else "nominal")
+            continue
         item = items.get(original)
         if item is None:
             column_labels.append(original)
@@ -1260,8 +1314,13 @@ def lavaan_syntax(spec: ModelSpec, *, lang: str = "en",
         strategies for assessing and comparing indirect effects.
         *Behavior Research Methods*, 40(3), 879-891. (The ``:=`` definitions.)
     """
+    spec = spec.expanded()
     factor_names = _factor_display_names(spec)
     item_names = _item_display_names(spec)
+    # A control term is an observed column, named as it is in the data.
+    for construct in spec.constructs:
+        if construct.covariate:
+            factor_names[construct.id] = item_names[construct.items[0].id]
     reserved = set(factor_names.values()) | set(item_names.values())
     labels = _path_labels(spec, reserved)
 
@@ -1278,6 +1337,10 @@ def lavaan_syntax(spec: ModelSpec, *, lang: str = "en",
                              if n not in base]
 
     ar = lang == "ar"
+    # The model frees the covariances of its control terms, so they are not
+    # to be held at their sample values.
+    fixed_x = (", fixed.x = FALSE" if any(c.covariate for c in spec.constructs)
+               else "")
     head: List[str] = [
         "# " + "=" * (_WRAP_WIDTH - 2),
         f"# lavaan syntax generated by {PROGRAM_NAME} {PROGRAM_VERSION}",
@@ -1293,19 +1356,25 @@ def lavaan_syntax(spec: ModelSpec, *, lang: str = "en",
     ]
     if ordinal:
         head.append(f'#   fit <- sem(model, data = {data_name}, '
-                    f'estimator = "WLSMV",')
+                    f'estimator = "WLSMV"{fixed_x},')
         head.extend(_r_comment_vector("ordered = c(", ordinal, ")"))
     else:
         head.append(f'#   fit <- sem(model, data = {data_name}, '
-                    f'estimator = "ML")')
+                    f'estimator = "ML"{fixed_x})')
     head.append("#   summary(fit, fit.measures = TRUE, standardized = TRUE, "
                 "rsquare = TRUE)")
+    for variable in spec.demographics:
+        if variable.role.value == "mga":
+            head.append(f'#   fit_{variable.name} <- sem(model, data = {data_name}, '
+                        f'group = "{variable.name}")')
     head.append("")
 
     body: List[str] = ["model <- '"]
     body.append("  # " + ("--- أنموذج القياس " if ar
                           else "--- measurement model ") + "-" * 30)
     for construct in spec.constructs:
+        if construct.covariate:
+            continue
         if construct.is_second_order:
             for dimension in construct.dimensions:
                 base = [item_names[it.id] for it in dimension.items]
@@ -1509,20 +1578,31 @@ def mplus_syntax(spec: ModelSpec, data_filename: str = "data.dat", *,
         latent interaction effects with the LMS method. *Psychometrika*, 65(4),
         457-474. (What ``XWITH`` with numerical integration fits.)
     """
-    items = spec.all_items()
+    spec = spec.expanded()
+    covariate_ids = spec.covariate_item_ids()
+    items = [it for it in spec.all_items() if it.id not in covariate_ids]
     item_order = [it.name for it in items]
     factor_raw = {}
     for construct in spec.constructs:
+        if construct.covariate:
+            continue
         factor_raw[construct.id] = construct.name
         for dimension in construct.dimensions:
             factor_raw[dimension.id] = dimension.name
 
     # One namespace: items and latent variables must not collide after
     # truncation, so they are mapped together.
-    combined = item_order + list(factor_raw.values())
+    demographic_order = spec.demographic_columns()
+    combined = demographic_order + item_order + list(factor_raw.values())
     mapping, warnings = mplus_variable_names(combined, lang=lang)
     item_names = {it.id: mapping[it.name] for it in items}
     factor_names = {fid: mapping[raw] for fid, raw in factor_raw.items()}
+    for construct in spec.constructs:
+        if construct.covariate:
+            factor_names[construct.id] = mapping[construct.name]
+    control_names = [factor_names[c.id] for c in spec.constructs if c.covariate]
+    file_names = ([mapping[name] for name in demographic_order]
+                  + list(item_names.values()))
     renamed = {k: v for k, v in mapping.items() if k != v}
     if renames is not None:
         renames.update(renamed)
@@ -1554,8 +1634,9 @@ def mplus_syntax(spec: ModelSpec, data_filename: str = "data.dat", *,
     lines += ["DATA:", f"  FILE IS {data_filename};", ""]
 
     lines.append("VARIABLE:")
-    lines += _mplus_statement("NAMES ARE", list(item_names.values()))
-    lines += _mplus_statement("USEVARIABLES ARE", list(item_names.values()))
+    lines += _mplus_statement("NAMES ARE", file_names)
+    lines += _mplus_statement("USEVARIABLES ARE",
+                              control_names + list(item_names.values()))
     if ordinal:
         lines += _mplus_statement("CATEGORICAL ARE", ordinal)
     lines.append(f"  MISSING ARE ALL ({MPLUS_MISSING_CODE});")
@@ -1572,6 +1653,8 @@ def mplus_syntax(spec: ModelSpec, data_filename: str = "data.dat", *,
 
     lines.append("MODEL:")
     for construct in spec.constructs:
+        if construct.covariate:
+            continue
         if construct.is_second_order:
             for dimension in construct.dimensions:
                 lines += _mplus_statement(

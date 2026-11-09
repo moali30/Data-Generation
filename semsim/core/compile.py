@@ -138,6 +138,11 @@ class CompiledModel:
     #: be exactly zero, so the pattern is recorded rather than inferred.
     auto_cross_loadings: List[Tuple[str, str]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    #: Rows of ``Lambda`` / columns of the data that are observed control
+    #: terms.  They always follow the questionnaire items.
+    covariate_rows: List[int] = field(default_factory=list)
+    #: Latent indices of those control terms.
+    covariate_factors: List[int] = field(default_factory=list)
 
     # -- convenience ------------------------------------------------------- #
 
@@ -150,6 +155,11 @@ class CompiledModel:
     def n_factors(self) -> int:
         """Number of latent nodes, ``m``."""
         return len(self.factor_ids)
+
+    @property
+    def n_substantive_items(self) -> int:
+        """Number of questionnaire items, control terms excluded."""
+        return len(self.item_ids) - len(self.covariate_rows)
 
     @property
     def is_recursive(self) -> bool:
@@ -520,7 +530,9 @@ def _auto_cross_loadings(spec: ModelSpec, Lambda: np.ndarray,
                          explicit_rows: Set[int],
                          rng: np.random.Generator,
                          warnings: List[str],
-                         drawn: Optional[List[Tuple[str, str]]] = None) -> None:
+                         drawn: Optional[List[Tuple[str, str]]] = None,
+                         covariate_rows: Sequence[int] = (),
+                         covariate_factors: Sequence[int] = ()) -> None:
     """Draw cross-loadings from ``spec.cross_loading_policy`` in place.
 
     Mimics fuzzy item wording: a random share of items picks up a small
@@ -533,7 +545,9 @@ def _auto_cross_loadings(spec: ModelSpec, Lambda: np.ndarray,
         equation modeling. *Structural Equation Modeling*, 16(3), 439-476.
     """
     policy = spec.cross_loading_policy
-    p = len(item_ids)
+    # A control is an observed characteristic, not a worded question: it picks
+    # up no cross-loading and no question cross-loads on it.
+    p = len(item_ids) - len(covariate_rows)
     if not policy.enabled or p == 0:
         return
 
@@ -562,6 +576,7 @@ def _auto_cross_loadings(spec: ModelSpec, Lambda: np.ndarray,
             fi for fi in range(len(factor_ids))
             if fi != home_factor[j]
             and (method_index is None or fi != method_index)
+            and fi not in covariate_factors
             and not (policy.across_constructs_only
                      and owner_of.get(factor_ids[fi]) == own_construct)
         ]
@@ -660,6 +675,7 @@ def compile_model(spec: ModelSpec,
         Scientific Software International.
     """
     warnings: List[str] = []
+    spec = spec.expanded()
     if rng is None:
         rng = np.random.default_rng(spec.seed)
 
@@ -927,10 +943,16 @@ def compile_model(spec: ModelSpec,
         Lambda[j, fi] = float(cl.loading)
         explicit_rows.add(j)
 
+    covariate_ids = spec.covariate_item_ids()
+    covariate_rows = [j for j, iid in enumerate(item_ids) if iid in covariate_ids]
+    covariate_set = set(covariate_rows)
+    covariate_factors = sorted(home_factor[j] for j in covariate_rows)
+
     auto_cross_loadings: List[Tuple[str, str]] = []
     _auto_cross_loadings(spec, Lambda, item_ids, home_factor, factor_ids,
                          owner_of, item_construct, method_factor_index,
-                         explicit_rows, rng, warnings, auto_cross_loadings)
+                         explicit_rows, rng, warnings, auto_cross_loadings,
+                         covariate_rows, covariate_factors)
 
     if use_method:
         if cmb.item_ids:
@@ -946,7 +968,7 @@ def compile_model(spec: ModelSpec,
                     )
                 affected.append(item_index[iid])
         else:
-            affected = list(range(p))
+            affected = [j for j in range(p) if j not in covariate_set]
         for j in affected:
             Lambda[j, method_factor_index] = float(cmb.loading)
 
@@ -954,6 +976,8 @@ def compile_model(spec: ModelSpec,
     Theta = np.zeros((p, p), dtype=float)
     communality = np.einsum("ij,jk,ik->i", Lambda, Phi, Lambda)
     for j in range(p):
+        if j in covariate_set:
+            continue        # observed without error: Theta[j, j] stays zero
         if communality[j] > 1.0 - HEYWOOD_FLOOR:
             factor = float(np.sqrt((1.0 - HEYWOOD_FLOOR)
                                    / max(communality[j], 1e-300)))
@@ -985,6 +1009,8 @@ def compile_model(spec: ModelSpec,
             inflation=inflation,
         )
     for j, item in enumerate(items):
+        if j in covariate_set:
+            continue
         extra = float(item.extra_error_variance)
         if extra < 0.0:
             raise SpecificationError(
@@ -1034,8 +1060,12 @@ def compile_model(spec: ModelSpec,
             )
         Theta[a, b] = Theta[b, a] = r * float(np.sqrt(Theta[a, a] * Theta[b, b]))
 
-    Theta = _repair_symmetric(
-        Theta, "the item residual covariance matrix Theta",
+    # Control terms have zero residual variance, so only the questionnaire
+    # items can be, or need to be, positive definite here.
+    measured = np.array([j for j in range(p) if j not in covariate_set], dtype=int)
+    Theta[np.ix_(measured, measured)] = _repair_symmetric(
+        Theta[np.ix_(measured, measured)],
+        "the item residual covariance matrix Theta",
         "مصفوفة تغاير بواقي البنود (Theta)", warnings)
 
     # A reverse-worded item is answered on an inverted scale, so its raw
@@ -1077,5 +1107,7 @@ def compile_model(spec: ModelSpec,
         home_factor=home_factor,
         auto_cross_loadings=auto_cross_loadings,
         warnings=warnings,
+        covariate_rows=covariate_rows,
+        covariate_factors=covariate_factors,
     )
     return compiled

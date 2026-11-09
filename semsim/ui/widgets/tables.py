@@ -73,6 +73,17 @@ DEFAULT_HEADER_KEYS: Dict[str, str] = {
     "coefficient": "s.coefficient", "correlation": "s.correlation",
     "r_squared": "r.r_squared", "floor_pct": "r.floor",
     "ceiling_pct": "r.ceiling", "round": "t.round",
+    "variable": "dem.variable", "category": "dem.h.category", "role": "dem.h.role",
+    "target_percent": "dem.h.target", "achieved_percent": "dem.h.achieved",
+    "difference": "dem.h.difference", "construct": "m.construct",
+    "test": "dem.h.test", "statistic": "dem.h.statistic", "df1": "dem.h.df1",
+    "df2": "dem.h.df2", "effect_size": "dem.h.effect",
+    "effect_kind": "dem.h.effect_kind", "means": "dem.h.means",
+    "significant": "dem.h.significant", "model": "dem.h.model",
+    "chi_square": "dem.h.chi2", "cfi": "dem.h.cfi", "rmsea": "dem.h.rmsea",
+    "delta_chi_square": "dem.h.delta_chi2", "delta_df": "dem.h.delta_df",
+    "delta_p": "dem.h.delta_p", "delta_cfi": "dem.h.delta_cfi",
+    "invariant": "dem.h.invariant", "group": "dem.h.group",
 }
 #: Columns holding counts render without decimals.
 INTEGER_COLUMNS = {"n", "df", "n_items", "n_free", "count", "n_missing",

@@ -151,7 +151,7 @@ class SimulationWorker(QObject):
         if "estimation" not in out:
             try:
                 from semsim.analysis.estimator import estimate
-                est = estimate(dataset.data, self._spec,
+                est = estimate(dataset.model_frame, self._spec,
                                estimator=self._spec.analysis.estimator)
                 out["estimation"] = est
                 from semsim.analysis.fit_indices import compute as compute_fit
@@ -173,6 +173,12 @@ class SimulationWorker(QObject):
             out["descriptives"] = describe(dataset.data, self._spec)
         except Exception:
             out["descriptives"] = None
+        try:
+            from semsim.analysis.demographics import analyse as analyse_groups
+            out["demographics"] = analyse_groups(self._spec, dataset)
+        except Exception as exc:
+            out["demographics"] = None
+            out["demographics_error"] = str(exc)
 
         step("status.done", 1.0)
         return out
@@ -691,9 +697,11 @@ class MainWindow(QMainWindow):
         dataset = self.state.results.dataset
         if dataset is None:
             return translator.t("run.estimate.no_data")
-        columns = set(dataset.data.columns)
+        columns = set(getattr(dataset, "full_frame", dataset.data).columns)
         missing = [item.name for item in self.state.spec.all_items()
                    if item.name not in columns and item.id not in columns]
+        missing += [name for name in self.state.spec.control_columns()
+                    if name not in columns]
         if missing:
             return translator.t("run.estimate.stale", names=", ".join(missing))
         return ""
@@ -730,6 +738,7 @@ class MainWindow(QMainWindow):
             descriptives=result.get("descriptives"),
             power=result.get("power"),
             calibration=result.get("calibration"),
+            demographics=result.get("demographics"),
         )
         self.status_label.setText(translator.t(
             "status.estimated" if self._run_mode == "estimate" else "status.done"))

@@ -2069,6 +2069,8 @@ def analyse(spec: ModelSpec, cm: Optional["CompiledModel"] = None
                   f"{exc.message_ar} واستُخدمت القواعد الاسترشادية بدلًا منه.")
 
     # -- Satorra-Saris, which may raise the bar ----------------------------- #
+    # Control paths are structural paths and need power like any other.
+    spec = spec.expanded()
     per_path: Optional[pd.DataFrame] = None
     n_paths_required = 0
     if cm is None:

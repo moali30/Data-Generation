@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .spec import _sanitise_name, DemographicRole
 from .spec import (
     ConstructOrder,
     ConstructRole,
@@ -588,6 +589,7 @@ def validate(spec: ModelSpec) -> ValidationReport:
         _check_identification(spec, out)
         _check_targeting(spec, out)
         _check_noise(spec, out)
+        _check_demographics(spec, out)
     except Exception as exc:  # pragma: no cover - last-resort safety net
         out.append(_d(
             Severity.ERROR,
@@ -2001,6 +2003,156 @@ def _check_identification(spec: ModelSpec, out: List[Diagnostic]) -> None:
 
 
 # -- targeting -------------------------------------------------------------- #
+
+
+def _check_demographics(spec: ModelSpec, out: List[Diagnostic]) -> None:
+    """Quotas that add up, columns that do not collide, controls that point somewhere."""
+    variables = list(getattr(spec, "demographics", None) or [])
+    if not variables:
+        return
+    n = int(getattr(getattr(spec, "power", None), "n", 0) or 0)
+    taken: Dict[str, str] = {}
+    for item in spec.all_items():
+        taken[item.name] = "item"
+    for construct in spec.constructs:
+        taken.setdefault(construct.name, "construct")
+    targets = set(spec.control_target_ids())
+    p = spec.n_items
+
+    for variable in variables:
+        where = variable.id
+        name = (variable.name or "").strip()
+        shown = name or (variable.label.get("en") or "?")
+        if not name:
+            out.append(_d(
+                Severity.ERROR, "DEMO_NAME_EMPTY",
+                "A demographic variable has no column name.",
+                "أحد المتغيرات الديموغرافية بلا اسم عمود.",
+                where=where,
+                hint_en="Give it a short name such as Gender.",
+                hint_ar="اكتب له اسمًا مختصرًا مثل Gender."))
+        elif _sanitise_name(name) != name:
+            out.append(_d(
+                Severity.WARNING, "DEMO_NAME_UNSAFE",
+                f"The column name '{name}' uses characters R, SPSS or Mplus may "
+                "reject.",
+                f"اسم العمود «{name}» يحتوي على رموز قد يرفضها R أو SPSS أو Mplus.",
+                where=where,
+                hint_en="Use English letters, digits and underscores.",
+                hint_ar="استخدم حروفًا إنجليزية وأرقامًا وشرطة سفلية."))
+
+        columns = [name] if name else []
+        if variable.role is DemographicRole.CONTROL and variable.is_dummy_coded and name:
+            columns += [term.column for term in variable.terms()]
+        for column in columns:
+            if column in taken:
+                out.append(_d(
+                    Severity.ERROR, "DEMO_NAME_DUPLICATE",
+                    f"The column name '{column}' is already used in this model.",
+                    f"اسم العمود «{column}» مستخدم بالفعل في هذا النموذج.",
+                    where=where,
+                    hint_en="Rename the variable so every column is unique.",
+                    hint_ar="غيّر اسم المتغير حتى يكون كل عمود فريدًا."))
+            taken[column] = "demographic"
+
+        categories = list(variable.categories)
+        if len(categories) < 2:
+            out.append(_d(
+                Severity.ERROR, "DEMO_TOO_FEW_CATEGORIES",
+                f"'{shown}' needs at least two categories.",
+                f"المتغير «{shown}» يحتاج إلى فئتين على الأقل.",
+                where=where))
+            continue
+
+        total = sum(float(c.proportion) for c in categories)
+        if abs(total - 1.0) > 0.005:
+            out.append(_d(
+                Severity.ERROR, "DEMO_PROPORTIONS_SUM",
+                f"The percentages of '{shown}' add up to {total * 100:.1f}%, not "
+                "100%.",
+                f"نِسب فئات «{shown}» مجموعها {total * 100:.1f}% وليس 100%.",
+                where=where,
+                hint_en="Adjust them, or press Divide equally.",
+                hint_ar="عدّلها، أو اضغط «توزيع متساوٍ»."))
+        for category in categories:
+            text = category.label.get("en") or category.label.get("ar")
+            share = float(category.proportion)
+            if share <= 0.0:
+                out.append(_d(
+                    Severity.ERROR, "DEMO_EMPTY_CATEGORY",
+                    f"The category '{text}' of '{shown}' has a share of zero.",
+                    f"الفئة «{text}» من «{shown}» نسبتها صفر.",
+                    where=where,
+                    hint_en="Give it a share or remove it.",
+                    hint_ar="حدّد لها نسبة أو احذفها."))
+            elif n and n * share < 1.0:
+                out.append(_d(
+                    Severity.ERROR, "DEMO_CATEGORY_BELOW_ONE",
+                    f"At a sample of {n}, the category '{text}' of '{shown}' "
+                    "would hold less than one respondent.",
+                    f"عند عينة حجمها {n} ستضم الفئة «{text}» من «{shown}» أقل "
+                    "من مستجيب واحد.",
+                    where=where,
+                    hint_en="Raise its share or the sample size.",
+                    hint_ar="زِد نسبتها أو حجم العينة."))
+            elif (n and variable.role is DemographicRole.MGA
+                    and n * share <= p + 1):
+                out.append(_d(
+                    Severity.WARNING, "MGA_GROUP_TOO_SMALL",
+                    f"The group '{text}' of '{shown}' would hold about "
+                    f"{n * share:.0f} cases, too few to fit a model with {p} "
+                    "items on its own, so invariance will not be tested.",
+                    f"المجموعة «{text}» من «{shown}» ستضم نحو {n * share:.0f} "
+                    f"حالة، وهذا أقل من اللازم لتقدير نموذج به {p} بندًا، فلن "
+                    "يُختبر الثبات.",
+                    where=where,
+                    hint_en=f"Each group needs more than {p + 1} cases.",
+                    hint_ar=f"كل مجموعة تحتاج أكثر من {p + 1} حالة."))
+
+        if variable.role is not DemographicRole.CONTROL:
+            continue
+        if not variable.control_paths:
+            out.append(_d(
+                Severity.WARNING, "CONTROL_NO_PATH",
+                f"'{shown}' is a control variable with no path, so it has no "
+                "effect on the model.",
+                f"المتغير الضابط «{shown}» بلا مسار، فلن يؤثر في النموذج.",
+                where=where,
+                hint_en="Add a path to the construct it should be controlled for.",
+                hint_ar="أضف مسارًا إلى المتغير المراد عزل أثره عنه."))
+        valid_terms = {term.key for term in variable.terms()}
+        seen = set()
+        for path in variable.control_paths:
+            if path.term not in valid_terms:
+                out.append(_d(
+                    Severity.ERROR, "CONTROL_UNKNOWN_TERM",
+                    f"A path of '{shown}' starts from a category that no longer "
+                    "exists.",
+                    f"أحد مسارات «{shown}» يبدأ من فئة لم تعد موجودة.",
+                    where=path.id))
+            if path.target not in targets:
+                out.append(_d(
+                    Severity.ERROR, "CONTROL_BAD_TARGET",
+                    f"A path of '{shown}' does not end at a dependent or "
+                    "mediating construct.",
+                    f"أحد مسارات «{shown}» لا ينتهي عند متغير تابع أو وسيط.",
+                    where=path.id,
+                    hint_en="Point it at a construct that receives a path.",
+                    hint_ar="وجّهه إلى متغير يستقبل مسارًا."))
+            if (path.term, path.target) in seen:
+                out.append(_d(
+                    Severity.ERROR, "CONTROL_DUPLICATE_PATH",
+                    f"'{shown}' has the same path twice.",
+                    f"المتغير «{shown}» له المسار نفسه مرتين.",
+                    where=path.id))
+            seen.add((path.term, path.target))
+            if abs(float(path.resolved_coefficient())) >= 1.0:
+                out.append(_d(
+                    Severity.ERROR, "CONTROL_COEFFICIENT_RANGE",
+                    f"A path of '{shown}' has a standardised coefficient of 1 "
+                    "or more.",
+                    f"أحد مسارات «{shown}» معامله المعياري 1 أو أكثر.",
+                    where=path.id))
 
 
 def _check_targeting(spec: ModelSpec, out: List[Diagnostic]) -> None:
