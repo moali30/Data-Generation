@@ -175,6 +175,12 @@ class RowList(QWidget):
         bottom = QHBoxLayout()
         self._add_button = TButton(add_key, role="flat")
         bottom.addWidget(self._add_button)
+        self._blocked_key = ""
+        self._blocked = QLabel()
+        theme.set_role(self._blocked, "hint")
+        self._blocked.setWordWrap(True)
+        self._blocked.setVisible(False)
+        bottom.addWidget(self._blocked, 1)
         bottom.addStretch(1)
         lay.addLayout(bottom)
 
@@ -185,6 +191,17 @@ class RowList(QWidget):
     @property
     def add_button(self) -> TButton:
         return self._add_button
+
+    def set_add_blocked(self, reason_key: str = "") -> None:
+        """Grey the add button out and say why, or hand it back.
+
+        A button whose handler quietly returns when its precondition is not
+        met looks broken.  This one looks unavailable and explains itself.
+        """
+        self._blocked_key = reason_key
+        self._add_button.setEnabled(not reason_key)
+        self._blocked.setVisible(bool(reason_key))
+        self._retranslate()
 
     def set_header(self, labels: Sequence[Tuple[str, int]]) -> None:
         """Column captions above the rows: ``[(i18n_key, stretch), ...]``."""
@@ -237,6 +254,10 @@ class RowList(QWidget):
     def _retranslate(self) -> None:
         try:
             self._empty.setText(translator.t(self._empty_key))
+            reason = (translator.t(self._blocked_key)
+                      if self._blocked_key else "")
+            self._blocked.setText(reason)
+            self._add_button.setToolTip(reason)
             for label, key in getattr(self, "_header_labels", []):
                 label.setText(translator.t(key))
         except RuntimeError:
@@ -334,7 +355,14 @@ class IdCombo(QWidget):
             self.set_choices(choices)
 
     def set_choices(self, choices: Sequence[Tuple[str, str]],
-                    keep: str = "") -> None:
+                    keep: str = "", *, stored: bool = True) -> None:
+        """Fill the list and keep the selection where possible.
+
+        ``stored`` means the selection is saved in the model, so a target that
+        has gone is an error the user must see.  A picker that only names what
+        the next action applies to has nothing to preserve: it moves to the
+        first entry, otherwise its button would act on nothing.
+        """
         current = keep or self.value()
         blocked = self._combo.blockSignals(True)
         self._combo.clear()
@@ -344,7 +372,7 @@ class IdCombo(QWidget):
             index = self._combo.findData(current)
             if index >= 0:
                 self._combo.setCurrentIndex(index)
-            else:
+            elif stored:
                 # The target was deleted; say so instead of silently
                 # repointing the row at whatever is first in the list.
                 self._combo.insertItem(0, translator.t("v.missing_ref"), current)

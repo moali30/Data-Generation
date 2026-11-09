@@ -71,6 +71,8 @@ class AppState(QObject):
     progress = Signal(str, float)
     #: A background run ended badly.
     run_failed = Signal(str)
+    #: A background run started or stopped.
+    busy_changed = Signal(bool)
 
     #: Validation is cheap but not free; coalesce bursts of keystrokes.
     VALIDATE_DEBOUNCE_MS = 120
@@ -180,6 +182,7 @@ class AppState(QObject):
 
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
+        self.busy_changed.emit(busy)
 
     def report_progress(self, message: str, fraction: float = -1.0) -> None:
         self.progress.emit(message, fraction)

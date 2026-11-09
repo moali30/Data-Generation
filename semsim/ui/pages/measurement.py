@@ -16,7 +16,7 @@ Two halves of one job, so they live in one page under two tabs:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -75,6 +75,8 @@ class MeasurementPage(StagePage):
             self._tabs.setTabText(1, translator.t("s.structural"))
             if self._diagram is not None:
                 self._tabs.setTabText(2, translator.t("s.diagram"))
+            self._btn_up.setToolTip(translator.t("m.move_up"))
+            self._btn_down.setToolTip(translator.t("m.move_down"))
         except RuntimeError:
             pass
 
@@ -103,10 +105,12 @@ class MeasurementPage(StagePage):
         self._btn_del.clicked.connect(self._remove_selected)
         toolbar.addWidget(self._btn_del)
         toolbar.addStretch(1)
-        self._btn_up = QToolButton(); self._btn_up.setText("↑")
+        self._btn_up = QToolButton()
+        self._btn_up.setText("↑")
         self._btn_up.clicked.connect(lambda: self._move_selected(-1))
         toolbar.addWidget(self._btn_up)
-        self._btn_down = QToolButton(); self._btn_down.setText("↓")
+        self._btn_down = QToolButton()
+        self._btn_down.setText("↓")
         self._btn_down.clicked.connect(lambda: self._move_selected(1))
         toolbar.addWidget(self._btn_down)
         lay.addLayout(toolbar)
@@ -276,6 +280,9 @@ class MeasurementPage(StagePage):
             self.editor_stack.setCurrentWidget(self._empty_editor)
         self._btn_dup.setEnabled(bool(kind))
         self._btn_del.setEnabled(bool(kind))
+        siblings, index = self._siblings_of(kind, identifier)
+        self._btn_up.setEnabled(index > 0)
+        self._btn_down.setEnabled(0 <= index < len(siblings) - 1)
 
     def node_changed(self, identifier: str) -> None:
         """An editor changed a label; refresh just that node's text."""
@@ -308,21 +315,31 @@ class MeasurementPage(StagePage):
             index += 1
         return f"{stem}{index}"
 
+    def _select(self, identifier: str) -> None:
+        """Show a node that was just created, which may be below the fold."""
+        node = self._find_node(identifier)
+        if node is not None:
+            self.tree.setCurrentItem(node)
+            self.tree.scrollToItem(node)
+
     def _add_construct(self) -> None:
         name = self._next_name()
-        self.spec.add_construct(name, label_ar=name, label_en=name,
-                                role=ConstructRole.INDEPENDENT, n_items=4)
+        construct = self.spec.add_construct(
+            name, label_ar=name, label_en=name,
+            role=ConstructRole.INDEPENDENT, n_items=4)
         self.spec.ensure_unique_item_names()
         self.edit(structural=True)
+        self._select(construct.id)
 
     def _add_second_order(self) -> None:
         name = self._next_name("H")
-        self.spec.add_second_order_construct(
+        construct = self.spec.add_second_order_construct(
             name, label_ar=name, label_en=name,
             role=ConstructRole.INDEPENDENT, n_dimensions=3,
             items_per_dimension=4)
         self.spec.ensure_unique_item_names()
         self.edit(structural=True)
+        self._select(construct.id)
 
     def _duplicate_selected(self) -> None:
         kind, identifier = self._selected()
@@ -342,6 +359,9 @@ class MeasurementPage(StagePage):
                 item.id = Item().id
             self.spec.constructs.append(clone)
             self.spec.ensure_unique_item_names()
+            self.edit(structural=True)
+            self._select(clone.id)
+            return
         elif kind == "item":
             for construct in self.spec.constructs:
                 for container in ([construct] + list(construct.dimensions)):
@@ -354,6 +374,7 @@ class MeasurementPage(StagePage):
                             items.insert(index + 1, clone)
                             self.spec.ensure_unique_item_names()
                             self.edit(structural=True)
+                            self._select(clone.id)
                             return
             return
         elif kind == "dimension":
@@ -369,6 +390,7 @@ class MeasurementPage(StagePage):
                         construct.dimensions.insert(index + 1, clone)
                         self.spec.ensure_unique_item_names()
                         self.edit(structural=True)
+                        self._select(clone.id)
                         return
             return
         self.edit(structural=True)
@@ -419,18 +441,32 @@ class MeasurementPage(StagePage):
         self.spec.common_method_bias.item_ids = [
             i for i in self.spec.common_method_bias.item_ids if i in live_items]
 
+    def _siblings_of(self, kind: str, identifier: str) -> Tuple[List[Any], int]:
+        """The list holding the selected node and its place in it."""
+        constructs = self.spec.constructs
+        if kind == "construct":
+            groups = [constructs]
+        elif kind == "dimension":
+            groups = [c.dimensions for c in constructs]
+        elif kind == "item":
+            groups = [c.items for c in constructs]
+            groups += [d.items for c in constructs for d in c.dimensions]
+        else:
+            groups = []
+        for siblings in groups:
+            for index, node in enumerate(siblings):
+                if node.id == identifier:
+                    return siblings, index
+        return [], -1
+
     def _move_selected(self, delta: int) -> None:
         kind, identifier = self._selected()
-        if kind != "construct":
+        siblings, index = self._siblings_of(kind, identifier)
+        target = index + delta
+        if index < 0 or not 0 <= target < len(siblings):
             return
-        items = self.spec.constructs
-        for index, construct in enumerate(items):
-            if construct.id == identifier:
-                target = index + delta
-                if 0 <= target < len(items):
-                    items[index], items[target] = items[target], items[index]
-                    self.edit(structural=True)
-                return
+        siblings[index], siblings[target] = siblings[target], siblings[index]
+        self.edit(structural=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -447,8 +483,8 @@ class _EmptyEditor(QWidget):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(label)
         translator.language_changed.connect(
-            lambda _l: label.setText(translator.t("m.add_construct")))
-        label.setText(translator.t("m.add_construct"))
+            lambda _l: label.setText(translator.t("m.empty_hint")))
+        label.setText(translator.t("m.empty_hint"))
 
 
 class _EditorBase(QWidget):
@@ -671,8 +707,10 @@ class _ConstructEditor(_EditorBase):
         construct = self.page.spec.construct(self._id)
         if construct is None:
             return
-        seed = self.page.spec.seed or 0
-        rng = np.random.default_rng(seed + len(construct.all_items()))
+        # A fresh generator: seeding it from the model gave the same numbers
+        # on every press, so the second press appeared to do nothing.  The
+        # drawn loadings are stored in the model, so a run stays reproducible.
+        rng = np.random.default_rng()
         centre = self.uniform.value()
         for item in construct.all_items():
             item.loading = float(np.clip(

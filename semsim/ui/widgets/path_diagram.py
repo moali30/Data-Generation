@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from semsim.core.spec import Construct, ConstructRole, ModelSpec
 from semsim.ui import theme
 from semsim.ui.i18n import translator
-from semsim.ui.widgets.common import TButton, TCheckBox
+from semsim.ui.widgets.common import Notice, TButton, TCheckBox
 
 # Geometry, in scene units.
 CONSTRUCT_W, CONSTRUCT_H = 148.0, 62.0
@@ -610,6 +610,8 @@ class PathDiagramView(QWidget):
         self._mirror.toggled.connect(lambda _c: self.refresh())
         bar.addWidget(self._mirror)
         bar.addStretch(1)
+        self._notice = Notice()
+        bar.addWidget(self._notice)
         self._fit = TButton("s.diagram.fit", role="flat")
         self._fit.clicked.connect(self.fit)
         bar.addWidget(self._fit)
@@ -690,7 +692,10 @@ class PathDiagramView(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.scene.render(painter, QRectF(image.rect()), rect)
         painter.end()
-        image.save(path)
+        if not image.save(path):
+            self._notice.show_key("s.diagram.save_failed", role="error")
+            return ""
+        self._notice.show_key("s.diagram.saved")
         return path
 
 

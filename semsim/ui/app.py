@@ -13,6 +13,7 @@ button is disabled while the specification contains errors.
 
 from __future__ import annotations
 
+import copy
 import os
 import sys
 import traceback
@@ -32,7 +33,7 @@ from semsim.core.spec import ModelSpec
 from semsim.io import project as project_io
 from semsim.ui import theme
 from semsim.ui.i18n import ARABIC, ENGLISH, LANGUAGE_NAMES, translator
-from semsim.ui.state import AppState, RecentProjects
+from semsim.ui.state import AppState, RecentProjects, Results
 from semsim.ui.widgets.common import (
     StatBadge, TButton, VerdictChip, separator, set_current_theme,
 )
@@ -65,10 +66,13 @@ class SimulationWorker(QObject):
     finished = Signal(object)
     failed = Signal(str, str)
 
-    def __init__(self, spec: ModelSpec, mode: str = "full") -> None:
+    def __init__(self, spec: ModelSpec, mode: str = "full",
+                 prior: Optional[Results] = None) -> None:
         super().__init__()
         self._spec = spec
         self._mode = mode
+        #: The previous run's results, which an "estimate" run refits.
+        self._prior = prior
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -81,8 +85,10 @@ class SimulationWorker(QObject):
     def run(self) -> None:
         try:
             result = self._run_pipeline()
-            if not self._cancelled:
-                self.finished.emit(result)
+            # Cancelled after the last checkpoint: it still has to end as a
+            # cancellation, or the window would wait forever for a finish.
+            self._check()
+            self.finished.emit(result)
         except SemSimError as exc:
             self.failed.emit(exc.message_ar, exc.message_en)
         except Exception as exc:  # pragma: no cover - defensive
@@ -104,7 +110,7 @@ class SimulationWorker(QObject):
         out["compiled"] = compiled
 
         if self._mode in ("full", "power"):
-            step("status.ready", 0.12)
+            step("status.power", 0.12)
             try:
                 from semsim.power import analysis as power_analysis
                 out["power"] = power_analysis.analyse(self._spec, compiled)
@@ -113,7 +119,15 @@ class SimulationWorker(QObject):
             if self._mode == "power":
                 return out
 
-        step("status.generating", 0.25)
+        if self._mode == "estimate":
+            # Refit the data on hand.  How that data came about has not
+            # changed, so its power analysis and calibration still stand.
+            out["dataset"] = self._prior.dataset
+            out["power"] = self._prior.power
+            out["calibration"] = self._prior.calibration
+        else:
+            step("status.generating", 0.25)
+
         if self._mode == "full" and getattr(self._spec.fit_target, "enabled", False):
             try:
                 from semsim.targeting.calibration import calibrate
@@ -184,6 +198,7 @@ class MainWindow(QMainWindow):
         self._theme = theme_name
         self._thread: Optional[QThread] = None
         self._worker: Optional[SimulationWorker] = None
+        self._run_mode = "full"
         self._pages: List[QWidget] = []
         self._page_errors: Dict[int, str] = {}
 
@@ -210,6 +225,7 @@ class MainWindow(QMainWindow):
         splitter.setChildrenCollapsible(False)
 
         self.nav = QListWidget()
+        self.nav.setObjectName("stageNav")
         self.nav.setFixedWidth(260)
         self.nav.setFrameShape(QFrame.Shape.NoFrame)
         self.nav.setSpacing(2)
@@ -391,6 +407,21 @@ class MainWindow(QMainWindow):
         self.state.structure_changed.connect(self._refresh_summary)
         self.state.project_changed.connect(self._refresh_title)
         self.state.results_changed.connect(self._refresh_summary)
+        self.state.busy_changed.connect(self._sync_busy)
+        self._sync_busy(self.state.busy)
+
+    def _sync_busy(self, busy: bool) -> None:
+        """Only offer what can actually happen right now.
+
+        Stop does nothing while idle and a second run is refused during the
+        first, so both would otherwise be commands that ignore the user.
+        """
+        self._actions["menu.run.cancel"].setEnabled(busy)
+        for key in ("menu.run.full", "menu.run.simulate", "menu.run.estimate"):
+            self._actions[key].setEnabled(not busy)
+
+    def _flash_status(self, key: str, **fmt: object) -> None:
+        self.statusBar().showMessage(translator.t(key, **fmt), 6000)
 
     # ------------------------------------------------------------------ #
     # Live summary
@@ -424,6 +455,8 @@ class MainWindow(QMainWindow):
             self.validation_chip.set_verdict(
                 "fail", f"{translator.t('v.errors')}: {len(report.errors())}")
         self.run_button.setEnabled(self.state.can_run and not self.state.busy)
+        self.run_button.setToolTip("" if self.state.can_run
+                                   else translator.t("v.blocked"))
 
     def _refresh_title(self) -> None:
         name = self.state.display_name or translator.t("menu.file.new")
@@ -500,12 +533,15 @@ class MainWindow(QMainWindow):
             return
         self.state.new_project()
         self._rebuild_pages()
+        self.nav.setCurrentRow(0)
 
     def load_example(self, name: str) -> None:
         if not self._confirm_discard():
             return
         self.state.set_spec(example_models.build(name))
         self._rebuild_pages()
+        self.nav.setCurrentRow(0)
+        self._flash_status("status.loaded")
 
     def clear_model(self) -> None:
         answer = QMessageBox.question(
@@ -514,6 +550,8 @@ class MainWindow(QMainWindow):
         if answer == QMessageBox.StandardButton.Yes:
             self.state.new_project()
             self._rebuild_pages()
+            self.nav.setCurrentRow(0)
+            self._flash_status("status.cleared")
 
     def open_project(self, path: str = "") -> None:
         if not self._confirm_discard():
@@ -533,6 +571,8 @@ class MainWindow(QMainWindow):
         self.recent.add(path)
         self._refresh_recent_menu()
         self._rebuild_pages()
+        self.nav.setCurrentRow(0)
+        self._flash_status("status.loaded")
         if warnings:
             QMessageBox.information(self, translator.t("menu.file.open"),
                                     "\n".join(warnings[:6]))
@@ -547,6 +587,7 @@ class MainWindow(QMainWindow):
             return False
         self.recent.add(self.state.path or "")
         self._refresh_recent_menu()
+        self._flash_status("status.saved", name=self.state.display_name)
         return True
 
     def save_project_as(self) -> bool:
@@ -562,6 +603,7 @@ class MainWindow(QMainWindow):
             return False
         self.recent.add(saved)
         self._refresh_recent_menu()
+        self._flash_status("status.saved", name=self.state.display_name)
         return True
 
     def _refresh_recent_menu(self) -> None:
@@ -571,7 +613,7 @@ class MainWindow(QMainWindow):
         menu.clear()
         entries = self.recent.describe()
         if not entries:
-            act = QAction(translator.t("v.no_issues"), self)
+            act = QAction(translator.t("menu.file.recent.empty"), self)
             act.setEnabled(False)
             menu.addAction(act)
             return
@@ -587,7 +629,7 @@ class MainWindow(QMainWindow):
     def export_results(self) -> None:
         if not self.state.results.has_data:
             QMessageBox.information(self, translator.t("dlg.export.title"),
-                                    translator.t("v.blocked"))
+                                    translator.t("dlg.export.no_data"))
             return
         try:
             from semsim.ui.pages.export_dialog import ExportDialog
@@ -619,7 +661,14 @@ class MainWindow(QMainWindow):
         if report is not None and not report.ok:
             self.show_validation()
             return
+        if mode == "estimate":
+            blocker = self._estimation_blocker()
+            if blocker:
+                QMessageBox.information(
+                    self, translator.t("menu.run.estimate"), blocker)
+                return
 
+        self._run_mode = mode
         self.state.set_busy(True)
         self.run_button.setEnabled(False)
         self.cancel_button.setVisible(True)
@@ -628,13 +677,26 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
 
         self._thread = QThread(self)
-        self._worker = SimulationWorker(self.state.spec, mode)
+        self._worker = SimulationWorker(self.state.spec, mode,
+                                        copy.copy(self.state.results))
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self._thread.start()
+
+    def _estimation_blocker(self) -> str:
+        """Why the data on hand cannot be refitted; empty when it can."""
+        dataset = self.state.results.dataset
+        if dataset is None:
+            return translator.t("run.estimate.no_data")
+        columns = set(dataset.data.columns)
+        missing = [item.name for item in self.state.spec.all_items()
+                   if item.name not in columns and item.id not in columns]
+        if missing:
+            return translator.t("run.estimate.stale", names=", ".join(missing))
+        return ""
 
     def cancel_run(self) -> None:
         if self._worker is not None:
@@ -669,7 +731,8 @@ class MainWindow(QMainWindow):
             power=result.get("power"),
             calibration=result.get("calibration"),
         )
-        self.status_label.setText(translator.t("status.done"))
+        self.status_label.setText(translator.t(
+            "status.estimated" if self._run_mode == "estimate" else "status.done"))
         soft_errors = [v for k, v in result.items() if k.endswith("_error")]
         if soft_errors:
             QMessageBox.warning(self, translator.t("status.failed"),
@@ -689,10 +752,11 @@ class MainWindow(QMainWindow):
     def show_validation(self) -> None:
         try:
             from semsim.ui.pages.validation_panel import ValidationDialog
+        except ImportError:
+            pass
+        else:
             ValidationDialog(self.state, self).exec()
             return
-        except Exception:
-            pass
         report = self.state.validation
         if report is None:
             return
@@ -722,7 +786,9 @@ class MainWindow(QMainWindow):
                 try:
                     rebuild()
                 except Exception:
-                    pass
+                    # One page failing must not stop the others rebuilding,
+                    # but the failure still has to reach the user.
+                    sys.excepthook(*sys.exc_info())
         self._refresh_summary()
         self._refresh_title()
 
@@ -780,7 +846,46 @@ def application_icon() -> "QIcon":
     return QIcon()
 
 
+def install_exception_hook() -> None:
+    """Show an error raised inside a button handler instead of losing it.
+
+    Qt carries on after a Python exception in a slot, and a windowed build has
+    no console for the traceback, so the only symptom would be a button that
+    appears to do nothing.
+    """
+    showing = [False]
+
+    def hook(kind, value, tb) -> None:
+        if not issubclass(kind, Exception):
+            sys.__excepthook__(kind, value, tb)
+            return
+        detail = "".join(traceback.format_exception(kind, value, tb))
+        if sys.stderr is not None:
+            sys.stderr.write(detail)
+        # A signal delivered to a widget that has already been deleted says
+        # nothing about the action the user took.
+        if isinstance(value, RuntimeError) and "already deleted" in str(value):
+            return
+        app = QApplication.instance()
+        if showing[0] or app is None or QThread.currentThread() != app.thread():
+            return
+        showing[0] = True
+        try:
+            box = QMessageBox(app.activeWindow())
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(translator.t("status.failed"))
+            box.setText(translator.t("err.unexpected"))
+            box.setInformativeText(f"{kind.__name__}: {value}")
+            box.setDetailedText(detail)
+            box.exec()
+        finally:
+            showing[0] = False
+
+    sys.excepthook = hook
+
+
 def create_app(argv: Optional[List[str]] = None) -> Tuple[QApplication, MainWindow]:
+    install_exception_hook()
     app = QApplication.instance() or QApplication(argv or sys.argv)
     app.setApplicationName("SEM Data Simulation Engine")
     app.setOrganizationName("semsim")
@@ -792,4 +897,4 @@ def create_app(argv: Optional[List[str]] = None) -> Tuple[QApplication, MainWind
 
 
 __all__ = ["MainWindow", "SimulationWorker", "create_app",
-           "application_icon", "PAGE_SPECS"]
+           "application_icon", "install_exception_hook", "PAGE_SPECS"]

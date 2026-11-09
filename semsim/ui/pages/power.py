@@ -41,7 +41,7 @@ from semsim.ui import theme
 from semsim.ui.i18n import translator
 from semsim.ui.pages.base import StagePage
 from semsim.ui.widgets.common import (
-    Card, Field, InfoBanner, Retranslatable, StatBadge, TButton, TKey,
+    Card, Field, InfoBanner, Notice, Retranslatable, StatBadge, TButton, TKey,
     current_theme, float_spin, int_spin,
 )
 from semsim.ui.widgets.tables import TablePanel
@@ -539,6 +539,8 @@ class PowerPage(StagePage):
         self._apply_button = TButton("p.apply_n")
         self._apply_button.clicked.connect(self._apply_recommendation)
         buttons.addWidget(self._apply_button)
+        self._apply_notice = Notice()
+        buttons.addWidget(self._apply_notice)
         buttons.addStretch(1)
         card.add(buttons)
 
@@ -665,6 +667,7 @@ class PowerPage(StagePage):
             self._n.setEnabled(True)
             self._n.setValue(recommended)
         self.edit()
+        self._apply_notice.show_key("p.applied", n=recommended)
 
     # -- display --------------------------------------------------------- #
 

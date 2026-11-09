@@ -13,7 +13,8 @@ picking "medium" writes 0.30 and dragging the slider flips the combo to
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from itertools import combinations
+from typing import Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -44,7 +45,7 @@ class StructuralEditor(QWidget):
         self.scroll = ScrollPage()
         outer.addWidget(self.scroll)
 
-        self.paths = RowList("s.add_path", empty_key="s.paths")
+        self.paths = RowList("s.add_path", empty_key="s.paths.empty")
         self.paths.set_header([("s.source", 3), ("s.target", 3),
                                ("s.effect_size", 3), ("s.coefficient", 4),
                                ("s.significant", 2)])
@@ -53,7 +54,7 @@ class StructuralEditor(QWidget):
         card.add(self.paths)
         self.scroll.add(card)
 
-        self.covariances = RowList("s.add_latent_cov", empty_key="s.latent_cov")
+        self.covariances = RowList("s.add_latent_cov", empty_key="s.latent_cov.empty")
         self.covariances.set_header([("s.source", 3), ("s.target", 3),
                                      ("s.correlation", 4)])
         self.covariances.add_button.clicked.connect(self._add_covariance)
@@ -61,7 +62,7 @@ class StructuralEditor(QWidget):
         cov_card.add(self.covariances)
         self.scroll.add(cov_card)
 
-        self.interactions = RowList("s.add_interaction", empty_key="s.interactions")
+        self.interactions = RowList("s.add_interaction", empty_key="s.interactions.empty")
         self.interactions.set_header([("s.predictor", 3), ("s.moderator", 3),
                                       ("s.target", 3), ("s.coefficient", 4),
                                       ("s.significant", 2)])
@@ -71,7 +72,7 @@ class StructuralEditor(QWidget):
         ix_card.add(self.interactions)
         self.scroll.add(ix_card)
 
-        self.indirects = RowList("s.add_indirect", empty_key="s.indirect")
+        self.indirects = RowList("s.add_indirect", empty_key="s.indirect.empty")
         self.indirects.set_header([("s.chain", 8), ("s.significant", 2)])
         self.indirects.add_button.clicked.connect(self._add_indirect)
         ind_card = Card("s.indirect")
@@ -91,6 +92,9 @@ class StructuralEditor(QWidget):
         if self._updating:
             return
         self.state.touch(structural=structural)
+        # A retargeted combo is not a structural edit but can still free up,
+        # or use up, the last possible pair.
+        self._update_availability()
 
     def rebuild(self) -> None:
         self._updating = True
@@ -109,21 +113,95 @@ class StructuralEditor(QWidget):
                 self.indirects.add_row(self._indirect_row(indirect))
         finally:
             self._updating = False
+        self._update_availability()
 
     def refresh(self) -> None:
         """Only the labels can change without a structural edit."""
         self.rebuild()
 
     # ------------------------------------------------------------------ #
+    # What can be added next
+    # ------------------------------------------------------------------ #
+
+    def _update_availability(self) -> None:
+        """Say why an add button cannot work instead of ignoring the click."""
+        n_constructs = len(self.spec.constructs)
+        n_exogenous = len(self.spec.exogenous_construct_ids())
+        self.paths.set_add_blocked(
+            "s.block.two_constructs" if n_constructs < 2
+            else "" if self._free_path() else "s.block.all_paths")
+        self.covariances.set_add_blocked(
+            "s.block.two_exogenous" if n_exogenous < 2
+            else "" if self._free_covariance() else "s.block.all_covariances")
+        self.interactions.set_add_blocked(
+            "s.block.three_constructs" if n_constructs < 3
+            else "" if self._free_interaction() else "s.block.all_interactions")
+        self.indirects.set_add_blocked(
+            "s.block.no_chain" if not self._chains()
+            else "" if self._free_chain() else "s.block.all_chains")
+
+    def _free_path(self) -> Optional[Tuple[str, str]]:
+        """The first pair of constructs with no path in either direction."""
+        joined = {frozenset((p.source, p.target)) for p in self.spec.paths}
+        ids = [c.id for c in self.spec.constructs]
+        for source, target in combinations(ids, 2):
+            if frozenset((source, target)) not in joined:
+                return source, target
+        return None
+
+    def _free_covariance(self) -> Optional[Tuple[str, str]]:
+        joined = {frozenset((c.construct_a, c.construct_b))
+                  for c in self.spec.latent_covariances}
+        for first, second in combinations(self.spec.exogenous_construct_ids(), 2):
+            if frozenset((first, second)) not in joined:
+                return first, second
+        return None
+
+    def _free_interaction(self) -> Optional[Tuple[str, str, str]]:
+        used = {(frozenset((i.predictor, i.moderator)), i.target)
+                for i in self.spec.interactions}
+        ids = [c.id for c in self.spec.constructs]
+        for target in reversed(ids):
+            others = [cid for cid in ids if cid != target]
+            for predictor, moderator in combinations(others, 2):
+                if (frozenset((predictor, moderator)), target) not in used:
+                    return predictor, moderator, target
+        return None
+
+    def _chains(self) -> List[List[str]]:
+        """Every X -> M -> Y the paths actually describe."""
+        outgoing: Dict[str, List[str]] = {}
+        for path in self.spec.paths:
+            outgoing.setdefault(path.source, []).append(path.target)
+        return [[source, middle, end]
+                for source, middles in outgoing.items()
+                for middle in middles
+                for end in outgoing.get(middle, [])
+                if end != source]
+
+    def _free_chain(self) -> List[str]:
+        """The first real chain not already listed.
+
+        Only chains made of existing paths are offered: anything else fails
+        validation as a broken chain and would block the run.
+        """
+        listed: Set[Tuple[str, ...]] = {tuple(i.chain)
+                                        for i in self.spec.indirect_effects}
+        for chain in self._chains():
+            if tuple(chain) not in listed:
+                return chain
+        return []
+
+    # ------------------------------------------------------------------ #
     # Paths
     # ------------------------------------------------------------------ #
 
     def _add_path(self) -> None:
-        if len(self.spec.constructs) < 2:
+        pair = self._free_path()
+        if pair is None:
             return
-        source, target = self.spec.constructs[0], self.spec.constructs[-1]
         self.spec.paths.append(Path(
-            source=source.id, target=target.id,
+            source=pair[0], target=pair[1],
             effect_size=EffectSize.MEDIUM,
             coefficient=EffectSize.MEDIUM.default_coefficient))
         self.edit(structural=True)
@@ -192,11 +270,11 @@ class StructuralEditor(QWidget):
     # ------------------------------------------------------------------ #
 
     def _add_covariance(self) -> None:
-        exogenous = self.spec.exogenous_construct_ids()
-        if len(exogenous) < 2:
+        pair = self._free_covariance()
+        if pair is None:
             return
         self.spec.latent_covariances.append(LatentCovariance(
-            construct_a=exogenous[0], construct_b=exogenous[1],
+            construct_a=pair[0], construct_b=pair[1],
             correlation=0.30))
         self.edit(structural=True)
 
@@ -229,11 +307,11 @@ class StructuralEditor(QWidget):
     # ------------------------------------------------------------------ #
 
     def _add_interaction(self) -> None:
-        if len(self.spec.constructs) < 3:
+        triple = self._free_interaction()
+        if triple is None:
             return
-        ids = [c.id for c in self.spec.constructs]
         self.spec.interactions.append(Interaction(
-            predictor=ids[0], moderator=ids[1], target=ids[-1],
+            predictor=triple[0], moderator=triple[1], target=triple[2],
             effect_size=EffectSize.WEAK,
             coefficient=EffectSize.WEAK.default_coefficient))
         self.edit(structural=True)
@@ -283,25 +361,12 @@ class StructuralEditor(QWidget):
     # ------------------------------------------------------------------ #
 
     def _add_indirect(self) -> None:
-        chain = self._suggest_chain()
+        chain = self._free_chain()
         if not chain:
             return
         self.spec.indirect_effects.append(
             IndirectEffect(chain=chain, label=self._chain_label(chain)))
         self.edit(structural=True)
-
-    def _suggest_chain(self) -> List[str]:
-        """Offer the first real X -> M -> Y the paths already describe."""
-        outgoing: Dict[str, List[str]] = {}
-        for path in self.spec.paths:
-            outgoing.setdefault(path.source, []).append(path.target)
-        for source, middles in outgoing.items():
-            for middle in middles:
-                for end in outgoing.get(middle, []):
-                    if end != source:
-                        return [source, middle, end]
-        ids = [c.id for c in self.spec.constructs]
-        return ids[:3] if len(ids) >= 3 else []
 
     def _chain_label(self, chain: List[str]) -> str:
         names = []

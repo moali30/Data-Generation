@@ -293,6 +293,7 @@ class DiagnosticSection(QWidget, Retranslatable):
         header_lay.setContentsMargins(0, 0, 0, 0)
         header_lay.setSpacing(6)
         self._button = QToolButton()
+        self._button.setObjectName("sectionHeader")
         self._button.setCheckable(True)
         self._button.setChecked(expanded)
         self._button.setAutoRaise(True)
@@ -440,6 +441,7 @@ class ValidationDialog(QDialog):
         foot_lay.setContentsMargins(18, 10, 18, 14)
         foot_lay.setSpacing(8)
         self._status = QLabel()
+        self._status_key = ""
         theme.set_role(self._status, "hint")
         foot_lay.addWidget(self._status)
         foot_lay.addStretch(1)
@@ -496,7 +498,7 @@ class ValidationDialog(QDialog):
             except Exception:
                 pass
         self._report = self._read_report()
-        self._status.setText("")
+        self._set_status("v.rechecked")
         self._populate()
 
     # -- rendering -------------------------------------------------------- #
@@ -573,7 +575,11 @@ class ValidationDialog(QDialog):
         clipboard = QGuiApplication.clipboard()
         if clipboard is not None:
             clipboard.setText(self.report_text())
-        self._status.setText(translator.t("v.copied"))
+        self._set_status("v.copied")
+
+    def _set_status(self, key: str) -> None:
+        self._status_key = key
+        self._status.setText(translator.t(key))
 
     # -- retranslation ---------------------------------------------------- #
 
@@ -590,8 +596,8 @@ class ValidationDialog(QDialog):
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft
                                 if translator.is_rtl
                                 else Qt.LayoutDirection.LeftToRight)
-        if self._status.text():
-            self._status.setText(translator.t("v.copied"))
+        if self._status_key:
+            self._status.setText(translator.t(self._status_key))
 
 
 __all__ = ["ValidationDialog", "DiagnosticCard", "DiagnosticSection",

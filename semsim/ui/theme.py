@@ -16,17 +16,22 @@ Two concerns live here that are easy to get wrong in an Arabic desktop app:
 
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 try:
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
+    from PySide6.QtCore import QLocale, QPointF, Qt
+    from PySide6.QtGui import (
+        QColor, QFont, QFontDatabase, QImage, QPainter, QPalette, QPen, QPolygonF,
+    )
     from PySide6.QtWidgets import QApplication, QWidget
     _HAVE_QT = True
 except Exception:  # pragma: no cover - headless
     _HAVE_QT = False
     Qt = QColor = QFont = QFontDatabase = QPalette = QApplication = QWidget = None  # type: ignore
+    QLocale = QPointF = QImage = QPainter = QPen = QPolygonF = None  # type: ignore
 
 
 LIGHT = "light"
@@ -203,6 +208,63 @@ def mono_font(point_size: int = 10) -> "QFont":
 
 
 # --------------------------------------------------------------------------- #
+# Indicator images
+# --------------------------------------------------------------------------- #
+
+#: Polylines in a 16-unit box.  A stylesheet that restyles a spin box, combo or
+#: check box takes over drawing its arrows and ticks too, and can only do that
+#: from an image file: without one the arrows simply vanish and a ticked box is
+#: a plain coloured square.
+_ICON_LINES: Dict[str, Tuple[Tuple[float, float], ...]] = {
+    "up": ((4.0, 10.0), (8.0, 6.0), (12.0, 10.0)),
+    "down": ((4.0, 6.0), (8.0, 10.0), (12.0, 6.0)),
+    "check": ((3.5, 8.5), (6.5, 11.5), (12.5, 4.5)),
+}
+
+#: Drawn large and scaled down by Qt, so they stay sharp at 150 % display scale.
+_ICON_SCALE = 4
+
+_icon_directory: Optional[tempfile.TemporaryDirectory] = None
+
+
+def _draw_icon(shape: str, colour: str) -> "QImage":
+    side = 16 * _ICON_SCALE
+    image = QImage(side, side, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.scale(_ICON_SCALE, _ICON_SCALE)
+    if shape == "dot":
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(colour))
+        painter.drawEllipse(QPointF(8.0, 8.0), 3.5, 3.5)
+    else:
+        pen = QPen(QColor(colour), 2.0)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.drawPolyline(QPolygonF([QPointF(x, y)
+                                        for x, y in _ICON_LINES[shape]]))
+    painter.end()
+    return image
+
+
+def _icon_file(shape: str, colour: str) -> str:
+    """Path of ``shape`` drawn in ``colour``, created on first use."""
+    if not _HAVE_QT:
+        return ""
+    global _icon_directory
+    if _icon_directory is None:
+        _icon_directory = tempfile.TemporaryDirectory(prefix="semsim-ui-")
+    path = os.path.join(_icon_directory.name,
+                        f"{shape}-{colour.lstrip('#')}.png")
+    if not os.path.exists(path):
+        _draw_icon(shape, colour).save(path, "PNG")
+    # Stylesheet urls take forward slashes on every platform.
+    return path.replace(os.sep, "/")
+
+
+# --------------------------------------------------------------------------- #
 # Stylesheet
 # --------------------------------------------------------------------------- #
 
@@ -212,6 +274,14 @@ def stylesheet(theme: str = LIGHT, base_point_size: int = 10) -> str:
     c = palette(theme)
     family = resolve_font_family(ARABIC_FONT_STACK)
     mono = resolve_font_family(MONO_FONT_STACK)
+    up = _icon_file("up", c.text)
+    up_off = _icon_file("up", c.text_muted)
+    down = _icon_file("down", c.text)
+    down_off = _icon_file("down", c.text_muted)
+    check = _icon_file("check", c.accent_text)
+    check_off = _icon_file("check", c.text_muted)
+    dot = _icon_file("dot", c.accent)
+    dot_off = _icon_file("dot", c.text_muted)
     return f"""
 * {{
     font-family: "{family}";
@@ -239,6 +309,21 @@ QFrame[role="card"] {{
     border-radius: 8px;
 }}
 QFrame[role="separator"] {{ background: {c.border}; max-height: 1px; border: none; }}
+QFrame[role="card"] .QWidget {{ background: transparent; }}
+QSlider {{ background: transparent; }}
+QSlider::groove:horizontal {{ height: 4px; background: {c.border}; border-radius: 2px; }}
+QSlider::sub-page:horizontal {{ background: {c.accent}; border-radius: 2px; }}
+QSlider::add-page:horizontal {{ background: {c.border}; border-radius: 2px; }}
+QSlider::handle:horizontal {{
+    width: 12px;
+    margin: -6px 0;
+    background: {c.surface};
+    border: 2px solid {c.accent};
+    border-radius: 8px;
+}}
+QSlider::handle:horizontal:hover {{ background: {c.surface_alt}; }}
+QSlider::sub-page:horizontal:disabled {{ background: {c.text_muted}; }}
+QSlider::handle:horizontal:disabled {{ border-color: {c.text_muted}; }}
 
 QGroupBox {{
     background: {c.surface};
@@ -277,8 +362,10 @@ QPushButton[role="primary"]:disabled {{
     background: {c.surface_alt}; color: {c.text_muted}; border-color: {c.border};
 }}
 QPushButton[role="danger"] {{ color: {c.danger}; border-color: {c.danger}; }}
+QPushButton[role="danger"]:disabled {{ color: {c.text_muted}; border-color: {c.border}; }}
 QPushButton[role="flat"] {{ background: transparent; border: none; color: {c.accent}; }}
 QPushButton[role="flat"]:hover {{ text-decoration: underline; }}
+QPushButton[role="flat"]:disabled {{ color: {c.text_muted}; text-decoration: none; }}
 
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit {{
     background: {c.surface};
@@ -300,7 +387,41 @@ QLineEdit[invalid="true"], QSpinBox[invalid="true"], QDoubleSpinBox[invalid="tru
 }}
 QSpinBox, QDoubleSpinBox {{ font-family: "{mono}"; }}
 
-QComboBox::drop-down {{ border: none; width: 20px; }}
+QSpinBox::up-button, QDoubleSpinBox::up-button,
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    width: 22px;
+    background: {c.surface_alt};
+    border: none;
+    border-left: 1px solid {c.border};
+}}
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-position: top right;
+    border-bottom: 1px solid {c.border};
+    border-top-right-radius: 6px;
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: 6px;
+}}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: {c.border}; }}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url("{up}"); width: 11px; height: 11px; }}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url("{down}"); width: 11px; height: 11px; }}
+QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled,
+QSpinBox::up-arrow:off, QDoubleSpinBox::up-arrow:off {{ image: url("{up_off}"); }}
+QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled,
+QSpinBox::down-arrow:off, QDoubleSpinBox::down-arrow:off {{ image: url("{down_off}"); }}
+
+QComboBox:hover {{ border-color: {c.text_muted}; }}
+QComboBox::drop-down {{
+    subcontrol-origin: border;
+    subcontrol-position: center right;
+    width: 28px;
+    border: none;
+}}
+QComboBox::down-arrow {{ image: url("{down}"); width: 12px; height: 12px; }}
+QComboBox::down-arrow:disabled {{ image: url("{down_off}"); }}
 QComboBox QAbstractItemView {{
     background: {c.surface};
     color: {c.text};
@@ -311,6 +432,7 @@ QComboBox QAbstractItemView {{
 }}
 
 QCheckBox, QRadioButton {{ spacing: 8px; background: transparent; }}
+QCheckBox:disabled, QRadioButton:disabled {{ color: {c.text_muted}; }}
 QCheckBox::indicator, QRadioButton::indicator {{
     width: 16px; height: 16px;
     border: 1px solid {c.border};
@@ -318,12 +440,16 @@ QCheckBox::indicator, QRadioButton::indicator {{
 }}
 QCheckBox::indicator {{ border-radius: 4px; }}
 QRadioButton::indicator {{ border-radius: 8px; }}
-QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
-    background: {c.accent}; border-color: {c.accent};
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {{ border-color: {c.accent}; }}
+QCheckBox::indicator:checked {{
+    background: {c.accent}; border-color: {c.accent}; image: url("{check}");
 }}
+QRadioButton::indicator:checked {{ border-color: {c.accent}; image: url("{dot}"); }}
 QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
-    background: {c.surface_alt};
+    background: {c.surface_alt}; border-color: {c.border};
 }}
+QCheckBox::indicator:checked:disabled {{ image: url("{check_off}"); }}
+QRadioButton::indicator:checked:disabled {{ image: url("{dot_off}"); }}
 
 QTabWidget::pane {{
     background: {c.surface};
@@ -361,7 +487,7 @@ QTableView, QTreeView, QListView {{
     selection-color: {c.accent_text};
     outline: none;
 }}
-QTableView {{ font-family: "{mono}"; }}
+QTableView {{ font-family: "{family}"; }}
 QTreeView, QListView {{ font-family: "{family}"; }}
 QHeaderView::section {{
     background: {c.surface_alt};
@@ -374,6 +500,11 @@ QHeaderView::section {{
 }}
 QTableCornerButton::section {{ background: {c.surface_alt}; border: none; }}
 QTreeView::item, QListView::item {{ padding: 4px 2px; }}
+
+#stageNav {{ background: {c.surface}; border: none; padding: 6px 4px; }}
+#stageNav::item {{ padding: 9px 10px; margin: 1px 4px; border-radius: 6px; }}
+#stageNav::item:hover:!selected {{ background: {c.surface_alt}; }}
+#stageNav::item:selected {{ background: {c.accent}; color: {c.accent_text}; }}
 
 QScrollBar:vertical {{ background: transparent; width: 11px; margin: 0; }}
 QScrollBar:horizontal {{ background: transparent; height: 11px; margin: 0; }}
@@ -429,6 +560,10 @@ QToolBar {{ background: {c.surface}; border: none; border-bottom: 1px solid {c.b
 QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px 10px; }}
 QToolButton:hover {{ background: {c.surface_alt}; border-color: {c.border}; }}
 QToolButton:checked {{ background: {c.accent}; color: {c.accent_text}; }}
+QToolButton:disabled {{ color: {c.border}; }}
+QToolButton#sectionHeader {{ font-weight: 600; padding: 6px 4px; }}
+QToolButton#sectionHeader:checked {{ background: transparent; color: {c.text}; border-color: transparent; }}
+QToolButton#sectionHeader:hover {{ background: {c.surface_alt}; border-color: transparent; }}
 """
 
 
@@ -443,6 +578,10 @@ def apply(app: "QApplication", theme: str = LIGHT, rtl: bool = True,
     if not _HAVE_QT:
         return
     c = palette(theme)
+    # Before any widget exists: each one copies the default locale when it is
+    # created.  On an Arabic Windows the default formats numbers in Eastern
+    # Arabic digits, and statistics here are always written 0-9.
+    QLocale.setDefault(QLocale.c())
     app.setStyle("Fusion")
     app.setFont(ui_font(base_point_size))
     app.setLayoutDirection(Qt.LayoutDirection.RightToLeft if rtl

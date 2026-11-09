@@ -77,6 +77,7 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "menu.file.save": ("حفظ", "Save"),
     "menu.file.save_as": ("حفظ باسم…", "Save as…"),
     "menu.file.recent": ("المشاريع الأخيرة", "Recent projects"),
+    "menu.file.recent.empty": ("لا توجد مشاريع حديثة", "No recent projects"),
     "menu.file.export": ("تصدير البيانات…", "Export data…"),
     "menu.file.exit": ("إغلاق", "Exit"),
     "menu.model": ("النموذج", "Model"),
@@ -100,23 +101,23 @@ STRINGS: Dict[str, Tuple[str, str]] = {
 
     # ---- the six stages ----------------------------------------------- #
     "stage.1.title": ("بناء مواصفات النموذج", "Model specification"),
-    "stage.1.subtitle": ("Model Specification Architecture",
+    "stage.1.subtitle": ("تعريف المتغيرات الكامنة وأبعادها وأسئلتها والعلاقات بينها",
                          "Define constructs, dimensions and items"),
     "stage.2.title": ("محاكاة تعقيدات الواقع", "Complex realities"),
-    "stage.2.subtitle": ("Complex Realities Simulation",
+    "stage.2.subtitle": ("التحميلات المتقاطعة وتغاير الأخطاء وتحيز الطريقة المشتركة",
                          "Cross-loadings, correlated errors, method bias"),
     "stage.3.title": ("توليد البيانات والتوزيعات", "Distributions and generation"),
-    "stage.3.subtitle": ("Data Distribution & Generation Engine",
+    "stage.3.subtitle": ("عتبات ليكرت والالتواء والتفلطح وحقن الضوضاء",
                          "Likert thresholds, skewness, kurtosis, noise"),
     "stage.4.title": ("تحليل القوة وحجم العينة", "Power and sample size"),
-    "stage.4.subtitle": ("Power Analysis & Sample Size",
+    "stage.4.subtitle": ("تحديد حجم العينة الذي يحتاجه نموذجك فعلًا",
                          "Determine the N your model actually needs"),
     "stage.5.title": ("معايرة الدلالة وجودة التوفيق",
                       "Significance and fit targeting"),
-    "stage.5.subtitle": ("Fit Indices & Significance Targeting",
+    "stage.5.subtitle": ("توجيه كل مسار ومؤشرات التوفيق نحو النتيجة المطلوبة",
                          "Aim each path and the global fit at a chosen outcome"),
     "stage.6.title": ("التقييم واستخراج المؤشرات", "Validation and output"),
-    "stage.6.subtitle": ("Validation & Fit Output",
+    "stage.6.subtitle": ("الثبات والصدق وجودة توفيق النموذج",
                          "Reliability, validity and model fit"),
 
     # ---- stage 1: measurement model ----------------------------------- #
@@ -161,6 +162,8 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "m.extra_error": ("خطأ قياس إضافي", "Extra measurement error"),
     "m.uniform_loadings": ("توحيد التشبعات", "Set all loadings"),
     "m.vary_loadings": ("تنويع التشبعات عشوائيًا", "Vary loadings randomly"),
+    "m.empty_hint": ("اضغط «إضافة متغير كامن» بالأعلى لبدء بناء النموذج",
+                     "Press “Add latent variable” above to start the model"),
 
     "role.independent": ("مستقل", "Independent"),
     "role.dependent": ("تابع", "Dependent"),
@@ -202,6 +205,32 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "s.diagram.export": ("تصدير المخطط صورة", "Export diagram as image"),
     "s.diagram.empty": ("لا يوجد متغيرات كامنة لعرضها بعد",
                         "No latent variables to draw yet"),
+    "s.diagram.saved": ("تم حفظ صورة المخطط", "Diagram image saved"),
+    "s.diagram.save_failed": ("تعذّر حفظ الصورة في هذا المكان",
+                              "The image could not be saved there"),
+
+    "s.paths.empty": ("لا توجد مسارات بعد", "No paths yet"),
+    "s.latent_cov.empty": ("لا توجد تغايرات بعد", "No covariances yet"),
+    "s.interactions.empty": ("لا توجد تفاعلات بعد", "No interactions yet"),
+    "s.indirect.empty": ("لا توجد سلاسل وساطة بعد", "No mediation chains yet"),
+    "s.block.two_constructs": ("أضف متغيرين كامنين على الأقل أولًا",
+                               "Add at least two latent variables first"),
+    "s.block.all_paths": ("كل المسارات الممكنة بين المتغيرات مضافة بالفعل",
+                          "Every possible path is already in the model"),
+    "s.block.two_exogenous": (
+        "التغاير يحتاج متغيرين مستقلين على الأقل (متغيرين لا تدخل إليهما مسارات)",
+        "A covariance needs at least two exogenous constructs "
+        "(constructs with no incoming path)"),
+    "s.block.all_covariances": ("كل التغايرات الممكنة مضافة بالفعل",
+                                "Every possible covariance is already added"),
+    "s.block.three_constructs": ("التفاعل يحتاج ثلاثة متغيرات كامنة على الأقل",
+                                 "An interaction needs at least three latent variables"),
+    "s.block.all_interactions": ("كل التفاعلات الممكنة مضافة بالفعل",
+                                 "Every possible interaction is already added"),
+    "s.block.no_chain": ("الوساطة تحتاج مسارين متتاليين: من X إلى M ومن M إلى Y. أضفهما أولًا",
+                         "Mediation needs two consecutive paths (X to M and M to Y). Add them first"),
+    "s.block.all_chains": ("كل سلاسل الوساطة الموجودة في النموذج مضافة بالفعل",
+                           "Every mediation chain in the model is already added"),
 
     "effect.none": ("لا يوجد تأثير", "None"),
     "effect.trivial": ("ضئيل جدًا", "Trivial"),
@@ -547,8 +576,22 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "status.calibrating": ("جارٍ معايرة مؤشرات التوفيق…", "Calibrating fit…"),
     "status.reporting": ("جارٍ إعداد التقرير…", "Building the report…"),
     "status.done": ("تمّت المحاكاة بنجاح", "Simulation complete"),
+    "status.estimated": ("تم تقدير النموذج على البيانات الحالية",
+                         "Model estimated on the current data"),
+    "run.estimate.no_data": (
+        "لا توجد بيانات لتقديرها بعد. ولّد البيانات أولًا من «تشغيل ← توليد البيانات».",
+        "There is no data to estimate yet. Generate it first with Run > Generate data."),
+    "run.estimate.stale": (
+        "البيانات الحالية لا تحتوي على أعمدة للأسئلة: {names}. ولّد بيانات جديدة أولًا.",
+        "The current data has no columns for: {names}. Generate new data first."),
     "status.cancelled": ("أُلغيت العملية", "Cancelled"),
     "status.failed": ("فشلت العملية", "Failed"),
+    "status.power": ("جارٍ حساب القوة الإحصائية…", "Computing statistical power…"),
+    "status.saved": ("تم حفظ المشروع: {name}", "Project saved: {name}"),
+    "status.loaded": ("تم تحميل النموذج", "Model loaded"),
+    "status.cleared": ("تم تفريغ النموذج", "Model cleared"),
+    "err.unexpected": ("حدث خطأ غير متوقع ولم يكتمل الإجراء.",
+                       "Something went wrong and the action did not finish."),
 
     # ---- validation panel --------------------------------------------- #
     "v.title": ("فحص النموذج", "Model check"),
@@ -561,6 +604,9 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "v.where": ("الموضع", "Location"),
     "v.blocked": ("لا يمكن التشغيل قبل معالجة الأخطاء",
                   "Fix the errors before running"),
+    "v.rechecked": ("تمت إعادة الفحص", "Checked again"),
+    "r.no_results": ("لا توجد نتائج بعد. اضغط «تشغيل المحاكاة» بالأسفل لتظهر هنا.",
+                     "No results yet. Press “Run simulation” below to see them here."),
     "v.missing_ref": ("⚠ مرجع محذوف", "⚠ deleted reference"),
 
     # ---- dialogs ------------------------------------------------------ #
@@ -623,6 +669,8 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "أضف المتغيرات الكامنة وأسئلتها في المرحلة الأولى قبل إضافة التعقيدات",
         "Add constructs and their items in stage 1 before adding "
         "complications here"),
+    "x.all_added": ("كل التركيبات الممكنة مضافة بالفعل",
+                    "Every possible combination is already added"),
     "x.cmb_enable": ("تشغيل عامل طريقة القياس المشترك",
                      "Enable the common method factor"),
     "x.cmb_scope": ("نطاق عامل الطريقة", "Scope of the method factor"),
@@ -644,6 +692,7 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "d.threshold_preview": ("معاينة العتبات ونسب الفئات",
                             "Threshold and category preview"),
     "d.apply_all_items": ("تطبيق على كل أسئلة النموذج", "Apply to every item"),
+    "d.applied": ("تم تطبيق المقياس على {n} سؤال", "Scale applied to {n} items"),
     "d.apply_to_construct": ("تطبيق على المتغير الكامن المحدَّد",
                              "Apply to the selected latent variable"),
     "d.thresholds.unavailable": (
@@ -757,6 +806,7 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "p.axis_power": ("القوة الإحصائية (Power)", "Statistical power"),
     "p.notes": ("ملاحظات على الحساب", "Notes on the calculation"),
     "p.apply_n": ("استخدم هذا الحجم في النموذج", "Apply this N to the model"),
+    "p.applied": ("تم ضبط حجم العينة على {n}", "Sample size set to {n}"),
     "p.computing": ("جارٍ حساب القوة الإحصائية وحجم العينة…",
                     "Computing power and sample size…"),
     "p.not_computed": (

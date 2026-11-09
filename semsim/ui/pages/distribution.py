@@ -40,8 +40,8 @@ from semsim.ui import theme
 from semsim.ui.i18n import translator
 from semsim.ui.pages.base import IdCombo, StagePage, construct_choices
 from semsim.ui.widgets.common import (
-    EnumCombo, Field, InfoBanner, TButton, TCheckBox, TKey, current_theme,
-    float_spin, int_spin, percent_spin, percent_value,
+    EnumCombo, Field, InfoBanner, Notice, TButton, TCheckBox, TKey,
+    current_theme, float_spin, int_spin, percent_spin, percent_value,
 )
 
 #: ``NoiseSpec.careless_style`` is a bare string, not an enum; these are its
@@ -272,6 +272,8 @@ class DistributionPage(StagePage):
         self.btn_apply_all = TButton("d.apply_all_items", role="primary")
         self.btn_apply_all.clicked.connect(self._apply_to_all_items)
         row.addWidget(self.btn_apply_all)
+        self.apply_notice = Notice()
+        row.addWidget(self.apply_notice)
         row.addStretch(1)
         card.add(row)
 
@@ -338,6 +340,7 @@ class DistributionPage(StagePage):
             item.scale.response_style = style
             item.scale.n_categories = n_categories
         self.edit()
+        self.apply_notice.show_key("d.applied", n=len(items))
 
     def _apply_to_all_items(self) -> None:
         self._apply_scale(self.spec.all_items())
@@ -547,8 +550,12 @@ class DistributionPage(StagePage):
 
             # The construct labels are language-dependent, so the choosers are
             # repopulated here rather than only on a structural change.
-            self.apply_target.set_choices(choices,
-                                          keep=self.apply_target.value())
+            self.apply_target.set_choices(choices, stored=False)
+            has_items = bool(spec.all_items())
+            needs_items = "" if has_items else translator.t("x.needs_items")
+            for button in (self.btn_apply_all, self.btn_apply_construct):
+                button.setEnabled(has_items)
+                button.setToolTip(needs_items)
             self.mar_driver.set_choices(choices, keep=noise.mar_driver)
 
             self.seed.setValue(int(spec.seed or 0))
