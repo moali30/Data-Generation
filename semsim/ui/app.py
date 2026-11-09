@@ -13,6 +13,7 @@ button is disabled while the specification contains errors.
 
 from __future__ import annotations
 
+import copy
 import os
 import sys
 import traceback
@@ -32,7 +33,7 @@ from semsim.core.spec import ModelSpec
 from semsim.io import project as project_io
 from semsim.ui import theme
 from semsim.ui.i18n import ARABIC, ENGLISH, LANGUAGE_NAMES, translator
-from semsim.ui.state import AppState, RecentProjects
+from semsim.ui.state import AppState, RecentProjects, Results
 from semsim.ui.widgets.common import (
     StatBadge, TButton, VerdictChip, separator, set_current_theme,
 )
@@ -65,10 +66,13 @@ class SimulationWorker(QObject):
     finished = Signal(object)
     failed = Signal(str, str)
 
-    def __init__(self, spec: ModelSpec, mode: str = "full") -> None:
+    def __init__(self, spec: ModelSpec, mode: str = "full",
+                 prior: Optional[Results] = None) -> None:
         super().__init__()
         self._spec = spec
         self._mode = mode
+        #: The previous run's results, which an "estimate" run refits.
+        self._prior = prior
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -115,7 +119,15 @@ class SimulationWorker(QObject):
             if self._mode == "power":
                 return out
 
-        step("status.generating", 0.25)
+        if self._mode == "estimate":
+            # Refit the data on hand.  How that data came about has not
+            # changed, so its power analysis and calibration still stand.
+            out["dataset"] = self._prior.dataset
+            out["power"] = self._prior.power
+            out["calibration"] = self._prior.calibration
+        else:
+            step("status.generating", 0.25)
+
         if self._mode == "full" and getattr(self._spec.fit_target, "enabled", False):
             try:
                 from semsim.targeting.calibration import calibrate
@@ -186,6 +198,7 @@ class MainWindow(QMainWindow):
         self._theme = theme_name
         self._thread: Optional[QThread] = None
         self._worker: Optional[SimulationWorker] = None
+        self._run_mode = "full"
         self._pages: List[QWidget] = []
         self._page_errors: Dict[int, str] = {}
 
@@ -648,7 +661,14 @@ class MainWindow(QMainWindow):
         if report is not None and not report.ok:
             self.show_validation()
             return
+        if mode == "estimate":
+            blocker = self._estimation_blocker()
+            if blocker:
+                QMessageBox.information(
+                    self, translator.t("menu.run.estimate"), blocker)
+                return
 
+        self._run_mode = mode
         self.state.set_busy(True)
         self.run_button.setEnabled(False)
         self.cancel_button.setVisible(True)
@@ -657,13 +677,26 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
 
         self._thread = QThread(self)
-        self._worker = SimulationWorker(self.state.spec, mode)
+        self._worker = SimulationWorker(self.state.spec, mode,
+                                        copy.copy(self.state.results))
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self._thread.start()
+
+    def _estimation_blocker(self) -> str:
+        """Why the data on hand cannot be refitted; empty when it can."""
+        dataset = self.state.results.dataset
+        if dataset is None:
+            return translator.t("run.estimate.no_data")
+        columns = set(dataset.data.columns)
+        missing = [item.name for item in self.state.spec.all_items()
+                   if item.name not in columns and item.id not in columns]
+        if missing:
+            return translator.t("run.estimate.stale", names=", ".join(missing))
+        return ""
 
     def cancel_run(self) -> None:
         if self._worker is not None:
@@ -698,7 +731,8 @@ class MainWindow(QMainWindow):
             power=result.get("power"),
             calibration=result.get("calibration"),
         )
-        self.status_label.setText(translator.t("status.done"))
+        self.status_label.setText(translator.t(
+            "status.estimated" if self._run_mode == "estimate" else "status.done"))
         soft_errors = [v for k, v in result.items() if k.endswith("_error")]
         if soft_errors:
             QMessageBox.warning(self, translator.t("status.failed"),

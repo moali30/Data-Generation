@@ -1,8 +1,17 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.0.0
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.0.1
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.0.1
+
+- إصلاح الخطأ الذي منع صفحات البرنامج من الفتح في الإصدار 1.0.0.
+- كل الأزرار والأوامر تستجيب الآن: إما تنفذ عملها وتؤكده، أو تظهر معطّلة مع توضيح السبب.
+- أسهم الترتيب تعمل على الأبعاد والأسئلة، و«تنويع التشبعات» يعطي قيمًا جديدة في كل ضغطة.
+- إضافة المسارات والتفاعلات والتأثيرات غير المباشرة لا تكرر عنصرًا ولا تنشئ سلسلة غير صالحة.
+- «تقدير النموذج» يعيد التقدير على البيانات الحالية بدل توليد بيانات جديدة.
+- ضبط شكل الواجهة، واتجاه النص العربي داخل الجداول، وعرض الأخطاء غير المتوقعة في رسالة واضحة.
 
 ### التشغيل
 
@@ -30,9 +39,18 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.0.0
+## SEM Data Simulation Engine — v1.0.1
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.0.1
+
+- Fixes the error that stopped the program's pages from opening in v1.0.0.
+- Every button and menu command now responds: it does its work and confirms it, or is greyed out with the reason.
+- The reorder arrows work on dimensions and items, and Vary loadings gives new values on each click.
+- Adding paths, interactions and indirect effects no longer repeats an entry or builds an invalid chain.
+- Estimate model now refits the current data instead of generating new data.
+- Interface polish, correct direction for Arabic text in tables, and unexpected errors shown in a clear message.
 
 The interface opens in Arabic by default; switch to English from **View → Language** without restarting.
 
@@ -46,7 +64,7 @@ The interface opens in Arabic by default; switch to English from **View → Lang
 | | |
 |---|---|
 | File | `SEMSimulator.exe` |
-| Size | 106.1 MB |
+| Size | about 106 MB |
 | SHA-256 | `SHA256_PLACEHOLDER` |
 | Built on | GitHub Actions, `windows-latest`, Python 3.12.10 |
 | Build | [run RUN_ID_PLACEHOLDER](https://github.com/moali30/Data-Generation/actions/runs/RUN_ID_PLACEHOLDER) |

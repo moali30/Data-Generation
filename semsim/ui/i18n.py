@@ -576,6 +576,14 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "status.calibrating": ("جارٍ معايرة مؤشرات التوفيق…", "Calibrating fit…"),
     "status.reporting": ("جارٍ إعداد التقرير…", "Building the report…"),
     "status.done": ("تمّت المحاكاة بنجاح", "Simulation complete"),
+    "status.estimated": ("تم تقدير النموذج على البيانات الحالية",
+                         "Model estimated on the current data"),
+    "run.estimate.no_data": (
+        "لا توجد بيانات لتقديرها بعد. ولّد البيانات أولًا من «تشغيل ← توليد البيانات».",
+        "There is no data to estimate yet. Generate it first with Run > Generate data."),
+    "run.estimate.stale": (
+        "البيانات الحالية لا تحتوي على أعمدة للأسئلة: {names}. ولّد بيانات جديدة أولًا.",
+        "The current data has no columns for: {names}. Generate new data first."),
     "status.cancelled": ("أُلغيت العملية", "Cancelled"),
     "status.failed": ("فشلت العملية", "Failed"),
     "status.power": ("جارٍ حساب القوة الإحصائية…", "Computing statistical power…"),

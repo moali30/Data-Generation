@@ -13,7 +13,9 @@ import os
 import re
 import sys
 import traceback
+from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 pytest.importorskip("PySide6")
@@ -27,9 +29,16 @@ from PySide6.QtWidgets import (  # noqa: E402
 
 from semsim.core import examples  # noqa: E402
 from semsim.ui import theme  # noqa: E402
-from semsim.ui.app import MainWindow, install_exception_hook  # noqa: E402
+from semsim.ui.app import (  # noqa: E402
+    MainWindow, SimulationWorker, install_exception_hook,
+)
 from semsim.ui.i18n import translator  # noqa: E402
+from semsim.ui.state import Results  # noqa: E402
 from semsim.ui.widgets.common import float_spin  # noqa: E402
+
+
+#: The window fixture replaces ``run`` so clicks never start a simulation.
+REAL_RUN = MainWindow.run
 
 
 @pytest.fixture(scope="module")
@@ -281,6 +290,37 @@ def test_mediation_is_never_offered_without_real_paths(window):
             == translator.t("s.block.no_chain"))
 
 
+# -- estimating -------------------------------------------------------------- #
+
+
+def test_estimate_refits_the_data_on_hand(application):
+    spec = examples.simple_mediation()
+    generated = SimulationWorker(spec, "generate")._run_pipeline()
+    prior = Results(dataset=generated["dataset"], power="power",
+                    calibration="calibration")
+
+    refit = SimulationWorker(spec, "estimate", prior)._run_pipeline()
+
+    assert refit["dataset"] is generated["dataset"]
+    assert (refit["power"], refit["calibration"]) == ("power", "calibration")
+    assert refit["estimation"] is not None
+    assert refit["fit"] is not None
+
+
+def test_estimate_without_data_says_why(window, events):
+    REAL_RUN(window, "estimate")
+    assert "info" in events
+    assert not window.state.busy
+
+
+def test_estimate_on_data_from_another_model_says_why(window, events):
+    window.state.results.dataset = SimpleNamespace(
+        data=pd.DataFrame({"unrelated": [1.0, 2.0]}))
+    REAL_RUN(window, "estimate")
+    assert "info" in events
+    assert not window.state.busy
+
+
 # -- confirmations ---------------------------------------------------------- #
 
 
@@ -370,7 +410,6 @@ def test_language_switch_survives_a_rebuild(window, errors):
 
 
 def test_arabic_table_cells_read_right_to_left(application):
-    import pandas as pd
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QStyleOptionViewItem
 
