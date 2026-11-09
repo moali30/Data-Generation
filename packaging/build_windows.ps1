@@ -22,6 +22,12 @@ pyinstaller packaging\semsim.spec --noconfirm --clean
 
 Write-Host ""
 Write-Host "Done. The executable is at dist\SEMSimulator.exe"
-Write-Host "Smoke-testing it..."
+Write-Host "Verifying the bundle..."
 & .\dist\SEMSimulator.exe --list-examples
-Write-Host "Smoke test passed."
+# A packaged build can open its window and list its examples while being
+# quietly broken: PyInstaller misses the scipy submodules imported lazily, so
+# the failure lands the first time a p-value is computed. --self-test runs a
+# whole simulation headlessly, so a bad bundle fails here.
+& .\dist\SEMSimulator.exe --self-test
+if ($LASTEXITCODE -ne 0) { throw "self-test failed" }
+Write-Host "Verification passed."

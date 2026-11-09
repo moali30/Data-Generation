@@ -2,7 +2,7 @@
 """
 PyInstaller spec for the SEM Data Simulation Engine (Windows).
 
-Build from the repository root:
+Build (from anywhere; paths resolve against this file's location):
 
     pip install pyinstaller
     pyinstaller packaging/semsim.spec --noconfirm
@@ -32,16 +32,23 @@ import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 BLOCK_CIPHER = None
-ROOT = os.path.abspath(os.getcwd())
+
+# PyInstaller resolves a relative path in a .spec against the SPEC FILE's
+# directory, not the working directory, so deriving the repository root from
+# os.getcwd() breaks the moment the build is launched from anywhere but the
+# root -- it went looking for packaging/semsim/__main__.py. SPECPATH is the
+# directory holding this file, injected by PyInstaller, so the root is its
+# parent and the build works from any working directory.
+ROOT = os.path.dirname(os.path.abspath(SPECPATH))  # noqa: F821 - injected
 
 hidden = [
     # scipy pieces imported lazily at first use
     "scipy.special.cython_special",
-    "scipy.special._cdflib",
     "scipy._lib.messagestream",
     "scipy._cyutility",
     "scipy.sparse.csgraph._validation",
     "scipy.optimize._minimize",
+    "numpy.testing",
     "scipy.optimize._linesearch",
     "scipy.stats._continuous_distns",
     "scipy.stats._discrete_distns",
@@ -59,9 +66,14 @@ resources = os.path.join(ROOT, "semsim", "resources")
 if os.path.isdir(resources) and os.listdir(resources):
     datas.append((resources, "semsim/resources"))
 
+# Excluding a stdlib module to shave megabytes is a false economy when a
+# scientific dependency imports it lazily. "unittest" was on this list, and
+# numpy.testing imports it at module scope: the bundle started, showed its
+# menus and listed its examples, then raised ModuleNotFoundError the moment
+# the user pressed Run. The --self-test entry point exists to catch exactly
+# that, and did. Only genuinely unused third-party packages are excluded now.
 excludes = [
-    "matplotlib", "tkinter", "test", "unittest", "pydoc", "doctest",
-    "IPython", "jupyter", "notebook", "pytest", "setuptools", "pip",
+    "matplotlib", "tkinter", "IPython", "jupyter", "notebook", "pytest",
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
     "PySide6.QtWebEngineQuick", "PySide6.QtQuick", "PySide6.QtQuick3D",
     "PySide6.QtQml", "PySide6.Qt3DCore", "PySide6.Qt3DRender",
@@ -76,7 +88,7 @@ excludes = [
 ]
 
 analysis = Analysis(
-    [os.path.join("semsim", "__main__.py")],
+    [os.path.join(ROOT, "semsim", "__main__.py")],
     pathex=[ROOT],
     binaries=[],
     datas=datas,

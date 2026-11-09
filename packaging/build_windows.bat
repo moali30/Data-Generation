@@ -26,9 +26,14 @@ pyinstaller packaging\semsim.spec --noconfirm --clean || goto :fail
 
 echo.
 echo Done. The executable is at dist\SEMSimulator.exe
-echo Smoke-testing it...
+echo Verifying the bundle...
 dist\SEMSimulator.exe --list-examples || goto :fail
-echo Smoke test passed.
+REM A packaged build can open its window and list its examples while being
+REM quietly broken: PyInstaller misses the scipy submodules imported lazily,
+REM so the failure lands the first time a p-value is computed. --self-test
+REM runs a whole simulation headlessly, so a bad bundle fails here.
+dist\SEMSimulator.exe --self-test || goto :fail
+echo Verification passed.
 goto :eof
 
 :fail
