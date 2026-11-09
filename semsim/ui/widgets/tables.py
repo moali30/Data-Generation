@@ -18,6 +18,7 @@ Statistics tables have requirements an ordinary table view does not meet:
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
@@ -25,6 +26,7 @@ import pandas as pd
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QSortFilterProxyModel
 from PySide6.QtGui import QBrush, QColor, QFont, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QStyledItemDelegate, QStyleOptionViewItem,
     QAbstractItemView, QHeaderView, QTableView, QVBoxLayout, QWidget,
 )
 
@@ -165,6 +167,9 @@ def significance_stars(p: float) -> str:
     if p < 0.05:
         return "*"
     return ""
+
+
+_ARABIC = re.compile(r"[؀-ۿ]")
 
 
 class DataFrameModel(QAbstractTableModel):
@@ -399,6 +404,21 @@ class _SortProxy(QSortFilterProxyModel):
             return str(a) < str(b)
 
 
+class _BidiDelegate(QStyledItemDelegate):
+    """Lay out each Arabic cell right-to-left inside a left-to-right table.
+
+    The columns of a matrix keep their order, but a sentence still needs its
+    own direction: under the table's direction its full stop lands at the wrong
+    end and a Latin term such as RMSEA jumps to the other side of the phrase.
+    """
+
+    def initStyleOption(self, option: QStyleOptionViewItem,
+                        index: QModelIndex) -> None:
+        super().initStyleOption(option, index)
+        if _ARABIC.search(option.text):
+            option.direction = Qt.LayoutDirection.RightToLeft
+
+
 class DataFrameView(QTableView):
     """A table view configured the way a statistics table should behave."""
 
@@ -423,6 +443,7 @@ class DataFrameView(QTableView):
 
         # A matrix must not mirror: its columns carry meaning in order.
         theme.keep_ltr(self)
+        self.setItemDelegate(_BidiDelegate(self))
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)

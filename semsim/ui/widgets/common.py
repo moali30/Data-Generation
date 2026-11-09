@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
 
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, QSize, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout,
@@ -128,6 +128,7 @@ class InfoBanner(QFrame, Retranslatable):
         self._key = key
         self._kind = kind
         self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setObjectName("infoBanner")
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(10)
@@ -157,10 +158,12 @@ class InfoBanner(QFrame, Retranslatable):
         self._icon.setText(glyph)
         self._icon.setStyleSheet(f"color: {colour}; font-weight: 700;")
         # Qt stylesheets do not mirror border-left, so pick the side that
-        # is actually the leading edge for the current direction.
+        # is actually the leading edge for the current direction.  The rule
+        # is scoped to this frame by name: QLabel derives from QFrame, so a
+        # bare "QFrame" selector would draw the bar on the labels inside too.
         side = "right" if translator.is_rtl else "left"
         self.setStyleSheet(
-            f"QFrame {{ background: {pal.surface_alt};"
+            f"QFrame#infoBanner {{ background: {pal.surface_alt};"
             f" border-{side}: 3px solid {colour}; border-radius: 6px; }}")
 
     def set_kind(self, kind: str) -> None:
@@ -261,6 +264,7 @@ class Collapsible(QWidget, Retranslatable):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
         self._button = QToolButton()
+        self._button.setObjectName("sectionHeader")
         self._button.setCheckable(True)
         self._button.setChecked(expanded)
         self._button.setAutoRaise(True)
@@ -296,7 +300,8 @@ class Collapsible(QWidget, Retranslatable):
         self._on_click(expanded)
 
     def retranslate(self) -> None:
-        self._button.setText("  " + translator.t(self._title_key))
+        # Padded on both sides: the arrow is drawn after the text under RTL.
+        self._button.setText(f"  {translator.t(self._title_key)}  ")
         self._button.setArrowType(Qt.ArrowType.DownArrow
                                   if self._button.isChecked()
                                   else arrow_for_direction())
@@ -342,6 +347,36 @@ def separator() -> QFrame:
     return line
 
 
+class Notice(QLabel):
+    """A short confirmation beside the control that caused it.
+
+    Some actions change nothing where the user is looking: applying a scale to
+    every item, say, or writing an image to disk.  Without a word back they are
+    indistinguishable from a button that does nothing.  The text clears itself
+    so that it never outlives the action it describes.
+    """
+
+    DURATION_MS = 6000
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        theme.set_role(self, "success")
+        self.setVisible(False)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._expire)
+
+    def show_key(self, key: str, *, role: str = "success", **fmt: Any) -> None:
+        theme.set_role(self, role)
+        self.setText(translator.t(key, **fmt))
+        self.setVisible(True)
+        self._timer.start(self.DURATION_MS)
+
+    def _expire(self) -> None:
+        self.clear()
+        self.setVisible(False)
+
+
 # --------------------------------------------------------------------------- #
 # Inputs
 # --------------------------------------------------------------------------- #
@@ -356,13 +391,13 @@ class Field(QWidget, Retranslatable):
 
     def __init__(self, label_key: str, editor: QWidget, *,
                  hint_key: str = "", ltr_editor: bool = True,
-                 label_width: int = 190,
+                 label_width: int = 220,
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._label_key = label_key
         self._hint_key = hint_key
         self.editor = editor
-        if ltr_editor:
+        if ltr_editor and not _is_choice(editor):
             theme.keep_ltr(editor)
 
         outer = QVBoxLayout(self)
@@ -372,11 +407,17 @@ class Field(QWidget, Retranslatable):
         row.setSpacing(10)
         self._label = QLabel()
         self._label.setWordWrap(True)
+        # Only a full-width form row gets a column of labels and a cap on its
+        # editor; a compact field inside a table row has neither to spare.
+        cap = _editor_width_cap(editor) if label_width else 0
         if label_width:
-            self._label.setMinimumWidth(label_width)
-            self._label.setMaximumWidth(label_width * 2)
+            self._label.setFixedWidth(label_width)
+        if cap:
+            editor.setMaximumWidth(cap)
         row.addWidget(self._label)
-        row.addWidget(editor, 1)
+        row.addWidget(editor, 3 if cap else 1)
+        if cap:
+            row.addStretch(1)
         outer.addLayout(row)
 
         self._hint = QLabel()
@@ -498,7 +539,7 @@ class ValueSlider(QWidget):
         self._spin.setSingleStep(step)
         self._spin.setFixedWidth(86)
         self._spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
-        theme.keep_ltr(self._spin)
+        _finish_spin(self._spin)
         lay.addWidget(self._spin)
 
         self._slider.valueChanged.connect(self._from_slider)
@@ -540,6 +581,39 @@ class ValueSlider(QWidget):
         self._slider.setMaximum(int(round(maximum * self._scale)))
 
 
+def _finish_spin(box: QAbstractSpinBox) -> QAbstractSpinBox:
+    """Pin a spin box left-to-right and keep its digits off the border.
+
+    The stylesheet's padding does not reach the line edit inside a spin box.
+    """
+    theme.keep_ltr(box)
+    box.lineEdit().setTextMargins(6, 0, 2, 0)
+    return box
+
+
+def _is_choice(editor: QWidget) -> bool:
+    """A combo holds words, which should read in the interface's direction."""
+    return (isinstance(editor, QComboBox)
+            or isinstance(getattr(editor, "combo", None), QComboBox))
+
+
+def _editor_width_cap(editor: QWidget) -> int:
+    """How wide an editor may grow, or 0 for no limit.
+
+    On a maximised window an uncapped editor runs to well over a thousand
+    pixels, which puts a two-digit number a long way from its label.
+    """
+    if isinstance(editor, QAbstractSpinBox):
+        return 170
+    if isinstance(editor, ValueSlider):
+        return 520
+    if _is_choice(editor):
+        return 420
+    if isinstance(editor, QLineEdit):
+        return 460
+    return 0
+
+
 def int_spin(minimum: int, maximum: int, value: int, *,
              step: int = 1, suffix: str = "") -> QSpinBox:
     box = QSpinBox()
@@ -548,8 +622,7 @@ def int_spin(minimum: int, maximum: int, value: int, *,
     box.setValue(value)
     if suffix:
         box.setSuffix(suffix)
-    theme.keep_ltr(box)
-    return box
+    return _finish_spin(box)
 
 
 def float_spin(minimum: float, maximum: float, value: float, *,
@@ -562,8 +635,7 @@ def float_spin(minimum: float, maximum: float, value: float, *,
     box.setValue(value)
     if suffix:
         box.setSuffix(suffix)
-    theme.keep_ltr(box)
-    return box
+    return _finish_spin(box)
 
 
 def percent_spin(value: float, *, maximum: float = 1.0) -> QDoubleSpinBox:
@@ -574,8 +646,7 @@ def percent_spin(value: float, *, maximum: float = 1.0) -> QDoubleSpinBox:
     box.setSingleStep(0.5)
     box.setValue(value * 100.0)
     box.setSuffix(" %")
-    theme.keep_ltr(box)
-    return box
+    return _finish_spin(box)
 
 
 def percent_value(box: QDoubleSpinBox) -> float:
@@ -652,7 +723,7 @@ class StatBadge(QFrame):
 __all__ = [
     "Retranslatable", "TKey", "Heading", "PageTitle", "InfoBanner",
     "VerdictChip", "Card", "Collapsible", "ScrollPage", "separator",
-    "Field", "EnumCombo", "ValueSlider", "int_spin", "float_spin",
+    "Notice", "Field", "EnumCombo", "ValueSlider", "int_spin", "float_spin",
     "percent_spin", "percent_value", "TCheckBox", "TButton", "StatBadge",
     "set_current_theme", "current_theme", "arrow_for_direction",
 ]

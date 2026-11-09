@@ -50,7 +50,7 @@ class ResultsPage(StagePage):
     # ------------------------------------------------------------------ #
 
     def build(self) -> None:
-        self._empty = InfoBanner("v.blocked", kind="info")
+        self._empty = InfoBanner("r.no_results", kind="info")
         self.scroll.add(self._empty)
 
         self._tiles_card = Card("r.fit", both=True)
@@ -97,6 +97,8 @@ class ResultsPage(StagePage):
         actions.addWidget(self._report_button)
         self._rerun_button = TButton("act.rerun")
         self._rerun_button.clicked.connect(self._on_rerun)
+        self.state.busy_changed.connect(
+            lambda busy: self._rerun_button.setEnabled(not busy))
         actions.addWidget(self._rerun_button)
         actions.addStretch(1)
         self.scroll.add(actions)

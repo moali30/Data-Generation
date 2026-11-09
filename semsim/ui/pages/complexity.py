@@ -20,7 +20,8 @@ researcher who cannot see that price pays it without noticing.
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from itertools import combinations
+from typing import List, Optional, Tuple
 
 from PySide6.QtWidgets import (
     QCheckBox, QFrame, QHBoxLayout, QLineEdit, QScrollArea, QVBoxLayout,
@@ -232,17 +233,23 @@ class ComplexityPage(StagePage):
         for cross in list(self.spec.cross_loadings):
             self.cross_rows.add_row(self._cross_row(cross))
 
+    def _free_cross_loading(self) -> Optional[Tuple[str, str]]:
+        """The first item and foreign factor not already linked."""
+        taken = {(c.item_id, c.factor_id) for c in self.spec.cross_loadings}
+        factors = [fid for fid, _label in factor_choices(self.spec)]
+        for item_id, _label in item_choices(self.spec):
+            home = self.spec.home_factor_of(item_id)
+            for factor_id in factors:
+                if factor_id != home and (item_id, factor_id) not in taken:
+                    return item_id, factor_id
+        return None
+
     def _add_cross_loading(self) -> None:
-        items = item_choices(self.spec)
-        factors = factor_choices(self.spec)
-        if not items or len(factors) < 2:
+        pair = self._free_cross_loading()
+        if pair is None:
             return
-        item_id = items[0][0]
-        home = self.spec.home_factor_of(item_id)
-        target = next((fid for fid, _label in factors if fid != home),
-                      factors[0][0])
         self.spec.cross_loadings.append(
-            CrossLoading(item_id=item_id, factor_id=target, loading=0.20))
+            CrossLoading(item_id=pair[0], factor_id=pair[1], loading=0.20))
         self.edit(structural=True)
 
     def _cross_row(self, cross: CrossLoading) -> Row:
@@ -357,12 +364,22 @@ class ComplexityPage(StagePage):
         for cov in list(self.spec.error_covariances):
             self.error_rows.add_row(self._error_row(cov))
 
+    def _free_error_pair(self) -> Optional[Tuple[str, str]]:
+        """The first pair of items whose errors are not already linked."""
+        taken = {frozenset((c.item_a, c.item_b))
+                 for c in self.spec.error_covariances}
+        ids = [item_id for item_id, _label in item_choices(self.spec)]
+        for first, second in combinations(ids, 2):
+            if frozenset((first, second)) not in taken:
+                return first, second
+        return None
+
     def _add_error_covariance(self) -> None:
-        items = item_choices(self.spec)
-        if len(items) < 2:
+        pair = self._free_error_pair()
+        if pair is None:
             return
         self.spec.error_covariances.append(ErrorCovariance(
-            item_a=items[0][0], item_b=items[1][0], correlation=0.20))
+            item_a=pair[0], item_b=pair[1], correlation=0.20))
         self.edit(structural=True)
 
     def _error_row(self, cov: ErrorCovariance) -> Row:
@@ -522,8 +539,14 @@ class ComplexityPage(StagePage):
         items = self.spec.all_items()
         factors = self.spec.all_factor_ids()
         has_items = bool(items)
-        self.cross_rows.add_button.setEnabled(has_items and len(factors) >= 2)
-        self.error_rows.add_button.setEnabled(len(items) >= 2)
+        self.cross_rows.set_add_blocked(
+            "" if self._free_cross_loading() is not None
+            else "x.needs_items" if not has_items or len(factors) < 2
+            else "x.all_added")
+        self.error_rows.set_add_blocked(
+            "" if self._free_error_pair() is not None
+            else "x.needs_items" if len(items) < 2
+            else "x.all_added")
         self._cross_hint.setVisible(not has_items)
         self._error_hint.set_key("x.reason.hint" if len(items) >= 2
                                  else "x.needs_items")

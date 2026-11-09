@@ -39,9 +39,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     translator.set_language(args.lang)
 
     from PySide6.QtWidgets import QApplication
-    from semsim.ui.app import MainWindow, application_icon
+    from semsim.ui.app import (
+        MainWindow, application_icon, install_exception_hook,
+    )
     from semsim.ui.widgets.common import set_current_theme
 
+    install_exception_hook()
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("SEM Data Simulation Engine")
     app.setOrganizationName("semsim")
