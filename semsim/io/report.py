@@ -46,6 +46,7 @@ class ReportBundle:
     power: Any = None
     calibration: Any = None
     generated_at: Optional[str] = None
+    demographics: Any = None
 
     def timestamp(self) -> str:
         return self.generated_at or datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -380,6 +381,76 @@ def _specification_section(bundle: ReportBundle, lang: str) -> str:
 def _tile(label: str, value: Any) -> str:
     return (f'<div class="tile"><div class="tile-v" dir="ltr">{_esc(value)}'
             f'</div><div class="tile-l">{_esc(label)}</div></div>')
+
+
+def _demographics_section(bundle: ReportBundle, lang: str) -> str:
+    """Quotas achieved, control paths, group comparisons and invariance."""
+    analysis = bundle.demographics
+    if analysis is None:
+        return ""
+    suffix = "_ar" if lang == "ar" else "_en"
+    pieces: List[str] = []
+
+    def heading(ar: str, en: str) -> str:
+        return f'<h3>{_esc(_t(lang, ar, en))}</h3>'
+
+    table = analysis.frequencies
+    rows = [{
+        _t(lang, "المتغير", "Variable"): row["variable"],
+        _t(lang, "الفئة", "Category"): row[f"category{suffix}"],
+        _t(lang, "المطلوب %", "Target %"): row["target_percent"],
+        "n": row["n"],
+        _t(lang, "المحقق %", "Achieved %"): row["achieved_percent"],
+    } for _i, row in table.iterrows()]
+    pieces.append(heading("التكرارات", "Frequencies")
+                  + _table(pd.DataFrame(rows), lang=lang))
+
+    controls = [{
+        _t(lang, "المتغير الضابط", "Control"): term.column,
+        _t(lang, "المتغير المتأثر", "Target"):
+            bundle.spec.factor_label(path.target, lang),
+        _t(lang, "المعامل المعياري", "Standardised coefficient"):
+            path.resolved_coefficient(),
+        _t(lang, "مستهدف أن يكون دالًا", "Target significant"):
+            _t(lang, "نعم", "Yes") if path.target_significant
+            else _t(lang, "لا", "No"),
+    } for variable, term in bundle.spec.active_control_terms()
+        for path in variable.control_paths if path.term == term.key]
+    if controls:
+        pieces.append(heading("مسارات المتغيرات الضابطة", "Control paths")
+                      + _table(pd.DataFrame(controls), lang=lang))
+
+    table = analysis.comparisons
+    if not table.empty:
+        rows = [{
+            _t(lang, "المتغير", "Variable"): row["variable"],
+            _t(lang, "المتغير الكامن", "Construct"): row["construct"],
+            _t(lang, "الاختبار", "Test"): (
+                _t(lang, "t (ويلش)", "Welch t") if row["test"] == "welch_t"
+                else "F"),
+            _t(lang, "الإحصاءة", "Statistic"): row["statistic"],
+            "p": row["p"],
+            _t(lang, "حجم الأثر", "Effect size"): row["effect_size"],
+            _t(lang, "المتوسطات", "Means"): row[f"means{suffix}"],
+        } for _i, row in table.iterrows()]
+        pieces.append(heading("اختبارات الفروق", "Group comparisons")
+                      + _table(pd.DataFrame(rows), lang=lang))
+
+    table = analysis.invariance
+    if not table.empty:
+        rows = [{
+            _t(lang, "المتغير", "Variable"): row["variable"],
+            _t(lang, "النموذج", "Model"): row[f"model{suffix}"],
+            "χ²": row["chi_square"], "df": row["df"], "CFI": row["cfi"],
+            "RMSEA": row["rmsea"], "Δχ²": row["delta_chi_square"],
+            "Δdf": row["delta_df"], "ΔCFI": row["delta_cfi"],
+        } for _i, row in table.iterrows()]
+        pieces.append(heading("ثبات النموذج عبر المجموعات",
+                              "Multi-group invariance")
+                      + _table(pd.DataFrame(rows), lang=lang))
+    return _section("8", _t(lang, "الديموغرافيا والمتغيرات الضابطة",
+                            "Demographics and controls"),
+                    "".join(pieces), "Demographics & Control Variables")
 
 
 def _complexity_section(bundle: ReportBundle, lang: str) -> str:
@@ -780,6 +851,7 @@ def render_html(bundle: ReportBundle, *, lang: str = "ar",
         _targeting_section(bundle, lang),
         _validation_section(bundle, lang),
         _syntax_section(bundle, lang),
+        _demographics_section(bundle, lang),
     ]
     meta = (f'<span>{_esc(_t(lang, "التاريخ", "Date"))}: '
             f'<span dir="ltr">{_esc(bundle.timestamp())}</span></span>'

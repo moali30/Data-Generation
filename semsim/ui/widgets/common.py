@@ -706,7 +706,8 @@ class StatBadge(QFrame):
     """A compact "label: value" tile for the model summary strip."""
 
     def __init__(self, label_key: str, value: str = "-",
-                 parent: Optional[QWidget] = None) -> None:
+                 parent: Optional[QWidget] = None, *,
+                 wrap: bool = False) -> None:
         super().__init__(parent)
         self._label_key = label_key
         lay = QVBoxLayout(self)
@@ -723,6 +724,8 @@ class StatBadge(QFrame):
         self._label = QLabel()
         theme.set_role(self._label, "hint")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # A long index name on one line would set the width of the whole row.
+        self._label.setWordWrap(wrap)
         lay.addWidget(self._label)
         translator.language_changed.connect(lambda _l: self._retranslate())
         self._retranslate()

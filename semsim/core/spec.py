@@ -34,6 +34,8 @@ Design notes
 
 from __future__ import annotations
 
+import copy
+import math
 import uuid
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -164,6 +166,22 @@ class MissingMechanism(str, Enum):
     MAR = "mar"
 
 
+class DemographicKind(str, Enum):
+    """Measurement level of a demographic variable."""
+
+    NOMINAL = "nominal"
+    ORDINAL = "ordinal"
+
+
+class DemographicRole(str, Enum):
+    """What the researcher means to do with a demographic variable."""
+
+    DESCRIPTIVE = "descriptive"
+    CONTROL = "control"
+    COMPARISON = "comparison"
+    MGA = "mga"
+
+
 class PowerMethod(str, Enum):
     RMSEA_CLOSE_FIT = "rmsea_close_fit"   # MacCallum, Browne & Sugawara (1996)
     SATORRA_SARIS = "satorra_saris"       # power for a single parameter
@@ -286,6 +304,8 @@ class Construct:
     #: Used when ``order is SECOND``.
     dimensions: List[Dimension] = field(default_factory=list)
     notes: str = ""
+    #: Stands for an observed control term; set only by ``ModelSpec.expanded``.
+    covariate: bool = False
 
     # -- convenience ------------------------------------------------------- #
 
@@ -582,6 +602,102 @@ class ExportSpec:
 
 
 # --------------------------------------------------------------------------- #
+# Demographic and control variables
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class DemographicCategory:
+    """One answer option of a demographic variable and its share of the sample."""
+
+    id: str = field(default_factory=lambda: _new_id("cat"))
+    label: Bilingual = field(default_factory=Bilingual)
+    #: Share of the sample, between zero and one.
+    proportion: float = 0.5
+
+
+@dataclass
+class ControlPath:
+    """The effect of one control term on one endogenous construct."""
+
+    id: str = field(default_factory=lambda: _new_id("cp"))
+    #: :attr:`DemographicTerm.key` of the term this effect starts from.
+    term: str = ""
+    target: str = ""        # construct id
+    effect_size: EffectSize = EffectSize.WEAK
+    coefficient: float = 0.15
+    coefficient_is_manual: bool = False
+    target_significant: bool = True
+
+    def resolved_coefficient(self) -> float:
+        if self.effect_size is EffectSize.CUSTOM or self.coefficient_is_manual:
+            return self.coefficient
+        return self.effect_size.default_coefficient
+
+
+@dataclass(frozen=True)
+class DemographicTerm:
+    """One column a demographic variable contributes to a regression.
+
+    A binary or ordinal variable has one term, its own codes.  A nominal
+    variable with ``k >= 3`` categories has ``k - 1`` dummy terms, each
+    comparing one category with the first.
+    """
+
+    key: str
+    column: str
+    #: Position of the category a dummy term flags; ``None`` for the raw codes.
+    category: Optional[int] = None
+
+
+@dataclass
+class DemographicVariable:
+    """A respondent characteristic: age, gender, education, job title."""
+
+    id: str = field(default_factory=lambda: _new_id("dv"))
+    name: str = ""                       # column name in the exported dataset
+    label: Bilingual = field(default_factory=Bilingual)
+    kind: DemographicKind = DemographicKind.NOMINAL
+    role: DemographicRole = DemographicRole.DESCRIPTIVE
+    categories: List[DemographicCategory] = field(default_factory=list)
+    #: Used only when ``role is CONTROL``.
+    control_paths: List[ControlPath] = field(default_factory=list)
+
+    @property
+    def is_dummy_coded(self) -> bool:
+        """Whether the variable enters a regression as dummy columns."""
+        return self.kind is DemographicKind.NOMINAL and len(self.categories) >= 3
+
+    def terms(self) -> List[DemographicTerm]:
+        """The regression columns this variable provides, in column order."""
+        if not self.is_dummy_coded:
+            return [DemographicTerm(key="", column=self.name)]
+        return [DemographicTerm(key=cat.id,
+                                column=f"{self.name}_{position + 1}",
+                                category=position)
+                for position, cat in enumerate(self.categories) if position]
+
+    def normalised_proportions(self) -> List[float]:
+        """Category shares rescaled to sum to one exactly."""
+        raw = [max(float(c.proportion), 0.0) for c in self.categories]
+        total = sum(raw)
+        if total <= 0.0:
+            return [1.0 / len(raw)] * len(raw) if raw else []
+        return [value / total for value in raw]
+
+    def reconcile_control_paths(self) -> None:
+        """Repoint control paths whose term stopped existing.
+
+        Changing a variable's categories or level can change its terms, and a
+        path left pointing at a term that has gone would generate nothing.
+        """
+        valid = [term.key for term in self.terms()]
+        for path in self.control_paths:
+            if path.term not in valid and valid:
+                path.term = valid[0]
+
+
+# --------------------------------------------------------------------------- #
 # The whole project
 # --------------------------------------------------------------------------- #
 
@@ -628,6 +744,149 @@ class ModelSpec:
     # -- output ------------------------------------------------------------ #
     analysis: AnalysisSpec = field(default_factory=AnalysisSpec)
     export: ExportSpec = field(default_factory=ExportSpec)
+
+    # -- demographics ------------------------------------------------------ #
+    demographics: List[DemographicVariable] = field(default_factory=list)
+    #: ``True`` fills each category's quota exactly; ``False`` draws every
+    #: respondent independently with the category shares as weights.
+    quota_exact: bool = True
+
+    # ------------------------------------------------------------------ #
+    # Demographics and the model they enter
+    # ------------------------------------------------------------------ #
+
+    def demographic(self, vid: str) -> Optional[DemographicVariable]:
+        for variable in self.demographics:
+            if variable.id == vid:
+                return variable
+        return None
+
+    def active_control_terms(self) -> List[Tuple[DemographicVariable,
+                                                 DemographicTerm]]:
+        """Control terms that have at least one path into the model."""
+        out: List[Tuple[DemographicVariable, DemographicTerm]] = []
+        for variable in self.demographics:
+            if variable.role is not DemographicRole.CONTROL:
+                continue
+            used = {path.term for path in variable.control_paths}
+            out.extend((variable, term) for term in variable.terms()
+                       if term.key in used)
+        return out
+
+    def demographic_columns(self) -> List[str]:
+        """Every demographic column of a generated dataset, in order."""
+        out: List[str] = []
+        for variable in self.demographics:
+            out.append(variable.name)
+            if variable.role is DemographicRole.CONTROL and variable.is_dummy_coded:
+                out.extend(term.column for term in variable.terms())
+        return out
+
+    def control_target_ids(self) -> List[str]:
+        """Constructs a control may point at: the dependent and mediating ones."""
+        receiving = set(self.endogenous_construct_ids())
+        return [c.id for c in self.constructs if not c.covariate
+                and (c.id in receiving
+                     or c.role in (ConstructRole.DEPENDENT, ConstructRole.MEDIATOR))]
+
+    def control_columns(self) -> List[str]:
+        """Columns the fitted model needs beyond the questionnaire items."""
+        return [term.column for _variable, term in self.active_control_terms()]
+
+    def covariate_item_ids(self) -> set:
+        """Ids of the indicators that stand for control terms."""
+        return {item.id for construct in self.constructs if construct.covariate
+                for item in construct.items}
+
+    def expanded(self) -> "ModelSpec":
+        """This model with its control terms written in as model variables.
+
+        Each active control term becomes an exogenous variable measured
+        without error by a single indicator, which is how a SEM treats an
+        observed covariate.  The term's paths become ordinary structural
+        paths, so the compiler, the estimator, significance targeting and the
+        degrees of freedom all handle them without a special case, and adding
+        a control leaves the standardised substantive paths where they were:
+        the target's disturbance variance gives up the variance the control
+        explains.
+
+        Control terms may covary freely with each other and with the
+        exogenous constructs, as covariates do when a model is fitted.  Their
+        population correlation with the constructs is zero, because quota
+        assignment is independent of the answers.  Dummies of one variable
+        correlate negatively by construction, and that value is written in.
+
+        The expansion is idempotent, and a model with no active control is
+        returned as is, so it compiles and generates exactly as before.
+
+        Returns
+        -------
+        ModelSpec
+            ``self`` when there is nothing to expand, otherwise a deep copy.
+
+        References
+        ----------
+        Bollen, K. A. (1989). *Structural Equations with Latent Variables*,
+            chapter 7. Wiley. (Single indicators with fixed error variance.)
+        Cohen, J., Cohen, P., West, S. G., & Aiken, L. S. (2003). *Applied
+            Multiple Regression/Correlation Analysis* (3rd ed.), chapter 8.
+            Erlbaum. (Dummy coding and the correlations among dummies.)
+        """
+        if any(construct.covariate for construct in self.constructs):
+            return self
+        active = self.active_control_terms()
+        if not active:
+            return self
+
+        out = copy.deepcopy(self)
+        term_ids: List[str] = []
+        shares: Dict[str, Tuple[str, float]] = {}
+        for variable, term in active:
+            suffix = term.key or "main"
+            cid = f"__ctl_{variable.id}_{suffix}"
+            term_ids.append(cid)
+            if term.category is not None:
+                shares[cid] = (variable.id,
+                               variable.normalised_proportions()[term.category])
+            label = variable.label
+            if term.category is not None:
+                category = variable.categories[term.category].label
+                label = Bilingual(ar=f"{variable.label.ar}: {category.ar}",
+                                  en=f"{variable.label.en}: {category.en}")
+            out.constructs.append(Construct(
+                id=cid, name=term.column, label=label,
+                role=ConstructRole.CONTROL, covariate=True,
+                items=[Item(id=f"{cid}_i", name=term.column, loading=1.0,
+                            scale=ScaleSpec(kind=ScaleKind.CONTINUOUS))]))
+            for path in variable.control_paths:
+                if path.term == term.key:
+                    out.paths.append(Path(
+                        id=path.id, source=cid, target=path.target,
+                        effect_size=path.effect_size,
+                        coefficient=path.coefficient,
+                        coefficient_is_manual=path.coefficient_is_manual,
+                        target_significant=path.target_significant))
+
+        for a, first in enumerate(term_ids):
+            for second in term_ids[a + 1:]:
+                correlation = 0.0
+                if first in shares and second in shares \
+                        and shares[first][0] == shares[second][0]:
+                    pa, pb = shares[first][1], shares[second][1]
+                    denominator = max((1.0 - pa) * (1.0 - pb), 1e-12)
+                    correlation = max(-math.sqrt(pa * pb / denominator), -0.999)
+                out.latent_covariances.append(LatentCovariance(
+                    construct_a=first, construct_b=second,
+                    correlation=correlation))
+        covariates = set(term_ids)
+        for exogenous in out.exogenous_construct_ids():
+            if exogenous in covariates:
+                continue
+            for term_id in term_ids:
+                out.latent_covariances.append(LatentCovariance(
+                    construct_a=term_id, construct_b=exogenous,
+                    correlation=0.0))
+        return out
 
     # ------------------------------------------------------------------ #
     # Lookups
@@ -762,9 +1021,10 @@ class ModelSpec:
         :meth:`count_free_parameters` when the exact number matters.
         """
         policy = self.cross_loading_policy
-        if not policy.enabled or self.n_items == 0:
+        n_items = self.n_items - len(self.covariate_item_ids())
+        if not policy.enabled or n_items == 0:
             return 0
-        affected = round(policy.proportion_of_items * self.n_items)
+        affected = round(policy.proportion_of_items * n_items)
         return int(affected * max(policy.max_per_item, 1))
 
     def count_free_parameters(self, compiled: Any = None) -> int:
@@ -795,6 +1055,9 @@ class ModelSpec:
             given, the auto-generated cross-loadings it actually drew are
             counted instead of the number the policy implies.
         """
+        full = self.expanded()
+        if full is not self:
+            return full.count_free_parameters(compiled)
         # Count what is ESTIMATED, not what happens to be non-zero. A path
         # whose population coefficient is exactly zero -- an effect the
         # researcher wants to come out non-significant -- is still a free
@@ -806,7 +1069,9 @@ class ModelSpec:
         n_load = self._declared_item_loadings() + n_auto
         n_struct = (sum(len(c.dimensions) for c in self.constructs)
                     + len(self.paths))
-        n_theta = self.n_items + len(self.error_covariances)
+        # A control term is observed without error, so it has no residual.
+        n_theta = (self.n_items - len(self.covariate_item_ids())
+                   + len(self.error_covariances))
         n_cov = len(self.latent_covariances)
         return n_load + n_struct + n_theta + n_cov
 
@@ -815,11 +1080,12 @@ class ModelSpec:
         the auto policy's draws."""
         n_load = self.n_items + len(self.cross_loadings)
         if self.common_method_bias.enabled:
-            n_load += (len(self.common_method_bias.item_ids) or self.n_items)
+            n_load += (len(self.common_method_bias.item_ids)
+                       or self.n_items - len(self.covariate_item_ids()))
         return n_load
 
     def count_moments(self) -> int:
-        p = self.n_items
+        p = self.expanded().n_items
         return p * (p + 1) // 2
 
     def degrees_of_freedom(self, compiled: Any = None) -> int:
@@ -999,6 +1265,46 @@ class ModelSpec:
     # Naming hygiene
     # ------------------------------------------------------------------ #
 
+    def add_demographic(
+        self,
+        name: str,
+        categories: Sequence[Tuple[str, float]],
+        *,
+        kind: DemographicKind = DemographicKind.NOMINAL,
+        role: DemographicRole = DemographicRole.DESCRIPTIVE,
+        label: Optional[Bilingual] = None,
+    ) -> DemographicVariable:
+        """Add a demographic variable from ``(label, proportion)`` pairs."""
+        variable = DemographicVariable(
+            name=name, label=label or Bilingual(ar=name, en=name),
+            kind=kind, role=role,
+            categories=[DemographicCategory(label=Bilingual(ar=text, en=text),
+                                            proportion=share)
+                        for text, share in categories])
+        self.demographics.append(variable)
+        return variable
+
+    def add_control_path(
+        self,
+        variable: DemographicVariable,
+        target: str,
+        *,
+        term: str = "",
+        coefficient: Optional[float] = None,
+        effect_size: EffectSize = EffectSize.WEAK,
+        target_significant: bool = True,
+    ) -> ControlPath:
+        """Add the effect of a control term on a construct (id or name)."""
+        path = ControlPath(
+            term=term, target=self._resolve_construct_ref(target),
+            effect_size=(EffectSize.CUSTOM if coefficient is not None
+                         else effect_size),
+            coefficient=(coefficient if coefficient is not None
+                         else effect_size.default_coefficient),
+            target_significant=target_significant)
+        variable.control_paths.append(path)
+        return path
+
     def ensure_unique_item_names(self) -> None:
         """Make every exported column name unique and syntactically safe."""
         seen: Dict[str, int] = {}
@@ -1045,4 +1351,6 @@ __all__ = [
     "NoiseSpec", "DistributionSpec",
     "FitTargetSpec", "SignificanceTargetSpec", "PowerSpec",
     "AnalysisSpec", "ExportSpec", "ModelSpec",
+    "DemographicKind", "DemographicRole", "DemographicCategory",
+    "DemographicTerm", "DemographicVariable", "ControlPath",
 ]

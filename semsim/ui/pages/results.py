@@ -59,10 +59,9 @@ class ResultsPage(StagePage):
         self._tiles_card.add(self._tiles_row)
         self._tiles: Dict[str, StatBadge] = {}
         for key, label_key, _threshold, _dir in HEADLINE:
-            badge = StatBadge(label_key, "-")
+            badge = StatBadge(label_key, "-", wrap=True)
             self._tiles[key] = badge
-            self._tiles_row.addWidget(badge)
-        self._tiles_row.addStretch(1)
+            self._tiles_row.addWidget(badge, 1)
         self._verdict = VerdictChip("pass")
         self._tiles_row.addWidget(self._verdict)
         self.scroll.add(self._tiles_card)
@@ -87,6 +86,8 @@ class ResultsPage(StagePage):
         self._tab_keys.append("r.data_preview")
         self._tabs.addTab(self._build_targeting_tab(), "")
         self._tab_keys.append("t.calibration")
+        self._tabs.addTab(self._build_demographics_tab(), "")
+        self._tab_keys.append("dem.tab")
 
         actions = QHBoxLayout()
         self._export_button = TButton("act.export", role="primary")
@@ -196,6 +197,21 @@ class ResultsPage(StagePage):
         page.add_stretch()
         return page
 
+    def _build_demographics_tab(self) -> QWidget:
+        page = self._tab()
+        self._demographics_empty = InfoBanner("dem.none")
+        page.add(self._demographics_empty)
+        self._panel("dem.frequencies", page, max_rows=30)
+        self._panel("dem.comparisons", page, max_rows=30)
+        self._panel("dem.invariance", page, max_rows=20)
+        self._panel("dem.group_paths", page, max_rows=30)
+        self._demographics_note = QLabel()
+        theme.set_role(self._demographics_note, "hint")
+        self._demographics_note.setWordWrap(True)
+        page.add(self._demographics_note)
+        page.add_stretch()
+        return page
+
     def _retranslate_tabs(self) -> None:
         try:
             for index, key in enumerate(self._tab_keys):
@@ -234,6 +250,7 @@ class ResultsPage(StagePage):
         self._fill_descriptives(results.descriptives)
         self._fill_data(results.dataset)
         self._fill_targeting(results.calibration, results.estimation)
+        self._fill_demographics(results.demographics)
 
     # -- fillers ----------------------------------------------------------- #
 
@@ -377,13 +394,53 @@ class ResultsPage(StagePage):
             f"{descriptives.mardia_kurtosis:.3f} "
             f"(p = {descriptives.mardia_kurtosis_p:.4g})   —   {verdict}")
 
+    def _fill_demographics(self, analysis: Any) -> None:
+        keys = ("dem.frequencies", "dem.comparisons", "dem.invariance",
+                "dem.group_paths")
+        self._demographics_empty.setVisible(analysis is None)
+        if analysis is None:
+            for key in keys:
+                self._panels[key].set_frame(pd.DataFrame())
+                self._panels[key].setVisible(False)
+            self._demographics_note.setText("")
+            return
+
+        def yes_no(value: Any) -> str:
+            if value is None or value != value:
+                return ""
+            return translator.t("dem.yes" if value else "dem.no")
+
+        frequencies = _localise(analysis.frequencies)
+        if not frequencies.empty:
+            frequencies["role"] = frequencies["role"].map(
+                lambda v: translator.t(f"drole.{v}"))
+        comparisons = _localise(analysis.comparisons)
+        if not comparisons.empty:
+            comparisons["test"] = comparisons["test"].map(
+                lambda v: translator.t(f"dem.test.{v}"))
+            comparisons["effect_kind"] = comparisons["effect_kind"].map(
+                lambda v: translator.t(f"dem.kind.{v}"))
+            comparisons["significant"] = comparisons["significant"].map(yes_no)
+        invariance = _localise(analysis.invariance)
+        if not invariance.empty:
+            invariance["invariant"] = invariance["invariant"].map(yes_no)
+        frames = (frequencies, comparisons, invariance,
+                  _localise(analysis.group_paths))
+        for key, frame in zip(keys, frames):
+            self._panels[key].set_frame(frame)
+            self._panels[key].setVisible(not frame.empty)
+        side = 1 if translator.is_rtl else 0
+        self._demographics_note.setText("\n".join(
+            note.split(" | ")[side] if " | " in note else note
+            for note in analysis.notes))
+
     def _fill_data(self, dataset: Any) -> None:
         data = getattr(dataset, "data", None)
         if data is None:
             self._panels["r.data_preview"].set_frame(pd.DataFrame())
             self._data_note.setText("")
             return
-        preview = data.head(100).copy()
+        preview = getattr(dataset, "full_frame", data).head(100).copy()
         preview.insert(0, "index", np.arange(1, len(preview) + 1))
         self._panels["r.data_preview"].set_frame(preview)
         missing = int(data.isna().to_numpy().sum())
@@ -461,7 +518,8 @@ class ResultsPage(StagePage):
                 spec=self.spec, dataset=results.dataset,
                 estimation=results.estimation, fit=results.fit,
                 validity=results.validity, descriptives=results.descriptives,
-                power=results.power, calibration=results.calibration)
+                power=results.power, calibration=results.calibration,
+                demographics=results.demographics)
             write_html(bundle, path, lang=translator.language)
         except Exception as exc:
             QMessageBox.warning(self, translator.t("status.failed"), str(exc))
