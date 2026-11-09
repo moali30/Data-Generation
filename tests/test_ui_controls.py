@@ -28,13 +28,15 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 
 from semsim.core import examples  # noqa: E402
+from semsim.core.spec import ConstructOrder  # noqa: E402
 from semsim.ui import theme  # noqa: E402
 from semsim.ui.app import (  # noqa: E402
     MainWindow, SimulationWorker, install_exception_hook,
 )
 from semsim.ui.i18n import translator  # noqa: E402
 from semsim.ui.state import Results  # noqa: E402
-from semsim.ui.widgets.common import float_spin  # noqa: E402
+from semsim.ui.pages.base import IdCombo  # noqa: E402
+from semsim.ui.widgets.common import EnumCombo, Field, float_spin  # noqa: E402
 
 
 #: The window fixture replaces ``run`` so clicks never start a simulation.
@@ -244,6 +246,111 @@ def test_varying_loadings_changes_them_every_time(window):
     first = [item.loading for item in construct.items]
     page._construct_editor.vary.click()
     assert [item.loading for item in construct.items] != first
+
+
+def test_choice_lists_hand_back_the_real_enum_member(application):
+    combo = EnumCombo(ConstructOrder, "m.order")
+    combo.setCurrentIndex(1)
+    assert combo.value() is ConstructOrder.SECOND
+
+
+def switch_order(window, construct, index):
+    page = window._pages[0]
+    page.tree.setCurrentItem(page._find_node(construct.id))
+    page._construct_editor.order.setCurrentIndex(index)
+    settle()
+    return page
+
+
+def test_second_order_puts_the_items_inside_dimensions(window):
+    construct = window.state.spec.constructs[0]
+    typed = [item.id for item in construct.items]
+
+    page = switch_order(window, construct, 1)
+
+    assert construct.is_second_order
+    assert construct.items == []
+    assert len(construct.dimensions) == 3
+    assert all(len(d.items) >= 3 for d in construct.dimensions)
+    assert [item.id for item in construct.all_items()][:len(typed)] == typed
+    assert window.state.can_run
+
+    node = page._find_node(construct.id)
+    assert "²" in node.text(0)
+    assert node.child(0).text(0).startswith(f"{construct.name}_D1")
+    assert node.child(0).childCount() == 3
+
+    editor = page._construct_editor
+    assert editor._n_dims_field.isVisibleTo(page)
+    assert not editor._n_items_field.isVisibleTo(page)
+    assert editor.bulk._title.text() == translator.t("m.dimensions")
+
+
+def test_second_order_adds_no_items_when_there_are_enough(window):
+    construct = window.state.spec.constructs[0]
+    construct.items.extend(construct.items[0].__class__(
+        name=f"EXTRA{n}", loading=0.7) for n in range(7))
+    typed = [item.id for item in construct.items]
+    assert len(typed) == 12
+
+    switch_order(window, construct, 1)
+
+    assert [item.id for item in construct.all_items()] == typed
+    assert [len(d.items) for d in construct.dimensions] == [4, 4, 4]
+
+
+def test_returning_to_first_order_keeps_every_item(window):
+    construct = window.state.spec.constructs[0]
+    switch_order(window, construct, 1)
+    ids = [item.id for item in construct.all_items()]
+
+    page = switch_order(window, construct, 0)
+
+    assert not construct.is_second_order
+    assert construct.dimensions == []
+    assert [item.id for item in construct.items] == ids
+    assert page._construct_editor._n_items_field.isVisibleTo(page)
+
+
+def test_a_project_saved_with_the_old_fault_keeps_its_items(window):
+    # The old code stored "second" while leaving the items on the construct.
+    construct = window.state.spec.constructs[0]
+    ids = [item.id for item in construct.items]
+    construct.order = ConstructOrder.SECOND
+    window._pages[0].rebuild()
+    settle()
+
+    switch_order(window, construct, 0)
+
+    assert not construct.is_second_order
+    assert [item.id for item in construct.items] == ids
+
+
+def test_new_items_are_numbered_on_from_the_existing_ones(window):
+    construct = window.state.spec.constructs[0]
+    switch_order(window, construct, 1)
+    names = [item.name for item in construct.all_items()]
+    assert names == [f"{construct.name}{n}" for n in range(1, len(names) + 1)]
+
+
+# Real side-scroll is measured against the Windows fonts by hand: the offscreen
+# platform these tests run on draws text at about twice its width.  What can be
+# pinned here is the mechanism, which does not depend on any font.
+@pytest.mark.parametrize("build", [
+    lambda: EnumCombo(ConstructOrder, "m.order"),
+    lambda: IdCombo([("a", "a")]).combo,
+])
+def test_a_long_choice_does_not_widen_its_list(application, build):
+    combo = build()
+    before = combo.minimumSizeHint().width()
+    combo.addItem("x" * 300)
+    assert combo.minimumSizeHint().width() == before
+
+
+def test_field_labels_give_way_in_a_narrow_pane(application):
+    field = Field("m.order", QLabel("x"), label_width=220)
+    label = field._label
+    assert label.minimumWidth() < label.maximumWidth() == 220
 
 
 def test_covariance_says_why_it_is_unavailable(window):

@@ -16,6 +16,7 @@ Two halves of one job, so they live in one page under two tabs:
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, Signal
@@ -31,6 +32,9 @@ from semsim.core.spec import (
 )
 from semsim.ui import theme
 from semsim.ui.i18n import translator
+from semsim.core.validation import (
+    MIN_DIMENSIONS_SECOND_ORDER, MIN_ITEMS_PER_FACTOR,
+)
 from semsim.ui.pages.base import StagePage
 from semsim.ui.pages.structural import StructuralEditor
 from semsim.ui.widgets.common import (
@@ -582,6 +586,7 @@ class _ConstructEditor(_EditorBase):
         self.role.set_value(construct.role)
         self.order.set_value(construct.order)
         second = construct.is_second_order
+        self.bulk.set_title_key("m.dimensions" if second else "m.items")
         self._n_dims_field.setVisible(second)
         self._n_items_field.setVisible(not second)
         if second:
@@ -631,21 +636,40 @@ class _ConstructEditor(_EditorBase):
         if construct is None or construct.order is order:
             return
         if order is ConstructOrder.SECOND:
-            # Keep the items the researcher typed: they become the first
-            # dimension rather than disappearing.
-            dimension = Dimension(
-                name=f"{construct.name}_D1",
-                label=Bilingual(ar=f"{construct.label.ar} - البعد 1",
-                                en=f"{construct.label.en} - Dimension 1"),
-                items=list(construct.items))
-            construct.dimensions = [dimension]
-            construct.items = []
+            self._split_into_dimensions(construct)
         else:
-            construct.items = [i for d in construct.dimensions for i in d.items]
+            # construct.items is normally empty here.  It is kept because
+            # projects saved by 1.0.1 can hold items on a second-order construct.
+            construct.items = [*construct.items,
+                               *(i for d in construct.dimensions for i in d.items)]
             construct.dimensions = []
-        construct.order = order
+            construct.order = order
         self.page.spec.ensure_unique_item_names()
         self.changed(structural=True)
+
+    def _split_into_dimensions(self, construct: Construct) -> None:
+        """Turn the items into the smallest set of dimensions that can be fitted.
+
+        Nothing the researcher typed is lost: the items are dealt out in order,
+        and new ones are added only where a dimension would be too small.
+        """
+        items = list(construct.items)
+        per_dimension = max(
+            MIN_ITEMS_PER_FACTOR,
+            math.ceil(len(items) / MIN_DIMENSIONS_SECOND_ORDER))
+        dimensions = []
+        for index in range(1, MIN_DIMENSIONS_SECOND_ORDER + 1):
+            dimensions.append(Dimension(
+                name=f"{construct.name}_D{index}",
+                label=Bilingual(ar=f"{construct.label.ar} - البعد {index}",
+                                en=f"{construct.label.en} - Dimension {index}"),
+                items=items[:per_dimension]))
+            items = items[per_dimension:]
+        construct.order = ConstructOrder.SECOND
+        construct.dimensions = dimensions
+        construct.items = []
+        for dimension in dimensions:
+            self._resize_items(construct, dimension.items, per_dimension)
 
     def _on_n_items(self, count: int) -> None:
         construct = self.page.spec.construct(self._id)
@@ -671,19 +695,21 @@ class _ConstructEditor(_EditorBase):
                                 en=f"{construct.label.en} - Dimension {index}"),
                 second_order_loading=(current[0].second_order_loading
                                       if current else 0.80))
-            self._resize_items(construct, dimension.items, template_items)
             current.append(dimension)
+            self._resize_items(construct, dimension.items, template_items)
         self.page.spec.ensure_unique_item_names()
         self.changed(structural=True)
 
     def _resize_items(self, construct: Construct, items: List[Item],
                       count: int) -> None:
-        loading = items[0].loading if items else self.uniform.value()
-        scale = items[0].scale if items else ScaleSpec()
+        existing = construct.all_items()
+        model = items[0] if items else (existing[0] if existing else None)
+        loading = model.loading if model else self.uniform.value()
+        scale = model.scale if model else ScaleSpec()
         while len(items) > count:
             items.pop()
         while len(items) < count:
-            index = len(items) + 1
+            index = len(construct.all_items()) + 1
             items.append(Item(
                 name=f"{construct.name}{index}",
                 label=Bilingual(ar=f"{construct.label.ar} {index}",

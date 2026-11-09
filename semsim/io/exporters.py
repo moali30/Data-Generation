@@ -72,9 +72,9 @@ try:  # pragma: no cover - packaging detail
     try:
         PROGRAM_VERSION = _pkg_version("semsim")
     except PackageNotFoundError:
-        PROGRAM_VERSION = "1.0.1"
+        PROGRAM_VERSION = "1.0.2"
 except Exception:  # pragma: no cover - very old interpreters
-    PROGRAM_VERSION = "1.0.1"
+    PROGRAM_VERSION = "1.0.2"
 
 #: SPSS variable names are limited to 64 *bytes* (not characters).
 SPSS_MAX_NAME_BYTES = 64

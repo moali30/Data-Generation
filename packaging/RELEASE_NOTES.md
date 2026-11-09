@@ -1,8 +1,14 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.0.1
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.0.2
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.0.2
+
+- تغيير رتبة المتغير إلى «الدرجة الثانية» كان يمسح أسئلته ويترك النموذج من الدرجة الأولى. الآن تُوزَّع الأسئلة على ثلاثة أبعاد وتظهر داخلها.
+- اختيارات القوائم، مثل دور المتغير ونوع المقياس، تُسجَّل الآن بقيمتها الصحيحة.
+- لوحات التعديل لم تعد تُقص أو تحتاج تمريرًا أفقيًا عند أصغر حجم للنافذة.
 
 ### الجديد في 1.0.1
 
@@ -39,9 +45,15 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.0.1
+## SEM Data Simulation Engine — v1.0.2
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.0.2
+
+- Switching a construct to second order used to delete its items and leave the model first-order. The items are now dealt into three dimensions and shown inside them.
+- Choices in the drop-down lists, such as a construct's role or a scale type, are now stored as their proper values.
+- The editing panels are no longer cut off or scrolled sideways at the smallest window size.
 
 ### What's new in 1.0.1
 

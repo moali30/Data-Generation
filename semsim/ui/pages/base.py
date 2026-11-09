@@ -32,6 +32,7 @@ from semsim.ui import theme
 from semsim.ui.i18n import translator
 from semsim.ui.state import AppState
 from semsim.ui.widgets.common import (
+    let_combo_shrink,
     Card, Collapsible, Field, InfoBanner, PageTitle, ScrollPage, TButton,
     TCheckBox, separator,
 )
@@ -346,6 +347,7 @@ class IdCombo(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self._combo = QComboBox()
+        let_combo_shrink(self._combo)
         self._combo.setSizePolicy(QSizePolicy.Policy.Expanding,
                                   QSizePolicy.Policy.Fixed)
         lay.addWidget(self._combo)
