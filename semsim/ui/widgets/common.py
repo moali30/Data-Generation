@@ -382,6 +382,9 @@ class Notice(QLabel):
 # --------------------------------------------------------------------------- #
 
 
+_MIN_LABEL_WIDTH = 110
+
+
 class Field(QWidget, Retranslatable):
     """A labelled input with an optional hint underneath.
 
@@ -411,11 +414,15 @@ class Field(QWidget, Retranslatable):
         # editor; a compact field inside a table row has neither to spare.
         cap = _editor_width_cap(editor) if label_width else 0
         if label_width:
-            self._label.setFixedWidth(label_width)
+            # A range, not a fixed width.  The labels still line up, because
+            # every row in a card is the same width, and a narrow pane takes
+            # its room from them before it has to scroll sideways.
+            self._label.setMinimumWidth(min(label_width, _MIN_LABEL_WIDTH))
+            self._label.setMaximumWidth(label_width)
         if cap:
             editor.setMaximumWidth(cap)
-        row.addWidget(self._label)
-        row.addWidget(editor, 3 if cap else 1)
+        row.addWidget(self._label, 40 if label_width else 0)
+        row.addWidget(editor, 60 if label_width else 1)
         if cap:
             row.addStretch(1)
         outer.addLayout(row)
@@ -468,6 +475,16 @@ class Field(QWidget, Retranslatable):
             self._hint.setVisible(True)
 
 
+def let_combo_shrink(combo: QComboBox) -> None:
+    """Stop a combo's longest entry from setting the width of the whole page.
+
+    The drop-down list still opens wide enough to read every entry.
+    """
+    combo.setSizeAdjustPolicy(
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(8)
+
+
 class EnumCombo(QComboBox, Retranslatable):
     """A combo box bound to an enum, labelled through the i18n catalogue."""
 
@@ -483,6 +500,7 @@ class EnumCombo(QComboBox, Retranslatable):
                                         else list(enum_cls))
         for member in self._members:
             self.addItem("", member)
+        let_combo_shrink(self)
         self.currentIndexChanged.connect(self._emit)
         self.hook_language()
 
@@ -490,7 +508,11 @@ class EnumCombo(QComboBox, Retranslatable):
         self.value_changed.emit(self.value())
 
     def value(self) -> Any:
-        return self.currentData()
+        # Not currentData(): every enum in the spec derives from str, so Qt
+        # hands back the bare string and an ``is`` test against the member
+        # fails.  Switching a construct to second order died exactly there.
+        index = self.currentIndex()
+        return self._members[index] if 0 <= index < len(self._members) else None
 
     def set_value(self, member: Any) -> None:
         for i, m in enumerate(self._members):
