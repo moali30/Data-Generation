@@ -16,7 +16,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent  # noqa: E402
+from PySide6.QtCore import QEvent, QThread  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from semsim.core import cancel, examples  # noqa: E402
@@ -118,6 +118,27 @@ def test_stop_gives_the_window_back_at_once(application, window):
     assert _wait(application, lambda: not window._orphans, 10)
     assert not window.warnings
     assert window.state.results.dataset is None
+
+
+def test_the_worker_never_touches_the_window_from_its_own_thread(
+        application, window, monkeypatch):
+    # 1.2.1 connected the worker's signals to lambdas, which PySide runs on
+    # the worker thread: the progress bar was repainted off the GUI thread
+    # and Qt crashed the whole process (access violation in Qt6Gui).
+    threads = []
+    original = MainWindow._on_progress
+
+    def spy(self, key, fraction):
+        threads.append(QThread.currentThread() is application.thread())
+        original(self, key, fraction)
+
+    monkeypatch.setattr(MainWindow, "_on_progress", spy)
+    window.state.set_spec(examples.build("minimal_cfa"))
+    window.run("full")
+    assert _wait(application, lambda: not window.state.busy, 120)
+    assert window.status_label.text() == translator.t("status.done")
+    assert threads and all(threads)
+    assert _wait(application, lambda: not window._orphans, 10)
 
 
 def test_the_time_left_appears_once_there_is_progress(application, window):

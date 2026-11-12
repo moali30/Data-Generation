@@ -818,18 +818,19 @@ class MainWindow(QMainWindow):
                                   copy.copy(self.state.results))
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        # Every slot checks that the signal comes from the current run: a
+        # The slots must be methods of the window, never lambdas: PySide runs
+        # a lambda on the thread that emits the signal, so the progress bar
+        # was repainted from the worker thread and Qt crashed the process.
+        # A bound method of a QObject is queued to the thread that owns it.
+        # Each slot also checks the signal comes from the current run: a
         # stopped run may still be unwinding and must not touch the window.
-        worker.progress.connect(
-            lambda k, f, w=worker: w is self._worker and self._on_progress(k, f))
-        worker.finished.connect(
-            lambda r, w=worker: w is self._worker and self._on_finished(r))
-        worker.failed.connect(
-            lambda a, e, w=worker: w is self._worker and self._on_failed(a, e))
-        worker.cancelled.connect(
-            lambda w=worker: w is self._worker and self._on_cancelled())
+        queued = Qt.ConnectionType.QueuedConnection
+        worker.progress.connect(self._worker_progress, queued)
+        worker.finished.connect(self._worker_finished, queued)
+        worker.failed.connect(self._worker_failed, queued)
+        worker.cancelled.connect(self._worker_cancelled, queued)
         worker.done.connect(thread.quit)
-        thread.finished.connect(lambda t=thread: self._release_thread(t))
+        thread.finished.connect(self._thread_finished, queued)
         self._thread, self._worker = thread, worker
         thread.start()
 
@@ -866,6 +867,33 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._teardown_thread()
         self.status_label.setText(translator.t("status.cancelled"))
+
+    # Worker signals arrive here, on the GUI thread.
+
+    def _from_current_run(self) -> bool:
+        sender = self.sender()
+        return sender is not None and sender is self._worker
+
+    def _worker_progress(self, key: str, fraction: float) -> None:
+        if self._from_current_run():
+            self._on_progress(key, fraction)
+
+    def _worker_finished(self, result: object) -> None:
+        if self._from_current_run():
+            self._on_finished(result)
+
+    def _worker_failed(self, message_ar: str, message_en: str) -> None:
+        if self._from_current_run():
+            self._on_failed(message_ar, message_en)
+
+    def _worker_cancelled(self) -> None:
+        if self._from_current_run():
+            self._on_cancelled()
+
+    def _thread_finished(self) -> None:
+        thread = self.sender()
+        if isinstance(thread, QThread):
+            self._release_thread(thread)
 
     def _release_thread(self, thread: QThread) -> None:
         """A thread has ended: drop it, whether current or stopped earlier."""
