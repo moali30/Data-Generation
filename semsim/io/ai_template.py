@@ -137,7 +137,9 @@ _INSTRUCTIONS: Dict[str, Any] = {
     "names": [
         "Every 'name' uses English letters, digits and underscores, starts with "
         "a letter, is short (SAT, ENG, Gender) and is unique across constructs, "
-        "dimensions and demographics. Names become column names.",
+        "dimensions and demographics. Names become column names, and the path "
+        "diagram shows each construct's name under its label, so use the "
+        "abbreviations the user's study uses (PU, TR, BI).",
         "Give every construct, dimension and category both 'label_ar' and "
         "'label_en'.",
     ],
@@ -154,8 +156,10 @@ _INSTRUCTIONS: Dict[str, Any] = {
         "'loading' is the standardised loading, between 0.40 and 0.95. Use "
         "0.70 to 0.85 unless told otherwise; 0.71 or above gives AVE of 0.50.",
         "'role': independent has no incoming path; mediator has incoming and "
-        "outgoing paths; dependent has incoming paths; moderator is used in "
-        "'interactions'. Age, gender and similar variables go in "
+        "outgoing paths; dependent has incoming paths; moderator is a "
+        "construct that changes the strength of another path and appears as "
+        "'moderator' in 'interactions'. Every moderator construct must be used "
+        "in 'interactions'. Age, gender and similar variables go in "
         "'demographics', not in 'constructs'.",
         "'scale' is likert or continuous. 'scale_points' is 5 unless told "
         "otherwise. Attitude scales usually fit 'response_style' negative_skew.",
@@ -169,10 +173,27 @@ _INSTRUCTIONS: Dict[str, Any] = {
         "hypothesis the user wants rejected.",
         "The explained variance of each construct must stay below 1. Keep the "
         "sum of squared coefficients into one construct at or below about 0.70.",
+        "Each 'paths' entry has the form {\"from\": \"PU\", \"to\": \"BI\", "
+        "\"effect\": \"medium\", \"significant\": true}.",
         "'correlations' links two independent constructs; 'r' is their "
-        "correlation. Independent constructs not listed are uncorrelated.",
-        "List mediation chains in 'indirect_effects' so they are reported.",
-        "'interactions' need both the predictor and the moderator as constructs. "
+        "correlation. Each entry has the form {\"a\": \"PU\", \"b\": \"FC\", "
+        "\"r\": 0.40}. Independent constructs not listed are uncorrelated.",
+        "List mediation chains in 'indirect_effects' so they are reported, for "
+        "example {\"chain\": [\"AGT\", \"TR\", \"BI\"], \"significant\": true}.",
+        "A moderation hypothesis such as 'DL moderates the effect of PU on BI' "
+        "is written in 'interactions' as {\"predictor\": \"PU\", \"moderator\": "
+        "\"DL\", \"target\": \"BI\", \"effect\": \"weak\", \"significant\": "
+        "true}. 'predictor' and 'target' are the two ends of the moderated "
+        "path. Never write a moderation as a plain path from the moderator to "
+        "the target: that is a different hypothesis.",
+        "The moderated path itself (PU -> BI above) must also be listed in "
+        "'paths'. Also add the moderator's own main effect on the target "
+        "(DL -> BI) to 'paths', with effect weak unless the user gives a value, "
+        "because a moderation model always includes it. The diagram draws "
+        "the moderator above or below the model with its arrow landing on the "
+        "moderated path.",
+        "One moderator may moderate several paths: add one 'interactions' entry "
+        "for each.",
         "Tell the user that a model with interactions cannot reliably reach a "
         "fit target: its RMSEA usually comes out below the target.",
     ],
@@ -797,6 +818,7 @@ def _read_structure(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any],
             spec.latent_covariances.append(LatentCovariance(
                 construct_a=first, construct_b=second, correlation=float(value)))
 
+    drawn = {(p.source, p.target) for p in spec.paths}
     for where, raw in reader.objects(payload, "interactions", ""):
         reader.keys(raw, ("predictor", "moderator", "target", "effect", "coefficient",
                           "significant"), where)
@@ -804,9 +826,31 @@ def _read_structure(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any],
                for k in ("predictor", "moderator", "target")]
         effect, coefficient = reader.effect(raw, where, EffectSize.WEAK.value)
         significant = reader.flag(raw, "significant", where, True)
+        if all(ids) and (ids[0], ids[2]) not in drawn:
+            # The interaction modifies the predictor -> target path; without
+            # that path there is nothing to moderate and nothing to draw on.
+            reader.fail(
+                f"{where}.predictor",
+                f"Add the moderated path {raw.get('predictor')} -> "
+                f"{raw.get('target')} to 'paths'.",
+                f"أضف المسار الذي يعدّله المعدِّل {raw.get('predictor')} -> "
+                f"{raw.get('target')} إلى 'paths'.")
         if all(ids):
             spec.add_interaction(ids[0], ids[1], ids[2], effect_size=effect,
                                  coefficient=coefficient, significant=significant)
+
+    moderating = {ix.moderator for ix in spec.interactions}
+    for construct in spec.constructs:
+        if (construct.role is ConstructRole.MODERATOR
+                and construct.id not in moderating):
+            reader.fail(
+                f"constructs.{construct.name}.role",
+                f"{construct.name} is a moderator but moderates nothing. Add "
+                "an 'interactions' entry naming the path it moderates, or give "
+                "it role independent if it is an ordinary predictor.",
+                f"{construct.name} دوره معدِّل لكنه لا يعدّل أي علاقة. أضف عنصرًا "
+                "في 'interactions' يحدد المسار الذي يعدّله، أو اجعل دوره "
+                "independent إذا كان متغيرًا مستقلًا عاديًا.")
 
     for where, raw in reader.objects(payload, "indirect_effects", ""):
         reader.keys(raw, ("chain", "significant"), where)

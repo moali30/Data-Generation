@@ -179,3 +179,96 @@ def test_imported_model_saves_and_reopens(tmp_path):
 def test_problem_list_for_the_assistant_asks_for_the_whole_file():
     text = ai.problems_for_ai([ai.TemplateProblem("paths[0].to", "Bad.", "سيئ.")])
     assert "complete JSON" in text and "paths[0].to: Bad." in text
+
+
+# -- moderation, written the way the instructions say ----------------------- #
+
+
+def _moderation_study():
+    """A trust-and-intention study with three moderators, as an assistant
+    following the instructions would write it."""
+    document = filled()
+
+    def construct(name, ar, role):
+        return {"name": name, "label_ar": ar, "label_en": name, "role": role,
+                "loading": 0.78, "scale": "likert", "scale_points": 5,
+                "response_style": "negative_skew", "n_items": 4}
+
+    document["constructs"] = [
+        construct("PU", "الفائدة المدركة", "independent"),
+        construct("FC", "التسهيلات المتاحة", "independent"),
+        construct("AGT", "حوكمة وشفافية الذكاء الاصطناعي", "independent"),
+        construct("PIM", "إدارة الهوية الحافظة للخصوصية", "independent"),
+        construct("TR", "الثقة المدركة", "mediator"),
+        construct("BI", "النية السلوكية للاستخدام", "dependent"),
+        construct("DL", "الإلمام الرقمي", "moderator"),
+        construct("TC", "تعقيد المهمة", "moderator"),
+        construct("VU", "طوعية الاستخدام", "moderator"),
+    ]
+    document["paths"] = [
+        {"from": "PU", "to": "BI", "effect": "medium", "significant": True},
+        {"from": "FC", "to": "BI", "effect": "weak", "significant": True},
+        {"from": "AGT", "to": "TR", "effect": "medium", "significant": True},
+        {"from": "PIM", "to": "TR", "effect": "weak", "significant": True},
+        {"from": "TR", "to": "BI", "effect": "medium", "significant": True},
+        {"from": "DL", "to": "BI", "effect": "weak", "significant": True},
+        {"from": "TC", "to": "BI", "effect": "weak", "significant": True},
+        {"from": "VU", "to": "BI", "effect": "weak", "significant": True},
+    ]
+    document["correlations"] = [{"a": "PU", "b": "FC", "r": 0.40},
+                                {"a": "AGT", "b": "PIM", "r": 0.50}]
+    document["interactions"] = [
+        {"predictor": "PU", "moderator": "DL", "target": "BI", "effect": "weak"},
+        {"predictor": "PU", "moderator": "TC", "target": "BI", "effect": "weak"},
+        {"predictor": "TR", "moderator": "VU", "target": "BI", "effect": "weak"},
+    ]
+    document["indirect_effects"] = [
+        {"chain": ["AGT", "TR", "BI"], "significant": True},
+        {"chain": ["PIM", "TR", "BI"], "significant": True}]
+    document["demographics"] = {"exact_quotas": True, "variables": []}
+    return document
+
+
+def test_the_instructions_spell_out_how_a_moderation_is_written():
+    text = json.dumps(ai.build_template()["ai_instructions"])
+    for key in ('\\"predictor\\"', '\\"moderator\\"', '\\"target\\"',
+                '\\"a\\"', '\\"r\\"'):
+        assert key in text
+    assert "Never write a moderation as a plain path" in text
+
+
+def test_a_moderation_study_imports_and_draws_its_moderators_on_their_paths():
+    from PySide6.QtWidgets import QApplication
+    from semsim.ui.widgets.path_diagram import build_layout
+
+    QApplication.instance() or QApplication(["semsim-test"])
+    spec = ai.from_payload(_moderation_study()).spec
+    assert len(spec.interactions) == 3
+    assert len(spec.latent_covariances) == 2
+
+    layout = build_layout(spec, show_items=False, rtl=True)
+    ids = {c.name: c.id for c in spec.constructs}
+    flow = [layout.nodes[ids[n]] for n in ("PU", "FC", "AGT", "PIM", "TR", "BI")]
+    top = min(n.rect.top() for n in flow)
+    bottom = max(n.rect.bottom() for n in flow)
+    for name in ("DL", "TC", "VU"):
+        node = layout.nodes[ids[name]]
+        assert node.rect.bottom() < top or node.rect.top() > bottom, name
+    landed = [e for e in layout.edges if e.kind == "interaction"]
+    assert len(landed) == 3 and all(e.anchor is not None for e in landed)
+
+
+def test_a_moderation_without_its_path_is_sent_back():
+    document = _moderation_study()
+    document["paths"] = [p for p in document["paths"]
+                         if (p["from"], p["to"]) != ("PU", "BI")]
+    found = problems_of(document)
+    assert any("PU -> BI" in p.message_en for p in found.values())
+
+
+def test_a_moderator_that_moderates_nothing_is_sent_back():
+    document = _moderation_study()
+    document["interactions"] = [i for i in document["interactions"]
+                                if i["moderator"] != "VU"]
+    found = problems_of(document)
+    assert "constructs.VU.role" in found

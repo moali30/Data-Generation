@@ -9,6 +9,7 @@
 - زر «إيقاف» يوقف المحاكاة فعلًا: الأزرار ترجع فورًا، والحساب يتوقف خلال جزء من الثانية. قبل كده كان الإيقاف يُتجاهل أثناء المعايرة والمحاكاة تكمل.
 - شريط الحالة يعرض الوقت المنقضي والوقت المتبقي المتوقع لانتهاء المحاكاة، ويتحدّث كل ثانية. شريط التقدم بقى يتحرك أثناء حساب القوة الإحصائية وكل سحبة في المعايرة بدل ما يقف.
 - مخطط المسار اتعاد رسمه: المتغيرات المعدِّلة في صف فوق أو تحت النموذج وسهمها ينزل على المسار اللي بتعدّله، والوسيط في مكانه بين المتغيرات اللي بتأثر فيه وبين التابع، والأسماء الطويلة جوه الشكل، ومعاها الرمز والدور، ومفتاح للرسم.
+- قالب الذكاء الاصطناعي بقى يشرح للمساعد إزاي يكتب أثر التعديل والارتباطات بالشكل الصحيح، عشان الرسمة تطلع مظبوطة. ولو المساعد كتب التعديل غلط (مسار مباشر بدل تعديل، أو معدِّل مش بيعدّل حاجة) البرنامج بيرجّعه بالخطأ عشان يصلحه.
 
 ### الجديد في 1.2.0
 
@@ -73,6 +74,7 @@ A single-file Windows 64-bit executable. **No Python installation, no dependenci
 - Stop really stops a run: the controls come back at once and the computation halts within a fraction of a second. It used to be ignored during calibration, and the run carried on.
 - The status bar shows the time elapsed and the estimated time left, updated every second. The progress bar now moves during the power analysis and with every calibration draw instead of freezing.
 - The path diagram is redrawn: moderators sit in a band above or below the model with their arrow landing on the path they moderate, a mediator sits between what feeds it and the outcome, long names fit inside their ellipse with their code and role, and a legend explains the lines.
+- The AI template now tells the assistant exactly how to write a moderation and a correlation, so the diagram comes out right. A moderation written wrongly (a plain path instead of an interaction, or a moderator that moderates nothing) is sent back with the problem to fix.
 
 ### What's new in 1.2.0
 
