@@ -16,6 +16,8 @@ from __future__ import annotations
 import copy
 import os
 import sys
+import threading
+import time
 import traceback
 from typing import Dict, List, Optional, Tuple
 
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
     QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
+from semsim.core import cancel as run_cancel
 from semsim.core import examples as example_models
 from semsim.core.errors import SemSimError
 from semsim.core.spec import ModelSpec
@@ -66,6 +69,10 @@ class SimulationWorker(QObject):
     progress = Signal(str, float)
     finished = Signal(object)
     failed = Signal(str, str)
+    cancelled = Signal()
+    #: Emitted last, whatever the outcome, so the thread can be shut down
+    #: even after the window has stopped listening to this worker.
+    done = Signal()
 
     def __init__(self, spec: ModelSpec, mode: str = "full",
                  prior: Optional[Results] = None) -> None:
@@ -74,27 +81,58 @@ class SimulationWorker(QObject):
         self._mode = mode
         #: The previous run's results, which an "estimate" run refits.
         self._prior = prior
-        self._cancelled = False
+        #: Polled by the estimator, the calibration loop and the generator
+        #: (see :mod:`semsim.core.cancel`), so Stop lands within one
+        #: objective evaluation instead of at the end of a calibration round.
+        self._token = threading.Event()
 
     def cancel(self) -> None:
-        self._cancelled = True
+        self._token.set()
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self._token.is_set()
 
     def _check(self) -> None:
-        if self._cancelled:
-            raise SemSimError("Cancelled by the user.", "أُلغيت العملية.")
+        if self._token.is_set():
+            raise run_cancel.Cancelled()
 
     def run(self) -> None:
+        run_cancel.install(self._token)
         try:
             result = self._run_pipeline()
             # Cancelled after the last checkpoint: it still has to end as a
-            # cancellation, or the window would wait forever for a finish.
+            # cancellation, not hand back results the user said to drop.
             self._check()
             self.finished.emit(result)
+        except run_cancel.Cancelled:
+            self.cancelled.emit()
         except SemSimError as exc:
-            self.failed.emit(exc.message_ar, exc.message_en)
+            if self._token.is_set():
+                self.cancelled.emit()
+            else:
+                self.failed.emit(exc.message_ar, exc.message_en)
         except Exception as exc:  # pragma: no cover - defensive
-            detail = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-            self.failed.emit(detail, detail)
+            if self._token.is_set():
+                self.cancelled.emit()
+            else:
+                detail = "".join(
+                    traceback.format_exception_only(type(exc), exc)).strip()
+                self.failed.emit(detail, detail)
+        finally:
+            run_cancel.install(None)
+            self.done.emit()
+
+    def _sub(self, lo: float, hi: float):
+        """Map a stage's own 0..1 progress into its slice of the whole run,
+        so the bar never runs backwards when a stage starts counting again."""
+        def emit(message: str, fraction: float) -> None:
+            if message == "status.done":
+                # The stage is done; the run is not.
+                return self._check()
+            f = min(max(float(fraction), 0.0), 1.0)
+            self._emit(message, lo + (hi - lo) * f)
+        return emit
 
     def _run_pipeline(self) -> Dict[str, object]:
         """Generate, estimate and report.  Each stage is optional so the app
@@ -111,10 +149,13 @@ class SimulationWorker(QObject):
         out["compiled"] = compiled
 
         if self._mode in ("full", "power"):
-            step("status.power", 0.12)
+            step("status.power", 0.06)
             try:
                 from semsim.power import analysis as power_analysis
-                out["power"] = power_analysis.analyse(self._spec, compiled)
+                out["power"] = power_analysis.analyse(
+                    self._spec, compiled,
+                    progress=self._sub(0.06, 0.20 if self._mode == "full"
+                                       else 0.95))
             except Exception:
                 out["power"] = None
             if self._mode == "power":
@@ -127,12 +168,12 @@ class SimulationWorker(QObject):
             out["power"] = self._prior.power
             out["calibration"] = self._prior.calibration
         else:
-            step("status.generating", 0.25)
+            step("status.generating", 0.20)
 
         if self._mode == "full" and getattr(self._spec.fit_target, "enabled", False):
             try:
                 from semsim.targeting.calibration import calibrate
-                calib = calibrate(self._spec, progress=lambda m, f: self._emit(m, f))
+                calib = calibrate(self._spec, progress=self._sub(0.20, 0.85))
                 out["calibration"] = calib
                 out["dataset"] = calib.dataset
                 out["estimation"] = calib.estimation
@@ -145,10 +186,10 @@ class SimulationWorker(QObject):
         if "dataset" not in out:
             from semsim.generation.engine import generate_dataset
             out["dataset"] = generate_dataset(
-                self._spec, progress=lambda m, f: self._emit(m, f))
+                self._spec, progress=self._sub(0.20, 0.35))
 
         dataset = out["dataset"]
-        step("status.estimating", 0.70)
+        step("status.estimating", 0.85 if "estimation" in out else 0.35)
         if "estimation" not in out:
             try:
                 from semsim.analysis.estimator import estimate
@@ -161,7 +202,7 @@ class SimulationWorker(QObject):
             except Exception as exc:
                 out["estimation_error"] = str(exc)
 
-        step("status.reporting", 0.88)
+        step("status.reporting", 0.92)
         try:
             from semsim.analysis.reliability import analyse as analyse_validity
             out["validity"] = analyse_validity(
@@ -205,6 +246,16 @@ class MainWindow(QMainWindow):
         self._theme = theme_name
         self._thread: Optional[QThread] = None
         self._worker: Optional[SimulationWorker] = None
+        #: Runs the user stopped that are still unwinding in the background:
+        #: kept referenced until their thread ends, or Qt would destroy a
+        #: running thread.
+        self._orphans: List[Tuple[QThread, SimulationWorker]] = []
+        self._run_started = 0.0
+        self._progress_value = 0.0
+        self._eta_total: Optional[float] = None
+        self._eta_timer = QTimer(self)
+        self._eta_timer.setInterval(1000)
+        self._eta_timer.timeout.connect(self._refresh_eta)
         self._run_mode = "full"
         self._pages: List[QWidget] = []
         self._page_errors: Dict[int, str] = {}
@@ -254,8 +305,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setVisible(False)
         self.status_label = QLabel()
+        self.eta_label = QLabel()
+        self.eta_label.setVisible(False)
         bar = self.statusBar()
         bar.addWidget(self.status_label, 1)
+        bar.addPermanentWidget(self.eta_label)
         bar.addPermanentWidget(self.progress_bar)
 
     def _build_summary_strip(self) -> QWidget:
@@ -752,16 +806,32 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self._run_started = time.monotonic()
+        self._progress_value = 0.0
+        self._eta_total = None
+        self.eta_label.setVisible(True)
+        self._refresh_eta()
+        self._eta_timer.start()
 
-        self._thread = QThread(self)
-        self._worker = SimulationWorker(self.state.spec, mode,
-                                        copy.copy(self.state.results))
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.failed.connect(self._on_failed)
-        self._thread.start()
+        thread = QThread(self)
+        worker = SimulationWorker(self.state.spec, mode,
+                                  copy.copy(self.state.results))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        # Every slot checks that the signal comes from the current run: a
+        # stopped run may still be unwinding and must not touch the window.
+        worker.progress.connect(
+            lambda k, f, w=worker: w is self._worker and self._on_progress(k, f))
+        worker.finished.connect(
+            lambda r, w=worker: w is self._worker and self._on_finished(r))
+        worker.failed.connect(
+            lambda a, e, w=worker: w is self._worker and self._on_failed(a, e))
+        worker.cancelled.connect(
+            lambda w=worker: w is self._worker and self._on_cancelled())
+        worker.done.connect(thread.quit)
+        thread.finished.connect(lambda t=thread: self._release_thread(t))
+        self._thread, self._worker = thread, worker
+        thread.start()
 
     def _estimation_blocker(self) -> str:
         """Why the data on hand cannot be refitted; empty when it can."""
@@ -778,23 +848,77 @@ class MainWindow(QMainWindow):
         return ""
 
     def cancel_run(self) -> None:
-        if self._worker is not None:
-            self._worker.cancel()
-            self.status_label.setText(translator.t("status.cancelled"))
+        """Stop the run now.
+
+        The worker is told to stop and polls for it inside the estimator, so
+        it unwinds within a fraction of a second -- but the window does not
+        wait for that.  It lets go of the run immediately, so the controls
+        come back at once and a new run can start while the old one finishes
+        unwinding in the background.
+        """
+        worker, thread = self._worker, self._thread
+        if worker is None:
+            return
+        worker.cancel()
+        if thread is not None and thread.isRunning():
+            self._orphans.append((thread, worker))
+        self._thread = None
+        self._worker = None
+        self._teardown_thread()
+        self.status_label.setText(translator.t("status.cancelled"))
+
+    def _release_thread(self, thread: QThread) -> None:
+        """A thread has ended: drop it, whether current or stopped earlier."""
+        before = len(self._orphans)
+        self._orphans = [(t, w) for t, w in self._orphans if t is not thread]
+        if len(self._orphans) != before:
+            thread.deleteLater()
 
     def _on_progress(self, key: str, fraction: float) -> None:
         text = translator.t(key) if key.startswith("status.") else key
         self.status_label.setText(text)
-        if fraction >= 0:
-            self.progress_bar.setValue(int(fraction * 100))
+        if fraction < 0:
+            return
+        # Never run backwards: a stage restarting its own count is not the
+        # run losing ground, and a bar that jumps back ruins the estimate.
+        fraction = max(self._progress_value, min(float(fraction), 1.0))
+        self._progress_value = fraction
+        self.progress_bar.setValue(int(fraction * 100))
+        elapsed = time.monotonic() - self._run_started
+        if fraction >= 0.03 and elapsed >= 1.0:
+            estimate = elapsed / fraction
+            # Smooth the jumps between stages of very different cost.
+            if self._eta_total is not None:
+                estimate = 0.6 * estimate + 0.4 * self._eta_total
+            self._eta_total = estimate
+        self._refresh_eta()
+
+    def _refresh_eta(self) -> None:
+        """Elapsed time, and how long is probably left, ticking every second."""
+        if not self.state.busy:
+            return
+        elapsed = time.monotonic() - self._run_started
+        parts = [translator.t("status.elapsed", t=_clock(elapsed))]
+        if self._eta_total is None:
+            parts.append(translator.t("status.eta_pending"))
+        else:
+            remaining = self._eta_total - elapsed
+            if remaining <= 1.0:
+                parts.append(translator.t("status.eta_soon"))
+            else:
+                parts.append(translator.t("status.eta", t=_clock(remaining)))
+        self.eta_label.setText("  ·  ".join(parts))
 
     def _teardown_thread(self) -> None:
         self.state.set_busy(False)
         self.cancel_button.setVisible(False)
         self.progress_bar.setVisible(False)
+        self._eta_timer.stop()
+        self.eta_label.setVisible(False)
         if self._thread is not None:
             self._thread.quit()
             self._thread.wait(3000)
+            self._thread.deleteLater()
             self._thread = None
         self._worker = None
         self._refresh_summary()
@@ -818,6 +942,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, translator.t("status.failed"),
                                 "\n".join(str(e) for e in soft_errors))
         self.nav.setCurrentRow(len(PAGE_SPECS) - 1)
+
+    def _on_cancelled(self) -> None:
+        self._teardown_thread()
+        self.status_label.setText(translator.t("status.cancelled"))
 
     def _on_failed(self, message_ar: str, message_en: str) -> None:
         self._teardown_thread()
@@ -878,12 +1006,22 @@ class MainWindow(QMainWindow):
         if self.state.busy:
             self.cancel_run()
         if self._confirm_discard():
-            if self._thread is not None:
-                self._thread.quit()
-                self._thread.wait(2000)
+            for thread, _worker in list(self._orphans):
+                thread.quit()
+                thread.wait(2000)
             event.accept()
         else:
             event.ignore()
+
+
+def _clock(seconds: float) -> str:
+    """``m:ss``, or ``h:mm:ss`` past an hour."""
+    total = max(int(round(seconds)), 0)
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
 
 
 class _PlaceholderPage(QWidget):

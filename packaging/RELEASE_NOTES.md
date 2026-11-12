@@ -1,8 +1,14 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.2.0
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.2.1
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.2.1
+
+- زر «إيقاف» يوقف المحاكاة فعلًا: الأزرار ترجع فورًا، والحساب يتوقف خلال جزء من الثانية. قبل كده كان الإيقاف يُتجاهل أثناء المعايرة والمحاكاة تكمل.
+- شريط الحالة يعرض الوقت المنقضي والوقت المتبقي المتوقع لانتهاء المحاكاة، ويتحدّث كل ثانية. شريط التقدم بقى يتحرك أثناء حساب القوة الإحصائية وكل سحبة في المعايرة بدل ما يقف.
+- مخطط المسار اتعاد رسمه: المتغيرات المعدِّلة في صف فوق أو تحت النموذج وسهمها ينزل على المسار اللي بتعدّله، والوسيط في مكانه بين المتغيرات اللي بتأثر فيه وبين التابع، والأسماء الطويلة جوه الشكل، ومعاها الرمز والدور، ومفتاح للرسم.
 
 ### الجديد في 1.2.0
 
@@ -58,9 +64,15 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.2.0
+## SEM Data Simulation Engine — v1.2.1
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.2.1
+
+- Stop really stops a run: the controls come back at once and the computation halts within a fraction of a second. It used to be ignored during calibration, and the run carried on.
+- The status bar shows the time elapsed and the estimated time left, updated every second. The progress bar now moves during the power analysis and with every calibration draw instead of freezing.
+- The path diagram is redrawn: moderators sit in a band above or below the model with their arrow landing on the path they moderate, a mediator sits between what feeds it and the outcome, long names fit inside their ellipse with their code and role, and a legend explains the lines.
 
 ### What's new in 1.2.0
 

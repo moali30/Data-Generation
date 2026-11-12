@@ -93,6 +93,13 @@ class Palette:
     diagram_edge_strong: str
     diagram_edge_null: str
     diagram_grid: str
+    #: Endogenous constructs (mediators, outcomes): a shade deeper than the
+    #: exogenous ones, so the flow reads at a glance.
+    diagram_node_endo: str = "#cfe2f3"
+    #: Moderators and the arrows that land on the paths they moderate.
+    diagram_moderator: str = "#fcf0dd"
+    diagram_moderator_border: str = "#b8741a"
+    diagram_label_border: str = "#d5dde6"
 
 
 LIGHT_PALETTE = Palette(
@@ -163,6 +170,10 @@ DARK_PALETTE = Palette(
     diagram_edge_strong="#4a9fd4",
     diagram_edge_null="#4a545e",
     diagram_grid="#222a31",
+    diagram_node_endo="#1d3a50",
+    diagram_moderator="#3a2e1c",
+    diagram_moderator_border="#e0a050",
+    diagram_label_border="#3a4652",
 )
 
 PALETTES: Dict[str, Palette] = {LIGHT: LIGHT_PALETTE, DARK: DARK_PALETTE}

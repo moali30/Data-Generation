@@ -40,6 +40,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from semsim.core import cancel as _cancel
 from semsim.core.compile import CompiledModel, compile_model
 from semsim.core.errors import SemSimError, SpecificationError
 from semsim.core import implied as implied_module
@@ -139,6 +140,7 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
         A pre-compiled model, to avoid compiling twice in a calibration loop.
     """
     def report(key: str, fraction: float) -> None:
+        _cancel.check()
         if progress is not None:
             progress(key, fraction)
 

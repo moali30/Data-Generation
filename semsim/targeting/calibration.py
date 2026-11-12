@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from semsim.core import cancel as _cancel
 from semsim.core.compile import CompiledModel, compile_model
 from semsim.core.errors import SemSimError
 from semsim.core import implied as implied_module
@@ -160,10 +161,17 @@ def calibrate(spec: ModelSpec, *, n: Optional[int] = None,
         # nothing left to try, so later rounds draw once and move on.
         resamples = 0 if any(c >= HOPELESS_AFTER for c in hopeless.values()) \
             else max_resamples
+
+        def on_draw(done: int, total: int, _round: int = round_index) -> None:
+            # Each fit is the slow part, so the bar moves once per draw
+            # rather than once per round -- and Stop is honoured between them.
+            report("status.calibrating",
+                   0.1 + 0.8 * ((_round - 1) + done / max(total, 1)) / max_rounds)
+
         attempt, draws_used = _draw_until_significant(
             working, compiled, n_cases, base_seed + 1000 * round_index,
             injected if targeting_fit else 0.0, df, estimate,
-            resamples, warnings, hopeless)
+            resamples, warnings, hopeless, on_draw=on_draw)
         draws += draws_used
         realised = attempt["rmsea"]
         history.append({
@@ -237,7 +245,8 @@ def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
                             df: int, estimate: Callable[..., Any],
                             max_resamples: int,
                             warnings: List[str],
-                            hopeless: Optional[Dict[str, int]] = None
+                            hopeless: Optional[Dict[str, int]] = None,
+                            on_draw: Optional[Callable[[int, int], None]] = None
                             ) -> Tuple[Dict[str, Any], int]:
     """Draw, fit, and re-draw while the p-value pattern is wrong.
 
@@ -260,6 +269,9 @@ def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
     used = 0
 
     for attempt_index in range(attempts):
+        _cancel.check()
+        if on_draw is not None and attempt_index:
+            on_draw(attempt_index, attempts)
         used = attempt_index + 1
         dataset = generate_dataset(working, n=n, seed=seed + attempt_index,
                                    sigma_override=sigma, compiled=compiled)

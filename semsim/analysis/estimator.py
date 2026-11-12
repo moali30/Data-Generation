@@ -62,6 +62,7 @@ from scipy import linalg as _sla
 from scipy import optimize as _opt
 from scipy.stats import norm as _norm
 
+from semsim.core import cancel as _cancel
 from semsim.core.compile import compile_model
 from semsim.core.errors import (ConvergenceError, IdentificationError,
                                 SpecificationError)
@@ -1123,6 +1124,7 @@ def _run_optimiser(problem: _Problem, x0: np.ndarray
     has_covariates = bool(par.cm.covariate_rows)
 
     def objective(theta: np.ndarray) -> float:
+        _cancel.check()
         value = problem.value(theta)
         if has_covariates and not np.isfinite(value):
             return _INADMISSIBLE_PENALTY
@@ -1206,6 +1208,7 @@ def _numerical_hessian(problem: _Problem, theta: np.ndarray) -> np.ndarray:
     f0 = problem.value(theta)
     with _quiet():
         for a in range(par_q):
+            _cancel.check()
             ea = np.zeros(q)
             ea[a] = steps[a]
             f_plus = problem.value(theta + ea)

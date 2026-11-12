@@ -1836,12 +1836,18 @@ def rules_of_thumb(spec: ModelSpec, *, per_parameter: int = 10,
 def _per_path_frame(spec: ModelSpec, cm: "CompiledModel", n: int,
                     alpha: float, target_power: float,
                     notes_en: List[str], notes_ar: List[str],
-                    max_n: int) -> Optional[pd.DataFrame]:
+                    max_n: int,
+                    progress: Optional[Callable[[str, float], Any]] = None
+                    ) -> Optional[pd.DataFrame]:
     """Satorra-Saris table for every structural path, or ``None``."""
     if not spec.paths:
         return None
     rows: List[Dict[str, Any]] = []
-    for p in spec.paths:
+    for index, p in enumerate(spec.paths):
+        if progress is not None:
+            # Each path costs a model fit or two: on a large model this loop
+            # is a minute long, and a bar frozen for that minute looks hung.
+            progress("status.power", index / len(spec.paths))
         try:
             detail = path_power_detail(spec, cm, p)
         except SemSimError as exc:
@@ -1921,7 +1927,8 @@ def _refresh_per_path_power(frame: pd.DataFrame, n: int,
     return out
 
 
-def analyse(spec: ModelSpec, cm: Optional["CompiledModel"] = None
+def analyse(spec: ModelSpec, cm: Optional["CompiledModel"] = None,
+            progress: Optional[Callable[[str, float], Any]] = None
             ) -> PowerResult:
     """Assemble the whole power stage for one model.
 
@@ -2152,7 +2159,8 @@ def analyse(spec: ModelSpec, cm: Optional["CompiledModel"] = None
 
     if cm is not None and spec.paths:
         per_path = _per_path_frame(spec, cm, n_recommended, alpha,
-                                   target_power, notes_en, notes_ar, max_n)
+                                   target_power, notes_en, notes_ar, max_n,
+                                   progress=progress)
         if per_path is not None and not per_path.empty:
             needed = per_path["n_required"].dropna()
             if not needed.empty:
