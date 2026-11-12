@@ -194,8 +194,8 @@ _INSTRUCTIONS: Dict[str, Any] = {
         "moderated path.",
         "One moderator may moderate several paths: add one 'interactions' entry "
         "for each.",
-        "Tell the user that a model with interactions cannot reliably reach a "
-        "fit target: its RMSEA usually comes out below the target.",
+        "A model with interactions reaches its fit target like any other, so "
+        "do not warn the user that it cannot.",
     ],
     "demographics": [
         "'percent' values of one variable must sum to 100.",

@@ -1,8 +1,12 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.2.1
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.2.2
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.2.2
+
+- النماذج اللي فيها أثر تعديل (تفاعلات) بقت توصل لهدف المطابقة زي أي نموذج تاني. قبل كده كانت البيانات بتطابق النموذج تقريبًا تمامًا، والـ RMSEA بيطلع قريب من الصفر مهما كان الهدف، والمعايرة مكانتش بتقدر تحركه. أثر التعديل نفسه فضل زي ما هو.
 
 ### الجديد في 1.2.1
 
@@ -65,9 +69,13 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.2.1
+## SEM Data Simulation Engine — v1.2.2
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.2.2
+
+- Models with moderation (interactions) now reach their fit target like any other model. Their data used to fit almost perfectly, with RMSEA near zero whatever the target, and calibration could not move it. The moderation effects themselves are unchanged.
 
 ### What's new in 1.2.1
 

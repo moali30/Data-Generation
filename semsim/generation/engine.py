@@ -184,6 +184,12 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
     if engine is GenerationEngine.SCORES:
         y_star, eta = _generate_from_scores(spec, cm, n_cases, rng, warnings,
                                             controls)
+        if sigma_generating is not sigma_population:
+            # The scores are drawn from the structural equations, so they
+            # would ignore the misfit injected into the generating matrix
+            # and fit the model almost perfectly whatever RMSEA was asked for.
+            y_star = _impose_covariance(y_star, sigma_population,
+                                        sigma_generating, cm)
     elif controls is not None:
         y_star = _generate_given_controls(spec, cm, sigma_generating, controls,
                                           rng, warnings)
@@ -444,6 +450,44 @@ def _clamp_feasible(skew: np.ndarray,
 # --------------------------------------------------------------------------- #
 # Score engine
 # --------------------------------------------------------------------------- #
+
+
+def _symmetric_power(matrix: np.ndarray, power: float) -> np.ndarray:
+    """``matrix ** power`` for a symmetric positive (semi)definite matrix."""
+    values, vectors = np.linalg.eigh((matrix + matrix.T) / 2.0)
+    values = np.clip(values, 1e-10, None)
+    return (vectors * values ** power) @ vectors.T
+
+
+def _impose_covariance(y_star: np.ndarray, sigma_model: np.ndarray,
+                       sigma_target: np.ndarray,
+                       cm: CompiledModel) -> np.ndarray:
+    """Give score-generated data the covariance of the misfit matrix.
+
+    Data drawn through the structural equations has, in the population, the
+    model-implied covariance ``sigma_model`` -- moderation adds variance to
+    an outcome but no covariance with the constructs that form the product.
+    Post-multiplying by ``A = sigma_model^(-1/2) sigma_target^(1/2)`` turns
+    that population covariance into ``sigma_target`` exactly
+    (``A' sigma_model A = sigma_target``), the same matrix the covariance
+    engine draws from.  The symmetric roots make ``A`` the transformation
+    closest to the identity, so with the small perturbation a fit target
+    asks for each column keeps its own content, and the interaction its
+    effect.  Sampling error is untouched: only the population moment moves.
+
+    Control columns hold the exact codes their quotas assigned, so they are
+    left alone and only the questionnaire block is transformed.
+    """
+    covariates = set(cm.covariate_rows)
+    keep = [j for j in range(y_star.shape[1]) if j not in covariates]
+    if not keep:
+        return y_star
+    block = np.ix_(keep, keep)
+    transform = (_symmetric_power(sigma_model[block], -0.5)
+                 @ _symmetric_power(sigma_target[block], 0.5))
+    out = np.array(y_star, dtype=float, copy=True)
+    out[:, keep] = y_star[:, keep] @ transform
+    return out
 
 
 def _generate_from_scores(spec: ModelSpec, cm: CompiledModel, n: int,
