@@ -659,7 +659,9 @@ class CalibrationResult:
     estimation: EstimationResult
     fit: FitIndices
     rounds: int
-    history: pd.DataFrame        # round, rmsea_target, rmsea_realised, adjustment
+    draws: int
+    populations: int             # simulated populations tried (1 to 3)
+    history: pd.DataFrame        # round, population, rmsea_target, rmsea_realised, adjustment
     significance_ok: bool
     significance_table: pd.DataFrame
     converged: bool
@@ -671,6 +673,12 @@ def calibrate(spec: ModelSpec, *, n=None, seed=None, progress=None) -> Calibrati
     # (target/realised)^2 and re-draw. Honour
     # spec.fit_target.max_calibration_rounds and .tolerance, plus
     # spec.significance_target.max_resamples for the p-value side.
+    # All draws of one pass sample one population realised around the plan
+    # (heterogeneity). When that population misses a requested p-value,
+    # up to EXTRA_POPULATIONS (2) further populations are tried, seeded
+    # apart so the first pass is unchanged. Draws are scored by
+    # miss_distance(): missed paths, then log10 distance of p from alpha;
+    # the closest draw is kept when none matches.
 ```
 
 ---

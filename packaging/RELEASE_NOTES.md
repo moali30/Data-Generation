@@ -1,8 +1,14 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.6.0
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.6.1
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.6.1
+
+- إصلاح: مسار ضعيف طالبه دال كان ممكن يطلع غير دال في حوالي 1 من كل 10 تشغيلات (في مثال القالب SQ ← LOY طلع p = 0.86). السبب إن المجتمع اللي البرنامج بيسحب منه بيختلف شوية عن الخطة، وساعات الاختلاف ده بيصغّر المسار لدرجة إن العينة ما تقدرش تظهره، وإعادة سحب العينة من نفس المجتمع ما كانتش بتحل المشكلة. دلوقتي لو المجتمع ما حققش المطلوب، البرنامج بيجرب لحد مجتمعين تانيين حوالين نفس الخطة.
+- لو مفيش سحبة حققت المطلوب، البرنامج بيحتفظ بأقرب سحبة (أقل عدد مسارات مخالفة، وبعدين أقرب قيم p لمستوى الدلالة) بدل أول سحبة.
+- التشغيلات اللي كانت بتنجح من أول مجتمع بتطلع نفس البيانات بالظبط زي الإصدار 1.6.0.
 
 ### الجديد في 1.6.0
 
@@ -106,9 +112,15 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.6.0
+## SEM Data Simulation Engine — v1.6.1
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.6.1
+
+- Fix: a weak path asked to be significant could come out non-significant in about one run in ten (in the template example, SQ -> LOY at p = 0.86). The simulated population varies a little around the plan, and that variation sometimes shrank the path below what the sample could show; re-drawing samples from the same population could not help. When a population misses the requested pattern, up to two other populations around the same plan are now tried.
+- When no draw reaches the pattern, the closest one is kept (fewest missed paths, then p-values nearest alpha) instead of the first.
+- Runs that succeeded with the first population give exactly the same data as in 1.6.0.
 
 ### What's new in 1.6.0
 
