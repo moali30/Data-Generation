@@ -19,6 +19,7 @@ semsim/generation/fleishman.py     Fleishman (1978) polynomial coefficients
            generation/thresholds.py     continuous y* -> Likert categories
            generation/noise.py          careless responders, outliers, missingness
            generation/heterogeneity.py  one realistic population around the spec
+           generation/group_differences.py  comparison groups that differ as planned
            generation/engine.py         orchestrator: spec -> DataFrame
 
 semsim/targeting/cudeck_browne.py  inject model error for a target RMSEA
@@ -328,6 +329,25 @@ def realise_population(spec: ModelSpec, seed: int) -> ModelSpec
     # warnings than the original is undone. The copy has heterogeneity
     # switched off, so it is never varied twice. calibrate() calls it once per
     # run; generate_dataset() calls it when given no compiled model.
+```
+
+## `semsim/generation/group_differences.py`
+
+```python
+def apply_group_differences(spec: ModelSpec, data: pd.DataFrame,
+                            demographics: pd.DataFrame | None, seed: int
+                            ) -> tuple[pd.DataFrame | None, list[str]]
+    # For every comparison variable with group_differences, regroup the
+    # respondents by a propensity u = Z w + sqrt(1 - rho' w) e, where Z are
+    # the target constructs' standardised composites (the comparison
+    # table's own scores), rho the correlations that give each target its
+    # eta squared (d converted for two groups) once u is cut at the group
+    # shares, and w = R^-1 rho. The group sizes already drawn are filled in
+    # order of u, so the answers, the counts and every SEM result are
+    # untouched. With significance targeting on, e is redrawn (up to
+    # MAX_ATTEMPTS) until each test is significant or not as asked; the
+    # closest draw is kept otherwise, with a warning. generate_dataset()
+    # calls it once the answers are final.
 ```
 
 ## `semsim/generation/engine.py`

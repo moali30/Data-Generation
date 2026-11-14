@@ -2109,6 +2109,8 @@ def _check_demographics(spec: ModelSpec, out: List[Diagnostic]) -> None:
                     hint_en=f"Each group needs more than {p + 1} cases.",
                     hint_ar=f"كل مجموعة تحتاج أكثر من {p + 1} حالة."))
 
+        if variable.role is DemographicRole.COMPARISON:
+            _check_group_differences(spec, variable, shown, out)
         if variable.role is not DemographicRole.CONTROL:
             continue
         if not variable.control_paths:
@@ -2153,6 +2155,32 @@ def _check_demographics(spec: ModelSpec, out: List[Diagnostic]) -> None:
                     "or more.",
                     f"أحد مسارات «{shown}» معامله المعياري 1 أو أكثر.",
                     where=path.id))
+
+
+def _check_group_differences(spec: ModelSpec, variable: Any, shown: str,
+                             out: List[Diagnostic]) -> None:
+    """Differences that point at a construct, once each."""
+    known = {c.id for c in spec.constructs if not c.covariate}
+    seen = set()
+    for difference in variable.group_differences:
+        if difference.target not in known:
+            out.append(_d(
+                Severity.ERROR, "GROUP_DIFFERENCE_BAD_TARGET",
+                f"A group difference of '{shown}' points at a construct that "
+                "no longer exists.",
+                f"أحد فروق «{shown}» يشير إلى متغير كامن لم يعد موجودًا.",
+                where=difference.id,
+                hint_en="Choose another construct or remove the difference.",
+                hint_ar="اختر متغيرًا آخر أو احذف الفرق."))
+        elif difference.target in seen:
+            out.append(_d(
+                Severity.ERROR, "GROUP_DIFFERENCE_DUPLICATE",
+                f"'{shown}' has two differences on the same construct.",
+                f"المتغير «{shown}» له فرقان على المتغير الكامن نفسه.",
+                where=difference.id,
+                hint_en="Keep one of them.",
+                hint_ar="أبقِ واحدًا منهما."))
+        seen.add(difference.target)
 
 
 def _check_targeting(spec: ModelSpec, out: List[Diagnostic]) -> None:

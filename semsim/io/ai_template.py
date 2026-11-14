@@ -28,7 +28,8 @@ from semsim.core.errors import SemSimError
 from semsim.core.spec import (
     Bilingual, Construct, ConstructOrder, ConstructRole, DemographicCategory,
     DemographicKind, DemographicRole, DemographicVariable, Dimension,
-    EffectSize, FitLevel, HETEROGENEITY_PRESETS, IndirectEffect, Item,
+    EffectSize, FitLevel, GROUP_D_MAX, GROUP_ETA_MAX, GroupDifference,
+    GroupDirection, GroupEffect, HETEROGENEITY_PRESETS, IndirectEffect, Item,
     LatentCovariance,
     MissingMechanism, ModelSpec, ResponseStyle, ScaleKind, ScaleSpec,
 )
@@ -225,6 +226,22 @@ _INSTRUCTIONS: Dict[str, Any] = {
         "with the category shares as weights, so the counts vary the way a "
         "collected sample's do (317, 204, 158 rather than 320, 200, 160). Set "
         "it to true only when the user says the sample was filled by quota.",
+        "A comparison variable may list 'differences': how its groups differ "
+        "on a construct. 'on' names the construct. 'size' is none, small, "
+        "medium or large: Cohen's d of 0.2, 0.5 or 0.8 for two categories, "
+        "eta squared of 0.01, 0.06 or 0.14 for three or more. Give 'value' "
+        "instead of 'size' only when the user names an exact d or eta squared.",
+        "'direction' ascending makes the last category score highest and "
+        "descending the first, with the categories in between in order, so "
+        "list the categories in the order the difference runs. For Gender "
+        "with Male then Female, ascending means females score higher.",
+        "'significant' true makes the t-test or ANOVA significant, false makes "
+        "it non-significant; size none is never significant. When the user "
+        "hypothesises differences by a demographic (for example 'satisfaction "
+        "differs by gender'), make it a comparison variable and add the "
+        "difference. Real demographic differences are mostly small, so use "
+        "small unless the user says otherwise. Constructs without a listed "
+        "difference differ only as far as they correlate with a listed one.",
     ],
     "defaults": [
         "'sample_size' is required. If the user gives no number, use 300 for "
@@ -249,6 +266,9 @@ _ALLOWED_VALUES: Dict[str, Any] = {
     "effect": list(_EFFECTS),
     "demographics.level": [k.value for k in DemographicKind],
     "demographics.role": [r.value for r in DemographicRole],
+    "demographics.differences.size": [g.value for g in GroupEffect
+                                      if g is not GroupEffect.CUSTOM],
+    "demographics.differences.direction": [d.value for d in GroupDirection],
     "fit_target.level": list(_FIT_LEVELS),
     "realism.missing_mechanism": [MissingMechanism.MCAR.value,
                                   MissingMechanism.MAR.value],
@@ -364,7 +384,10 @@ def build_template() -> Dict[str, Any]:
                       "percent": 70},
                      {"label_ar": "دراسات عليا", "label_en": "Postgraduate",
                       "percent": 30},
-                 ]},
+                 ],
+                 "differences": [{"on": "SAT", "size": "small",
+                                  "direction": "ascending",
+                                  "significant": True}]},
             ],
         },
         "fit_target": {"level": "good"},
@@ -735,7 +758,7 @@ def _read_demographics(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any]
 
     for where, entry in reader.objects(section, "variables", "demographics"):
         reader.keys(entry, ("name", "label_ar", "label_en", "level", "role",
-                            "categories", "control_paths"), where)
+                            "categories", "control_paths", "differences"), where)
         name = reader.text(entry, "name", where, required=True)
         if not name:
             continue
@@ -763,6 +786,45 @@ def _read_demographics(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any]
                 label=_label(reader, raw, path), proportion=float(percent) / 100.0))
         spec.demographics.append(variable)
         _read_control_paths(reader, spec, entry, where, variable, constructs)
+        _read_differences(reader, entry, where, variable, constructs)
+
+
+def _read_differences(reader: _Reader, entry: Dict[str, Any], where: str,
+                      variable: DemographicVariable,
+                      constructs: Dict[str, str]) -> None:
+    entries = reader.objects(entry, "differences", where)
+    if entries and variable.role is not DemographicRole.COMPARISON:
+        reader.fail(f"{where}.differences",
+                    "Only a variable with role 'comparison' can have differences.",
+                    "المتغير ذو الدور 'comparison' فقط يمكن أن تكون له فروق.")
+        return
+    seen: Dict[str, str] = {}
+    sizes = [g.value for g in GroupEffect if g is not GroupEffect.CUSTOM]
+    ceiling = GROUP_D_MAX if len(variable.categories) <= 2 else GROUP_ETA_MAX
+    for path, raw in entries:
+        reader.keys(raw, ("on", "size", "value", "direction", "significant"), path)
+        target = reader.reference(raw.get("on"), constructs, f"{path}.on")
+        size = GroupEffect(reader.choice(raw, "size", path, sizes,
+                                         GroupEffect.SMALL.value))
+        value = reader.number(raw, "value", path, 0.0, ceiling)
+        direction = reader.choice(raw, "direction", path,
+                                  [d.value for d in GroupDirection],
+                                  GroupDirection.ASCENDING.value)
+        significant = reader.flag(raw, "significant", path, True)
+        if target is None:
+            continue
+        if target in seen:
+            reader.fail(f"{path}.on",
+                        f"'{raw.get('on')}' already has a difference in {seen[target]}.",
+                        f"'{raw.get('on')}' له فرق بالفعل في {seen[target]}.")
+            continue
+        seen[target] = path
+        difference = GroupDifference(
+            target=target, size=size, direction=GroupDirection(direction),
+            target_significant=significant)
+        if value is not None:
+            difference.size, difference.value = GroupEffect.CUSTOM, float(value)
+        variable.group_differences.append(difference)
 
 
 def _read_control_paths(reader: _Reader, spec: ModelSpec, entry: Dict[str, Any],

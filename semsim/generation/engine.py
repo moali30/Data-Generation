@@ -226,6 +226,13 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
                             "installed; the dataset carries no contamination.")
 
     data = pd.DataFrame(observed, columns=items_cm.item_names)
+    if demographics is not None:
+        # Regroup comparison variables by the finished answers, so a t-test
+        # or ANOVA on them finds the differences the researcher planned.
+        from semsim.generation.group_differences import apply_group_differences
+        demographics, notes = apply_group_differences(spec, data, demographics,
+                                                      actual_seed)
+        warnings.extend(notes)
     shadow = (pd.DataFrame(y_star, columns=[f"{c}_star"
                                             for c in items_cm.item_names])
               if spec.export.include_continuous_shadow else None)

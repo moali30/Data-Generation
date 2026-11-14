@@ -1,8 +1,14 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.3.1
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.4.0
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.4.0
+
+- الفروق بين الفئات الديموغرافية: المتغير اللي دوره «اختبار فروق» بقى ليه قسم «الفروق بين الفئات»، تختار فيه المتغير الكامن، وحجم الفرق (صغير، متوسط، كبير، أو قيمة d / مربع إيتا بالظبط)، والفئة الأعلى، وهل الفرق مطلوب يطلع دال ولا لأ. قبل كده الفئات كانت بتتوزع بمعزل عن الإجابات، فاختبار t وتحليل التباين كانوا بيطلعوا غير دالين دايمًا، وده مستحيل في بيانات حقيقية.
+- الإجابات نفسها ونتائج النموذج مش بتتغير: البرنامج بيوزّع المستجيبين على الفئات حسب إجاباتهم، مع الاحتفاظ بعدد كل فئة. والمتغيرات اللي مالهاش فرق محدد بتختلف بقدر ارتباطها بالمتغير اللي له فرق، زي البيانات الحقيقية. وتقدر تثبّت متغير مرتبط على «لا يوجد فرق».
+- قالب الذكاء الاصطناعي فيه مفتاح جديد `differences` لمتغيرات المقارنة، والمساعد بيتوجّه يضيفه لما يكون عندك فرض عن فروق ديموغرافية.
 
 ### الجديد في 1.3.1
 
@@ -86,9 +92,15 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.3.1
+## SEM Data Simulation Engine — v1.4.0
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.4.0
+
+- Group differences on demographics: a variable with the Group comparison role now has a "Group differences" section where you choose the construct, the size of the difference (small, medium, large, or an exact d or eta squared), which group scores highest, and whether the test should come out significant. Until now groups were assigned apart from the answers, so every t-test and ANOVA came out non-significant, which no real sample does.
+- The answers and the model results do not change: respondents are placed in groups according to their answers, and each group keeps its size. Constructs with no difference of their own differ as far as they correlate with one that has, as in real data, and a correlated construct can be held level with "None".
+- The AI template has a new `differences` key for comparison variables, and the assistant is told to add it when you hypothesise demographic differences.
 
 ### What's new in 1.3.1
 

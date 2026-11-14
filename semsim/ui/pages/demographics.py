@@ -5,7 +5,8 @@ The demographics tab of stage 1.
 
 Each variable is one card: its name, its measurement level and its role at the
 top, then its categories with their percentages, and, for a control variable,
-the paths it sends into the model.  A running total under the percentages
+the paths it sends into the model, or, for a comparison variable, how its
+groups differ on the constructs.  A running total under the percentages
 turns red until they reach 100, because a quota that does not add up is the
 mistake this screen most needs to catch while it is being made.
 """
@@ -20,8 +21,9 @@ from PySide6.QtWidgets import (
 )
 
 from semsim.core.spec import (
-    Bilingual, ControlPath, DemographicCategory, DemographicKind,
-    DemographicRole, DemographicVariable, EffectSize, ModelSpec,
+    GROUP_D_MAX, GROUP_ETA_MAX, Bilingual, ControlPath, DemographicCategory,
+    DemographicKind, DemographicRole, DemographicVariable, EffectSize,
+    GroupDifference, GroupDirection, GroupEffect, ModelSpec,
 )
 from semsim.ui import theme
 from semsim.ui.i18n import STRINGS, translator
@@ -29,7 +31,7 @@ from semsim.ui.pages.base import IdCombo, Row, RowList, construct_choices
 from semsim.ui.state import AppState
 from semsim.ui.widgets.common import (
     Card, EnumCombo, InfoBanner, ScrollPage, TButton, TCheckBox, TKey,
-    ValueSlider, percent_spin, percent_value,
+    ValueSlider, float_spin, percent_spin, percent_value,
 )
 
 MAX_CATEGORIES = 20
@@ -83,6 +85,19 @@ def term_choices(variable: DemographicVariable) -> List[Tuple[str, str]]:
             category=variable.categories[term.category].label.get(lang),
             reference=variable.categories[0].label.get(lang))))
     return out
+
+
+def direction_choices(variable: DemographicVariable) -> List[Tuple[str, str]]:
+    """``[(direction, text)]`` naming the group that scores highest."""
+    lang = translator.language
+    if not variable.categories:
+        return [(d.value, translator.t(f"gdir.{d.value}")) for d in GroupDirection]
+    first = variable.categories[0].label.get(lang)
+    last = variable.categories[-1].label.get(lang)
+    return [(GroupDirection.ASCENDING.value,
+             translator.t("dem.diff.highest", category=last)),
+            (GroupDirection.DESCENDING.value,
+             translator.t("dem.diff.highest", category=first))]
 
 
 class DemographicsEditor(QWidget):
@@ -280,11 +295,15 @@ class DemographicsEditor(QWidget):
                 total=f"{value * 100.0:.1f}"))
 
         term_combos: List[IdCombo] = []
+        direction_combos: List[IdCombo] = []
 
         def refresh_terms() -> None:
             choices = term_choices(variable)
             for combo in term_combos:
                 combo.set_choices(choices)
+            directions = direction_choices(variable)
+            for combo in direction_combos:
+                combo.set_choices(directions)
 
         for category in variable.categories:
             categories.add_row(self._category_row(
@@ -305,6 +324,8 @@ class DemographicsEditor(QWidget):
 
         if variable.role is DemographicRole.CONTROL:
             card.add(self._control_paths(variable, term_combos))
+        elif variable.role is DemographicRole.COMPARISON:
+            card.add(self._group_differences(variable, direction_combos))
 
         def on_name(text: str) -> None:
             variable.name = text.strip()
@@ -489,5 +510,129 @@ class DemographicsEditor(QWidget):
                                   if p is not path]
         self.edit(structural=True)
 
+    # ------------------------------------------------------------------ #
+    # Group differences
+    # ------------------------------------------------------------------ #
 
-__all__ = ["DemographicsEditor", "TEMPLATES", "term_choices"]
+    def _difference_targets(self) -> List[Tuple[str, str]]:
+        covariates = {c.id for c in self.spec.constructs if c.covariate}
+        return construct_choices(self.spec, exclude=covariates)
+
+    def _group_differences(self, variable: DemographicVariable,
+                           direction_combos: List[IdCombo]) -> QWidget:
+        host = QFrame()
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 6, 0, 0)
+        layout.addWidget(TKey("dem.differences", role="h2"))
+        layout.addWidget(TKey("dem.diff.hint", role="hint"))
+        rows = RowList("dem.add_difference", empty_key="dem.no_differences")
+        rows.set_header([("s.target", 4), ("dem.diff.size", 3),
+                         (self._value_header(variable), 2),
+                         ("dem.diff.direction", 4), ("s.significant", 2)])
+        layout.addWidget(rows)
+
+        for difference in variable.group_differences:
+            rows.add_row(self._difference_row(variable, difference,
+                                              direction_combos))
+        rows.add_button.clicked.connect(lambda: self._add_difference(variable))
+        if not self._difference_targets():
+            rows.set_add_blocked("dem.block.no_construct")
+        elif self._free_difference(variable) is None:
+            rows.set_add_blocked("dem.block.all_differences")
+        return host
+
+    @staticmethod
+    def _value_header(variable: DemographicVariable) -> str:
+        return ("dem.diff.value_d" if len(variable.categories) <= 2
+                else "dem.diff.value_eta")
+
+    def _free_difference(self, variable: DemographicVariable) -> Optional[str]:
+        """The first construct the variable has no difference on yet."""
+        used = {d.target for d in variable.group_differences}
+        for target, _text in self._difference_targets():
+            if target not in used:
+                return target
+        return None
+
+    def _add_difference(self, variable: DemographicVariable) -> None:
+        free = self._free_difference(variable)
+        if free is None:
+            return
+        variable.group_differences.append(GroupDifference(target=free))
+        self.edit(structural=True)
+
+    def _difference_row(self, variable: DemographicVariable,
+                        difference: GroupDifference,
+                        direction_combos: List[IdCombo]) -> Row:
+        row = Row()
+        groups = len(variable.categories)
+        target = IdCombo()
+        target.set_choices(self._difference_targets(), keep=difference.target)
+        row.add(target, 4)
+        size = EnumCombo(GroupEffect, "geffect")
+        size.set_value(difference.size)
+        row.add(size, 3)
+        ceiling = GROUP_D_MAX if groups <= 2 else GROUP_ETA_MAX
+        value = float_spin(0.0, ceiling, difference.resolved_value(groups),
+                           decimals=2, step=0.05 if groups <= 2 else 0.01)
+        row.add(value, 2)
+        direction = IdCombo()
+        direction.set_choices(direction_choices(variable),
+                              keep=difference.direction.value)
+        direction_combos.append(direction)
+        row.add(direction, 4)
+        significant = TCheckBox("s.significant")
+        significant.setChecked(difference.wants_significance)
+        significant.setEnabled(difference.size is not GroupEffect.NONE)
+        row.add(significant, 2)
+        row.add_delete_button()
+
+        def on_target(chosen: str) -> None:
+            difference.target = chosen
+            self.edit()
+
+        def on_size(chosen: GroupEffect) -> None:
+            difference.size = chosen
+            if chosen is not GroupEffect.CUSTOM:
+                blocked = value.blockSignals(True)
+                value.setValue(difference.resolved_value(groups))
+                value.blockSignals(blocked)
+            blocked = significant.blockSignals(True)
+            significant.setChecked(difference.wants_significance)
+            significant.setEnabled(chosen is not GroupEffect.NONE)
+            significant.blockSignals(blocked)
+            self.edit()
+
+        def on_value(number: float) -> None:
+            difference.value = float(number)
+            if difference.size is not GroupEffect.CUSTOM:
+                difference.size = GroupEffect.CUSTOM
+                size.set_value(GroupEffect.CUSTOM)
+                significant.setEnabled(True)
+            self.edit()
+
+        def on_direction(chosen: str) -> None:
+            difference.direction = GroupDirection(chosen)
+            self.edit()
+
+        def on_significant(checked: bool) -> None:
+            difference.target_significant = checked
+            self.edit()
+
+        target.value_changed.connect(on_target)
+        size.value_changed.connect(on_size)
+        value.valueChanged.connect(on_value)
+        direction.value_changed.connect(on_direction)
+        significant.toggled.connect(on_significant)
+        row.removed.connect(lambda _r: self._remove_difference(variable, difference))
+        return row
+
+    def _remove_difference(self, variable: DemographicVariable,
+                           difference: GroupDifference) -> None:
+        variable.group_differences = [d for d in variable.group_differences
+                                      if d is not difference]
+        self.edit(structural=True)
+
+
+__all__ = ["DemographicsEditor", "TEMPLATES", "direction_choices",
+           "term_choices"]

@@ -262,9 +262,9 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "its effect from the main relationships."),
     "dem.role_hint.comparison": (
         "يُختبر الفرق بين فئاته على كل متغير كامن: اختبار t لفئتين، وتحليل "
-        "التباين لثلاث فئات فأكثر.",
+        "التباين لثلاث فئات فأكثر. حدّد أدناه الفروق التي تريد أن تظهر.",
         "Its categories are compared on every construct: a t-test for two groups, "
-        "ANOVA for three or more."),
+        "ANOVA for three or more. Set below the differences you want to see."),
     "dem.role_hint.mga": (
         "يُقدَّر النموذج على كل فئة، ويُختبر ثبات التشبعات والمسارات عبر الفئات.",
         "The model is fitted in each category, and the loadings and paths are "
@@ -287,6 +287,39 @@ STRINGS: Dict[str, Tuple[str, str]] = {
                             "Add a structural path first so a dependent construct exists"),
     "dem.block.all_controls": ("كل المسارات الممكنة لهذا المتغير مضافة",
                                "Every possible path of this variable is already added"),
+    "dem.differences": ("الفروق بين الفئات", "Group differences"),
+    "dem.diff.hint": (
+        "يُوزَّع المستجيبون على الفئات حسب إجاباتهم، فتظهر الفروق في اختبار t "
+        "وتحليل التباين دون أن تتغير الإجابات أو نتائج النموذج. الحجم هو d "
+        "لكوهين لفئتين، ومربع إيتا لثلاث فئات فأكثر. المتغيرات التي لا فرق لها "
+        "هنا تختلف بقدر ارتباطها بالمتغيرات التي لها فرق.",
+        "Respondents are placed in groups according to their answers, so the "
+        "differences show in the t-test and ANOVA while the answers and the "
+        "model results stay the same. The size is Cohen's d for two groups and "
+        "eta squared for three or more. Constructs not listed here differ only "
+        "as far as they correlate with those that are."),
+    "dem.add_difference": ("إضافة فرق", "Add difference"),
+    "dem.no_differences": (
+        "لا توجد فروق بعد، فستختلف الفئات بالصدفة فقط وتكون الاختبارات غير "
+        "دالة غالبًا",
+        "No differences yet, so the groups differ only by chance and the tests "
+        "will mostly be non-significant"),
+    "dem.diff.size": ("حجم الفرق", "Size"),
+    "dem.diff.value_d": ("قيمة d", "d value"),
+    "dem.diff.value_eta": ("مربع إيتا", "Eta squared"),
+    "dem.diff.direction": ("الفئة الأعلى", "Highest group"),
+    "dem.diff.highest": ("الأعلى: {category}", "Highest: {category}"),
+    "gdir.ascending": ("الفئة الأخيرة أعلى", "Last category highest"),
+    "gdir.descending": ("الفئة الأولى أعلى", "First category highest"),
+    "geffect.none": ("لا يوجد فرق", "None"),
+    "geffect.small": ("صغير", "Small"),
+    "geffect.medium": ("متوسط", "Medium"),
+    "geffect.large": ("كبير", "Large"),
+    "geffect.custom": ("مخصّص", "Custom"),
+    "dem.block.no_construct": ("أضف متغيرًا كامنًا أولًا",
+                               "Add a construct first"),
+    "dem.block.all_differences": ("لكل متغير كامن فرق بالفعل",
+                                  "Every construct already has a difference"),
     "dem.frequencies": ("التكرارات: النسبة المطلوبة والمحققة",
                         "Frequencies: requested and achieved"),
     "dem.comparisons": ("اختبارات الفروق", "Group comparisons"),

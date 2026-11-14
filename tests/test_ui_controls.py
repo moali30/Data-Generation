@@ -571,3 +571,35 @@ def test_every_stage_has_an_arabic_subtitle():
     for stage in range(1, 7):
         arabic, _english = STRINGS[f"stage.{stage}.subtitle"]
         assert re.search(r"[؀-ۿ]", arabic), stage
+
+
+def test_a_comparison_variable_gets_a_difference_editor(window, errors):
+    from semsim.core.spec import DemographicRole, GroupEffect
+    spec = window.state.spec
+    variable = spec.add_demographic("Gender", [("Male", 0.6), ("Female", 0.4)],
+                                    role=DemographicRole.COMPARISON)
+    editor = window._pages[0]._demographics
+    editor.rebuild()
+    settle()
+    add = [b for b in editor.findChildren(QAbstractButton)
+           if getattr(b, "_key", "") == "dem.add_difference"]
+    assert len(add) == 1
+    add[0].click()
+    settle()
+    assert len(variable.group_differences) == 1
+    difference = variable.group_differences[0]
+    assert difference.target == spec.constructs[0].id
+
+    sizes = [c for c in editor.findChildren(EnumCombo) if c._prefix == "geffect"]
+    assert len(sizes) == 1
+    sizes[0].setCurrentIndex(list(GroupEffect).index(GroupEffect.LARGE))
+    assert difference.size is GroupEffect.LARGE
+    assert difference.resolved_value(2) == pytest.approx(0.8)
+
+    directions = [c for c in editor.findChildren(IdCombo)
+                  if c.combo.findData("ascending") >= 0]
+    assert len(directions) == 1
+    assert "Female" in directions[0].combo.itemText(0)
+    directions[0].combo.setCurrentIndex(directions[0].combo.findData("descending"))
+    assert difference.direction.value == "descending"
+    assert not errors

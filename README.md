@@ -66,6 +66,10 @@ anything.
   المطلوبة. والأسئلة معكوسة الصياغة تُجاب بعكس توزيع متغيرها وبتشبع أضعف قليلًا،
   وتظهر بعض الإجابات عند طرفي المقياس في كل سؤال. وتُسحب الفئات الديموغرافية
   عشوائيًا بالنسب المطلوبة افتراضيًا، فتتفاوت أعدادها كما في عينة حقيقية.
+- **فروق حقيقية بين الفئات.** لمتغير المقارنة تحدد على أي متغير كامن تختلف
+  فئاته، وبأي حجم (d لكوهين أو مربع إيتا)، وأي فئة أعلى، وهل الفرق دال. يُوزَّع
+  المستجيبون على الفئات حسب إجاباتهم مع الاحتفاظ بعدد كل فئة، فتظهر الفروق في
+  اختبار t وتحليل التباين دون أن تتغير الإجابات أو نتائج النموذج.
 
 ### التشغيل
 
@@ -155,6 +159,12 @@ a Monte Carlo study.
   at both ends of the scale. Demographic categories are drawn at random with
   the requested shares by default, so their counts vary the way a real
   sample's do.
+- **Real group differences.** For a comparison variable you set which
+  constructs its groups differ on, by how much (Cohen's d or eta squared),
+  which group scores highest and whether the difference is significant.
+  Respondents are placed in groups by their answers, each group keeping its
+  size, so the t-test and ANOVA show the differences while the answers and
+  the model results stay exactly as they were.
 
 ### Running it
 
@@ -219,6 +229,8 @@ simulated is the model you re-estimate.
 ## References
 
 - Browne, M. W., & Cudeck, R. (1993). Alternative ways of assessing model fit.
+- Cohen, J. (1988). *Statistical Power Analysis for the Behavioral
+  Sciences* (2nd ed.). Erlbaum.
 - Cudeck, R., & Browne, M. W. (1992). Constructing a covariance matrix that
   yields a specified minimizer and a specified minimum discrepancy function
   value. *Psychometrika, 57*, 357–369.

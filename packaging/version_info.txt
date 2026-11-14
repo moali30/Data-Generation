@@ -3,8 +3,8 @@
 # properties dialog shows a real product name instead of "python".
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 3, 1, 0),
-    prodvers=(1, 3, 1, 0),
+    filevers=(1, 4, 0, 0),
+    prodvers=(1, 4, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -18,12 +18,12 @@ VSVersionInfo(
         '040904B0',
         [StringStruct('CompanyName', 'SEM Data Simulation Engine'),
          StringStruct('FileDescription', 'SEM Data Simulation Engine'),
-         StringStruct('FileVersion', '1.3.1'),
+         StringStruct('FileVersion', '1.4.0'),
          StringStruct('InternalName', 'SEMSimulator'),
          StringStruct('LegalCopyright', 'MIT Licence'),
          StringStruct('OriginalFilename', 'SEMSimulator.exe'),
          StringStruct('ProductName', 'SEM Data Simulation Engine'),
-         StringStruct('ProductVersion', '1.3.1')])
+         StringStruct('ProductVersion', '1.4.0')])
     ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]

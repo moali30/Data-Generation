@@ -182,6 +182,42 @@ class DemographicRole(str, Enum):
     MGA = "mga"
 
 
+class GroupEffect(str, Enum):
+    """Conventional sizes of a difference between groups (Cohen, 1988).
+
+    Two groups are sized by Cohen's d and three or more by eta squared, the
+    measures the comparison table reports for each.
+    """
+
+    NONE = "none"
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
+    CUSTOM = "custom"
+
+    def default_value(self, n_groups: int) -> float:
+        """The size's conventional value: d for two groups, eta squared otherwise."""
+        if n_groups <= 2:
+            return {GroupEffect.NONE: 0.0, GroupEffect.SMALL: 0.20,
+                    GroupEffect.MEDIUM: 0.50, GroupEffect.LARGE: 0.80,
+                    GroupEffect.CUSTOM: 0.30}[self]
+        return {GroupEffect.NONE: 0.0, GroupEffect.SMALL: 0.01,
+                GroupEffect.MEDIUM: 0.06, GroupEffect.LARGE: 0.14,
+                GroupEffect.CUSTOM: 0.04}[self]
+
+
+class GroupDirection(str, Enum):
+    """Which end of a comparison variable's category list scores higher."""
+
+    ASCENDING = "ascending"     # the last category scores highest
+    DESCENDING = "descending"   # the first category scores highest
+
+
+#: Largest d and eta squared a group difference may ask for.
+GROUP_D_MAX = 2.0
+GROUP_ETA_MAX = 0.40
+
+
 class PowerMethod(str, Enum):
     RMSEA_CLOSE_FIT = "rmsea_close_fit"   # MacCallum, Browne & Sugawara (1996)
     SATORRA_SARIS = "satorra_saris"       # power for a single parameter
@@ -707,6 +743,56 @@ class ControlPath:
         return self.effect_size.default_coefficient
 
 
+@dataclass
+class GroupDifference:
+    """How the groups of one comparison variable differ on one construct.
+
+    The size is Cohen's d when the variable has two categories and eta
+    squared when it has three or more.  The groups are ordered along the
+    category list, so with three or more the means rise (or fall) from the
+    first category to the last.
+    """
+
+    id: str = field(default_factory=lambda: _new_id("gd"))
+    target: str = ""        # construct id
+    size: GroupEffect = GroupEffect.SMALL
+    #: Read only when ``size`` is :attr:`GroupEffect.CUSTOM`.
+    value: float = 0.30
+    direction: GroupDirection = GroupDirection.ASCENDING
+    target_significant: bool = True
+
+    def resolved_value(self, n_groups: int) -> float:
+        """The requested d (two groups) or eta squared (three or more)."""
+        raw = (float(self.value) if self.size is GroupEffect.CUSTOM
+               else self.size.default_value(n_groups))
+        ceiling = GROUP_D_MAX if n_groups <= 2 else GROUP_ETA_MAX
+        return min(max(raw, 0.0), ceiling)
+
+    def eta_squared(self, shares: Sequence[float]) -> float:
+        """The requested difference as a share of the construct's variance.
+
+        Parameters
+        ----------
+        shares : sequence of float
+            The groups' shares of the sample, summing to one.
+
+        References
+        ----------
+        Cohen, J. (1988). *Statistical Power Analysis for the Behavioral
+            Sciences* (2nd ed.), chapter 2. Erlbaum.
+        """
+        value = self.resolved_value(len(shares))
+        if len(shares) > 2:
+            return value
+        balance = float(shares[0]) * float(shares[1])
+        return value * value * balance / (1.0 + value * value * balance)
+
+    @property
+    def wants_significance(self) -> bool:
+        """Whether the sample should show the difference as significant."""
+        return self.target_significant and self.size is not GroupEffect.NONE
+
+
 @dataclass(frozen=True)
 class DemographicTerm:
     """One column a demographic variable contributes to a regression.
@@ -734,6 +820,8 @@ class DemographicVariable:
     categories: List[DemographicCategory] = field(default_factory=list)
     #: Used only when ``role is CONTROL``.
     control_paths: List[ControlPath] = field(default_factory=list)
+    #: Used only when ``role is COMPARISON``.
+    group_differences: List[GroupDifference] = field(default_factory=list)
 
     @property
     def is_dummy_coded(self) -> bool:
@@ -1379,6 +1467,29 @@ class ModelSpec:
         variable.control_paths.append(path)
         return path
 
+    def add_group_difference(
+        self,
+        variable: DemographicVariable,
+        target: str,
+        *,
+        size: GroupEffect = GroupEffect.SMALL,
+        value: Optional[float] = None,
+        direction: GroupDirection = GroupDirection.ASCENDING,
+        target_significant: bool = True,
+    ) -> GroupDifference:
+        """Make a comparison variable's groups differ on a construct (id or name).
+
+        ``value`` is an exact d (two categories) or eta squared (three or
+        more) and overrides ``size``.
+        """
+        difference = GroupDifference(
+            target=self._resolve_construct_ref(target),
+            size=GroupEffect.CUSTOM if value is not None else size,
+            value=float(value) if value is not None else 0.30,
+            direction=direction, target_significant=target_significant)
+        variable.group_differences.append(difference)
+        return difference
+
     def ensure_unique_item_names(self) -> None:
         """Make every exported column name unique and syntactically safe."""
         seen: Dict[str, int] = {}
@@ -1427,5 +1538,7 @@ __all__ = [
     "FitTargetSpec", "SignificanceTargetSpec", "PowerSpec",
     "AnalysisSpec", "ExportSpec", "ModelSpec",
     "DemographicKind", "DemographicRole", "DemographicCategory",
+    "GroupEffect", "GroupDirection", "GroupDifference", "GROUP_D_MAX",
+    "GROUP_ETA_MAX",
     "DemographicTerm", "DemographicVariable", "ControlPath",
 ]
