@@ -10,26 +10,62 @@ quota design reports.  *Weighted random sampling* draws each respondent
 independently with the shares as weights, so the realised split varies from
 sample to sample the way it does under probability sampling.
 
-Assignments for different variables are independent, and they come from a
-stream of their own, so adding a demographic variable never changes the
-questionnaire answers of a model that gains no control path.
+Assignments for different variables are independent unless the researcher
+links them.  Linked variables are cut from correlated latent scores (see
+:mod:`semsim.core.associations`), so age goes with experience the way it does
+in a real sample, and when significance targeting is on the scores are
+redrawn until each chi-square test is significant or not as asked.  Every
+draw comes from a stream of its own, so adding a demographic variable never
+changes the questionnaire answers of a model that gains no control path, and
+linking two variables never changes the others.
 """
 
 from __future__ import annotations
 
-from typing import List
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
+from semsim.core.associations import (
+    LatentStructure, chi_square, latent_structure, valid_associations,
+)
 from semsim.core.errors import SpecificationError
 from semsim.core.spec import DemographicRole, DemographicVariable, ModelSpec
 
 #: Mixed into the seed so demographics draw from their own random stream.
 _STREAM = 104729
 
+#: Most redraws spent on making the associations' significance match.
+MAX_ATTEMPTS = 200
+
 __all__ = ["allocate_quota", "draw_categories", "draw_demographics",
-           "demographic_stream"]
+           "demographic_stream", "DemographicDraw", "draw_demographics_jointly",
+           "MAX_ATTEMPTS"]
+
+
+@dataclass
+class DemographicDraw:
+    """Drawn demographic columns and the latent scores behind linked ones.
+
+    Attributes
+    ----------
+    frame : pandas.DataFrame
+        The columns :func:`draw_demographics` returns.
+    structure : LatentStructure
+        The latent correlations of the associated variables.
+    scores : numpy.ndarray or None
+        ``n x m`` latent scores of those variables, in ``structure.ids``
+        order; ``None`` when nothing is associated.
+    notes : list of str
+        Bilingual remarks for the run's warnings.
+    """
+
+    frame: pd.DataFrame
+    structure: LatentStructure = field(default_factory=LatentStructure)
+    scores: Optional[np.ndarray] = None
+    notes: List[str] = field(default_factory=list)
 
 
 def demographic_stream(seed: int) -> np.random.Generator:
@@ -123,6 +159,119 @@ def draw_categories(variable: DemographicVariable, n: int,
     return rng.choice(np.arange(1, k + 1), size=int(n), p=shares)
 
 
+def _codes_from_scores(score: np.ndarray, variable: DemographicVariable,
+                       exact: bool) -> np.ndarray:
+    """Categories as slices of a latent score, in list order."""
+    shares = np.asarray(variable.normalised_proportions())
+    if exact:
+        counts = allocate_quota(list(shares), score.size)
+        codes = np.empty(score.size, dtype=int)
+        codes[np.argsort(score, kind="stable")] = np.repeat(
+            np.arange(1, shares.size + 1), counts)
+        return codes
+    from scipy import stats as _stats
+    cuts = _stats.norm.ppf(np.clip(np.cumsum(shares)[:-1], 1e-12, 1 - 1e-12))
+    return np.searchsorted(cuts, score, side="right").astype(int) + 1
+
+
+def _draw_linked(spec: ModelSpec, n: int, seed: int
+                 ) -> "tuple[Dict[str, np.ndarray], LatentStructure, Optional[np.ndarray], List[str]]":
+    """Codes of every associated variable, cut from correlated latent scores."""
+    structure = latent_structure(spec)
+    if not structure.ids:
+        return {}, structure, None, []
+    variables = {v.id: v for v in spec.demographics}
+    associations = valid_associations(spec)
+    rng = np.random.default_rng([abs(int(seed)), _STREAM, 1])
+    factor = np.linalg.cholesky(structure.matrix)
+    attempts = MAX_ATTEMPTS if spec.significance_target.enabled else 1
+    alpha = float(spec.significance_target.alpha)
+    best = None
+    for _ in range(attempts):
+        scores = rng.standard_normal((int(n), len(structure.ids))) @ factor.T
+        codes = {vid: _codes_from_scores(scores[:, j], variables[vid],
+                                         spec.quota_exact)
+                 for j, vid in enumerate(structure.ids)}
+        hits = 0
+        for association in associations:
+            first, second = variables[association.first], variables[association.second]
+            test = chi_square(codes[first.id], codes[second.id],
+                              len(first.categories), len(second.categories))
+            if test is None or (test[2] < alpha) == association.wants_significance:
+                hits += 1
+        if best is None or hits > best[0]:
+            best = (hits, codes, scores)
+        if hits == len(associations):
+            break
+    notes = list(structure.notes)
+    if attempts > 1 and best[0] < len(associations):
+        notes.append(
+            "ASSOCIATION_SIGNIFICANCE: not every association between the "
+            "demographic variables reached the significance asked of it in "
+            "this sample; a larger sample or a stronger association would. | "
+            "لم تصل كل الارتباطات بين المتغيرات الديموغرافية إلى الدلالة "
+            "المطلوبة في هذه العينة؛ عينة أكبر أو ارتباط أقوى يحقق ذلك.")
+    return best[1], structure, best[2], notes
+
+
+def draw_demographics_jointly(spec: ModelSpec, n: int, seed: int
+                              ) -> DemographicDraw:
+    """Draw every demographic variable, linked ones together.
+
+    Parameters
+    ----------
+    spec : ModelSpec
+        The model; only its demographic section is read.
+    n : int
+        Sample size.
+    seed : int
+        The run's seed.
+
+    Returns
+    -------
+    DemographicDraw
+        The columns, and the latent scores the group-difference step needs
+        to keep an association when it regroups a comparison variable.
+
+    Raises
+    ------
+    semsim.core.errors.SpecificationError
+        If a variable has no categories.
+
+    References
+    ----------
+    Cohen, J., Cohen, P., West, S. G., & Aiken, L. S. (2003). *Applied
+        Multiple Regression/Correlation Analysis* (3rd ed.), chapter 8.
+        Erlbaum.
+    Nelsen, R. B. (2006). *An Introduction to Copulas* (2nd ed.). Springer.
+    """
+    rng = demographic_stream(seed)
+    drawn: Dict[str, np.ndarray] = {}
+    for variable in spec.demographics:
+        if not variable.categories:
+            raise SpecificationError(
+                f"The demographic variable {variable.name!r} has no categories.",
+                f"المتغير الديموغرافي «{variable.name}» ليس له فئات.",
+                variable=variable.name)
+        # Every variable consumes its draw, linked or not, so linking two
+        # variables leaves the others exactly as they were.
+        drawn[variable.id] = draw_categories(variable, n, rng,
+                                             exact=spec.quota_exact)
+    linked, structure, scores, notes = _draw_linked(spec, n, seed)
+    drawn.update(linked)
+
+    columns = {}
+    for variable in spec.demographics:
+        codes = drawn[variable.id]
+        columns[variable.name] = codes
+        if variable.role is DemographicRole.CONTROL and variable.is_dummy_coded:
+            for term in variable.terms():
+                columns[term.column] = (codes == term.category + 1).astype(int)
+    frame = pd.DataFrame(columns, index=range(int(n)))
+    return DemographicDraw(frame=frame, structure=structure, scores=scores,
+                           notes=notes)
+
+
 def draw_demographics(spec: ModelSpec, n: int, seed: int) -> pd.DataFrame:
     """Draw every demographic variable for one simulated sample.
 
@@ -152,17 +301,4 @@ def draw_demographics(spec: ModelSpec, n: int, seed: int) -> pd.DataFrame:
         Multiple Regression/Correlation Analysis* (3rd ed.), chapter 8.
         Erlbaum.
     """
-    rng = demographic_stream(seed)
-    columns = {}
-    for variable in spec.demographics:
-        if not variable.categories:
-            raise SpecificationError(
-                f"The demographic variable {variable.name!r} has no categories.",
-                f"المتغير الديموغرافي «{variable.name}» ليس له فئات.",
-                variable=variable.name)
-        codes = draw_categories(variable, n, rng, exact=spec.quota_exact)
-        columns[variable.name] = codes
-        if variable.role is DemographicRole.CONTROL and variable.is_dummy_coded:
-            for term in variable.terms():
-                columns[term.column] = (codes == term.category + 1).astype(int)
-    return pd.DataFrame(columns, index=range(int(n)))
+    return draw_demographics_jointly(spec, n, seed).frame

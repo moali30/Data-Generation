@@ -70,6 +70,10 @@ anything.
   فئاته، وبأي حجم (d لكوهين أو مربع إيتا)، وأي فئة أعلى، وهل الفرق دال. يُوزَّع
   المستجيبون على الفئات حسب إجاباتهم مع الاحتفاظ بعدد كل فئة، فتظهر الفروق في
   اختبار t وتحليل التباين دون أن تتغير الإجابات أو نتائج النموذج.
+- **ارتباط بين المتغيرات الديموغرافية.** تربط متغيرين يسيران معًا في
+  العينات الحقيقية، كالعمر وسنوات الخبرة، بقوة تحددها بمعامل كرامر V. تُقطع
+  فئات كل متغير من درجة كامنة مرتبطة بدرجات المتغيرات الأخرى (رابطة جاوس)،
+  فيحتفظ كل متغير بنسب فئاته ويظهر الارتباط في اختبار كاي تربيع.
 
 ### التشغيل
 
@@ -165,6 +169,11 @@ a Monte Carlo study.
   Respondents are placed in groups by their answers, each group keeping its
   size, so the t-test and ANOVA show the differences while the answers and
   the model results stay exactly as they were.
+- **Associated demographics.** Link two variables that go together in real
+  samples, such as age and years of experience, at a Cramér's V you set.
+  Each variable's categories are cut from a latent score correlated with
+  the others' (a Gaussian copula), so every variable keeps its shares and
+  the chi-square test shows the link.
 
 ### Running it
 
@@ -231,6 +240,8 @@ simulated is the model you re-estimate.
 - Browne, M. W., & Cudeck, R. (1993). Alternative ways of assessing model fit.
 - Cohen, J. (1988). *Statistical Power Analysis for the Behavioral
   Sciences* (2nd ed.). Erlbaum.
+- Cramér, H. (1946). *Mathematical Methods of Statistics*. Princeton
+  University Press.
 - Cudeck, R., & Browne, M. W. (1992). Constructing a covariance matrix that
   yields a specified minimizer and a specified minimum discrepancy function
   value. *Psychometrika, 57*, 357–369.
@@ -245,6 +256,7 @@ simulated is the model you re-estimate.
 - MacCallum, R. C., Browne, M. W., & Sugawara, H. M. (1996). Power analysis and
   determination of sample size for covariance structure modeling.
   *Psychological Methods, 1*, 130–149.
+- Nelsen, R. B. (2006). *An Introduction to Copulas* (2nd ed.). Springer.
 - Muthén, L. K., & Muthén, B. O. (2002). How to use a Monte Carlo study to
   decide on sample size and determine power.
 - Samejima, F. (1969). Estimation of latent ability using a response pattern

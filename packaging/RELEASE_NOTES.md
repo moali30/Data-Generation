@@ -1,8 +1,15 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.4.0
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.5.0
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.5.0
+
+- الارتباط بين المتغيرات الديموغرافية: كارت جديد في تبويب الديموغرافيا تربط فيه متغيرين بيمشوا مع بعض في العينات الحقيقية (السن وسنين الخبرة، المؤهل والمستوى الوظيفي). بتختار قوة الارتباط (ضعيف، متوسط، قوي، أو قيمة V لكرامر بالظبط)، والفئات اللي بتجتمع مع بعض، وهل اختبار كاي تربيع مطلوب يطلع دال. قبل كده كل متغير كان مستقل تمامًا عن التاني، فكاي تربيع بينهم كان بيطلع غير دال دايمًا.
+- كل متغير بيحافظ على نِسب فئاته، والمتغيرات اللي مش مربوطة والإجابات نفسها مش بتتغير. والمتغيرات المربوطة بطريق غير مباشر بترتبط بالقدر اللي بتفرضه الروابط (السن مع الخبرة والخبرة مع الوظيفة، فالسن بيرتبط بالوظيفة شوية).
+- لو المتغيرين المربوطين ضابطين، النموذج بقى يعرف الارتباط بينهم فعلًا، فالمعايرة بتوصل لهدف المطابقة. ولو متغير المقارنة ليه فروق ومربوط بمتغير تاني، الارتباط بيفضل موجود بعد توزيع الفروق.
+- النتائج والتقرير فيهم جدول جديد لاختبار كاي تربيع ومعامل V لكل ارتباط، وقالب الذكاء الاصطناعي فيه مفتاح جديد `associations`.
 
 ### الجديد في 1.4.0
 
@@ -92,9 +99,16 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.4.0
+## SEM Data Simulation Engine — v1.5.0
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.5.0
+
+- Associations between demographic variables: a new card on the demographics tab links two variables that go together in real samples (age and years of experience, education and job level). You choose the strength (weak, moderate, strong, or an exact Cramér's V), which categories go together, and whether the chi-square test should be significant. Until now every variable was independent of every other, so every chi-square between them came out non-significant.
+- Every variable keeps its category shares, and the unlinked variables and the answers do not change. Variables linked only through others go together as far as the links imply (age with experience and experience with job level makes age go a little with job level).
+- When both linked variables are controls, the model now knows how they correlate, so calibration still reaches its fit target. A comparison variable with group differences keeps its association after it is regrouped.
+- Results and the report gain a chi-square and Cramér's V table for each link, and the AI template a new `associations` key.
 
 ### What's new in 1.4.0
 

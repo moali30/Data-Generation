@@ -6,7 +6,8 @@ The demographics tab of stage 1.
 Each variable is one card: its name, its measurement level and its role at the
 top, then its categories with their percentages, and, for a control variable,
 the paths it sends into the model, or, for a comparison variable, how its
-groups differ on the constructs.  A running total under the percentages
+groups differ on the constructs.  A last card links pairs of variables that
+go together, such as age and experience.  A running total under the percentages
 turns red until they reach 100, because a quota that does not add up is the
 mistake this screen most needs to catch while it is being made.
 """
@@ -21,9 +22,10 @@ from PySide6.QtWidgets import (
 )
 
 from semsim.core.spec import (
-    GROUP_D_MAX, GROUP_ETA_MAX, Bilingual, ControlPath, DemographicCategory,
-    DemographicKind, DemographicRole, DemographicVariable, EffectSize,
-    GroupDifference, GroupDirection, GroupEffect, ModelSpec,
+    ASSOCIATION_V_MAX, GROUP_D_MAX, GROUP_ETA_MAX, AssociationDirection,
+    AssociationStrength, Bilingual, ControlPath, DemographicAssociation,
+    DemographicCategory, DemographicKind, DemographicRole, DemographicVariable,
+    EffectSize, GroupDifference, GroupDirection, GroupEffect, ModelSpec,
 )
 from semsim.ui import theme
 from semsim.ui.i18n import STRINGS, translator
@@ -100,6 +102,25 @@ def direction_choices(variable: DemographicVariable) -> List[Tuple[str, str]]:
              translator.t("dem.diff.highest", category=first))]
 
 
+def together_choices(spec: ModelSpec, association: DemographicAssociation
+                     ) -> List[Tuple[str, str]]:
+    """``[(direction, text)]`` naming the categories that go together."""
+    lang = translator.language
+    first = spec.demographic(association.first)
+    second = spec.demographic(association.second)
+    if (first is None or second is None or not first.categories
+            or not second.categories):
+        return [(d.value, translator.t(f"adir.{d.value}"))
+                for d in AssociationDirection]
+    a = first.categories[-1].label.get(lang)
+    return [(AssociationDirection.POSITIVE.value, translator.t(
+                "dem.assoc.together", a=a,
+                b=second.categories[-1].label.get(lang))),
+            (AssociationDirection.NEGATIVE.value, translator.t(
+                "dem.assoc.together", a=a,
+                b=second.categories[0].label.get(lang)))]
+
+
 class DemographicsEditor(QWidget):
     """Define demographic variables, their quotas and their roles."""
 
@@ -141,6 +162,15 @@ class DemographicsEditor(QWidget):
         self.cards_layout.setContentsMargins(0, 0, 0, 0)
         self.cards_layout.setSpacing(10)
         self.scroll.add(self.host)
+        self.associations_card = Card("dem.associations_card")
+        self.associations_card.add(TKey("dem.assoc.hint", role="hint"))
+        self.associations_host = QWidget()
+        self.associations_layout = QVBoxLayout(self.associations_host)
+        self.associations_layout.setContentsMargins(0, 0, 0, 0)
+        self.associations_card.add(self.associations_host)
+        self.scroll.add(self.associations_card)
+        self._association_list: Optional[RowList] = None
+        self._together_combos: List[Tuple[IdCombo, DemographicAssociation]] = []
         self.scroll.add_stretch()
 
         translator.language_changed.connect(lambda _l: self.rebuild())
@@ -175,6 +205,7 @@ class DemographicsEditor(QWidget):
                 self._cards.append(card)
                 self.cards_layout.addWidget(card)
             self.empty.setVisible(not self.spec.demographics)
+            self._build_associations()
         finally:
             self._updating = False
 
@@ -236,6 +267,9 @@ class DemographicsEditor(QWidget):
     def _remove_variable(self, variable: DemographicVariable) -> None:
         self.spec.demographics = [v for v in self.spec.demographics
                                   if v is not variable]
+        self.spec.demographic_associations = [
+            a for a in self.spec.demographic_associations
+            if variable.id not in (a.first, a.second)]
         self.edit(structural=True)
 
     # ------------------------------------------------------------------ #
@@ -304,6 +338,7 @@ class DemographicsEditor(QWidget):
             directions = direction_choices(variable)
             for combo in direction_combos:
                 combo.set_choices(directions)
+            self._refresh_together()
 
         for category in variable.categories:
             categories.add_row(self._category_row(
@@ -633,6 +668,136 @@ class DemographicsEditor(QWidget):
                                       if d is not difference]
         self.edit(structural=True)
 
+    # ------------------------------------------------------------------ #
+    # Associations between variables
+    # ------------------------------------------------------------------ #
+
+    def _variable_choices(self) -> List[Tuple[str, str]]:
+        lang = translator.language
+        return [(v.id, v.label.get(lang) or v.name) for v in self.spec.demographics]
+
+    def _free_pair(self) -> Optional[Tuple[str, str]]:
+        """The first pair of variables not linked yet."""
+        used = {frozenset((a.first, a.second))
+                for a in self.spec.demographic_associations}
+        ids = [v.id for v in self.spec.demographics]
+        for i, first in enumerate(ids):
+            for second in ids[i + 1:]:
+                if frozenset((first, second)) not in used:
+                    return first, second
+        return None
+
+    def _refresh_together(self) -> None:
+        for combo, association in self._together_combos:
+            combo.set_choices(together_choices(self.spec, association),
+                              keep=association.direction.value)
+
+    def _build_associations(self) -> None:
+        if self._association_list is not None:
+            self.associations_layout.removeWidget(self._association_list)
+            self._association_list.setParent(None)
+            self._association_list.deleteLater()
+        self._together_combos = []
+        rows = RowList("dem.add_association", empty_key="dem.no_associations")
+        rows.set_header([("dem.assoc.first", 3), ("dem.assoc.second", 3),
+                         ("dem.assoc.strength", 3), ("dem.assoc.value", 2),
+                         ("dem.assoc.direction", 4), ("s.significant", 2)])
+        for association in self.spec.demographic_associations:
+            rows.add_row(self._association_row(association))
+        rows.add_button.clicked.connect(self._add_association)
+        if len(self.spec.demographics) < 2:
+            rows.set_add_blocked("dem.block.two_variables")
+        elif self._free_pair() is None:
+            rows.set_add_blocked("dem.block.all_associations")
+        self.associations_layout.addWidget(rows)
+        self._association_list = rows
+
+    def _add_association(self) -> None:
+        pair = self._free_pair()
+        if pair is None:
+            return
+        self.spec.demographic_associations.append(
+            DemographicAssociation(first=pair[0], second=pair[1]))
+        self.edit(structural=True)
+
+    def _association_row(self, association: DemographicAssociation) -> Row:
+        row = Row()
+        choices = self._variable_choices()
+        first = IdCombo()
+        first.set_choices(choices, keep=association.first)
+        row.add(first, 3)
+        second = IdCombo()
+        second.set_choices(choices, keep=association.second)
+        row.add(second, 3)
+        strength = EnumCombo(AssociationStrength, "astrength")
+        strength.set_value(association.strength)
+        row.add(strength, 3)
+        value = float_spin(0.0, ASSOCIATION_V_MAX, association.resolved_value(),
+                           decimals=2, step=0.05)
+        row.add(value, 2)
+        together = IdCombo()
+        together.set_choices(together_choices(self.spec, association),
+                             keep=association.direction.value)
+        self._together_combos.append((together, association))
+        row.add(together, 4)
+        significant = TCheckBox("s.significant")
+        significant.setChecked(association.wants_significance)
+        significant.setEnabled(association.strength is not AssociationStrength.NONE)
+        row.add(significant, 2)
+        row.add_delete_button()
+
+        def on_first(chosen: str) -> None:
+            association.first = chosen
+            self._refresh_together()
+            self.edit()
+
+        def on_second(chosen: str) -> None:
+            association.second = chosen
+            self._refresh_together()
+            self.edit()
+
+        def on_strength(chosen: AssociationStrength) -> None:
+            association.strength = chosen
+            if chosen is not AssociationStrength.CUSTOM:
+                blocked = value.blockSignals(True)
+                value.setValue(association.resolved_value())
+                value.blockSignals(blocked)
+            blocked = significant.blockSignals(True)
+            significant.setChecked(association.wants_significance)
+            significant.setEnabled(chosen is not AssociationStrength.NONE)
+            significant.blockSignals(blocked)
+            self.edit()
+
+        def on_value(number: float) -> None:
+            association.value = float(number)
+            if association.strength is not AssociationStrength.CUSTOM:
+                association.strength = AssociationStrength.CUSTOM
+                strength.set_value(AssociationStrength.CUSTOM)
+                significant.setEnabled(True)
+            self.edit()
+
+        def on_together(chosen: str) -> None:
+            association.direction = AssociationDirection(chosen)
+            self.edit()
+
+        def on_significant(checked: bool) -> None:
+            association.target_significant = checked
+            self.edit()
+
+        first.value_changed.connect(on_first)
+        second.value_changed.connect(on_second)
+        strength.value_changed.connect(on_strength)
+        value.valueChanged.connect(on_value)
+        together.value_changed.connect(on_together)
+        significant.toggled.connect(on_significant)
+        row.removed.connect(lambda _r: self._remove_association(association))
+        return row
+
+    def _remove_association(self, association: DemographicAssociation) -> None:
+        self.spec.demographic_associations = [
+            a for a in self.spec.demographic_associations if a is not association]
+        self.edit(structural=True)
+
 
 __all__ = ["DemographicsEditor", "TEMPLATES", "direction_choices",
-           "term_choices"]
+           "term_choices", "together_choices"]

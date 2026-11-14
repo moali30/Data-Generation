@@ -2010,6 +2010,7 @@ def _check_demographics(spec: ModelSpec, out: List[Diagnostic]) -> None:
     variables = list(getattr(spec, "demographics", None) or [])
     if not variables:
         return
+    _check_associations(spec, out)
     n = int(getattr(getattr(spec, "power", None), "n", 0) or 0)
     taken: Dict[str, str] = {}
     for item in spec.all_items():
@@ -2155,6 +2156,72 @@ def _check_demographics(spec: ModelSpec, out: List[Diagnostic]) -> None:
                     "or more.",
                     f"أحد مسارات «{shown}» معامله المعياري 1 أو أكثر.",
                     where=path.id))
+
+
+def _check_associations(spec: ModelSpec, out: List[Diagnostic]) -> None:
+    """Links between two variables that exist, once each, within reach."""
+    associations = list(getattr(spec, "demographic_associations", None) or [])
+    if not associations:
+        return
+    from semsim.core.associations import latent_structure, reachable_v
+    variables = {v.id: v for v in spec.demographics}
+    seen = set()
+    for association in associations:
+        first = variables.get(association.first)
+        second = variables.get(association.second)
+        if first is None or second is None or first is second:
+            out.append(_d(
+                Severity.ERROR, "ASSOCIATION_BAD_VARIABLE",
+                "An association does not join two different demographic "
+                "variables.",
+                "أحد الارتباطات لا يربط بين متغيرين ديموغرافيين مختلفين.",
+                where=association.id,
+                hint_en="Choose two variables or remove the association.",
+                hint_ar="اختر متغيرين أو احذف الارتباط."))
+            continue
+        pair = frozenset((first.id, second.id))
+        shown = f"{first.name} - {second.name}"
+        if pair in seen:
+            out.append(_d(
+                Severity.ERROR, "ASSOCIATION_DUPLICATE",
+                f"'{shown}' are linked twice.",
+                f"المتغيران «{shown}» مربوطان مرتين.",
+                where=association.id,
+                hint_en="Keep one of the two associations.",
+                hint_ar="أبقِ ارتباطًا واحدًا منهما."))
+            continue
+        seen.add(pair)
+        if len(first.categories) < 2 or len(second.categories) < 2:
+            continue
+        wanted = association.resolved_value()
+        reach = reachable_v(first.normalised_proportions(),
+                            second.normalised_proportions())
+        if wanted > reach + 1e-6:
+            out.append(_d(
+                Severity.WARNING, "ASSOCIATION_OUT_OF_REACH",
+                f"With these category shares, '{shown}' can reach a Cramér's V "
+                f"of about {reach:.2f}, not {wanted:.2f}.",
+                f"مع نِسب الفئات الحالية يصل ارتباط «{shown}» إلى معامل V "
+                f"قدره {reach:.2f} تقريبًا، وليس {wanted:.2f}.",
+                where=association.id,
+                hint_en="Lower the strength, or bring the shares closer to "
+                        "each other.",
+                hint_ar="خفّض قوة الارتباط، أو قرّب نِسب الفئات من بعضها."))
+    try:
+        notes = latent_structure(spec).notes
+    except Exception:
+        notes = []
+    if notes:
+        out.append(_d(
+            Severity.WARNING, "ASSOCIATIONS_INCONSISTENT",
+            "The associations between the demographic variables cannot all "
+            "hold together, so they will be softened.",
+            "لا يمكن أن تتحقق كل الارتباطات بين المتغيرات الديموغرافية معًا، "
+            "فستُخفَّف.",
+            hint_en="A strong link from A to B and from B to C implies a link "
+                    "from A to C; avoid asking for the opposite.",
+            hint_ar="الارتباط القوي بين أ وب وبين ب وج يفرض ارتباطًا بين أ "
+                    "وج؛ تجنّب طلب عكسه."))
 
 
 def _check_group_differences(spec: ModelSpec, variable: Any, shown: str,

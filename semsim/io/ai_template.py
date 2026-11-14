@@ -28,6 +28,8 @@ from semsim.core.errors import SemSimError
 from semsim.core.spec import (
     Bilingual, Construct, ConstructOrder, ConstructRole, DemographicCategory,
     DemographicKind, DemographicRole, DemographicVariable, Dimension,
+    ASSOCIATION_V_MAX, AssociationDirection, AssociationStrength,
+    DemographicAssociation,
     EffectSize, FitLevel, GROUP_D_MAX, GROUP_ETA_MAX, GroupDifference,
     GroupDirection, GroupEffect, HETEROGENEITY_PRESETS, IndirectEffect, Item,
     LatentCovariance,
@@ -242,6 +244,19 @@ _INSTRUCTIONS: Dict[str, Any] = {
         "difference. Real demographic differences are mostly small, so use "
         "small unless the user says otherwise. Constructs without a listed "
         "difference differ only as far as they correlate with a listed one.",
+        "'associations' (inside 'demographics', next to 'variables') links two "
+        "demographic variables that go together in real samples, such as age "
+        "and years of experience, or education and job level. 'between' names "
+        "the two variables. 'strength' weak, moderate or strong is a Cramér's "
+        "V of 0.10, 0.30 or 0.50; give 'value' instead only for an exact V. "
+        "'direction' positive puts the last categories of both lists together "
+        "(older with more experienced); negative puts the last category of "
+        "the first with the first category of the second. 'significant' "
+        "works as for differences; strength none keeps the two independent.",
+        "Add an association when the user describes one or when it is "
+        "obvious from the categories (age bands and experience bands are "
+        "strongly linked). Leave unrelated variables such as gender and age "
+        "unlinked.",
     ],
     "defaults": [
         "'sample_size' is required. If the user gives no number, use 300 for "
@@ -269,6 +284,9 @@ _ALLOWED_VALUES: Dict[str, Any] = {
     "demographics.differences.size": [g.value for g in GroupEffect
                                       if g is not GroupEffect.CUSTOM],
     "demographics.differences.direction": [d.value for d in GroupDirection],
+    "demographics.associations.strength": [a.value for a in AssociationStrength
+                                           if a is not AssociationStrength.CUSTOM],
+    "demographics.associations.direction": [d.value for d in AssociationDirection],
     "fit_target.level": list(_FIT_LEVELS),
     "realism.missing_mechanism": [MissingMechanism.MCAR.value,
                                   MissingMechanism.MAR.value],
@@ -389,6 +407,9 @@ def build_template() -> Dict[str, Any]:
                                   "direction": "ascending",
                                   "significant": True}]},
             ],
+            "associations": [{"between": ["Education", "Sector"],
+                              "strength": "weak", "direction": "negative",
+                              "significant": True}],
         },
         "fit_target": {"level": "good"},
         "significance": {"alpha": 0.05},
@@ -753,7 +774,8 @@ def _read_construct(reader: _Reader, entry: Dict[str, Any], where: str,
 def _read_demographics(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any],
                        constructs: Dict[str, str], used_names: Dict[str, str]) -> None:
     section = reader.section(payload, "demographics")
-    reader.keys(section, ("exact_quotas", "variables"), "demographics")
+    reader.keys(section, ("exact_quotas", "variables", "associations"),
+                "demographics")
     spec.quota_exact = reader.flag(section, "exact_quotas", "demographics", False)
 
     for where, entry in reader.objects(section, "variables", "demographics"):
@@ -787,6 +809,62 @@ def _read_demographics(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any]
         spec.demographics.append(variable)
         _read_control_paths(reader, spec, entry, where, variable, constructs)
         _read_differences(reader, entry, where, variable, constructs)
+    _read_associations(reader, spec, section)
+
+
+def _read_associations(reader: _Reader, spec: ModelSpec,
+                       section: Dict[str, Any]) -> None:
+    variables = {v.name: v for v in spec.demographics}
+    strengths = [a.value for a in AssociationStrength
+                 if a is not AssociationStrength.CUSTOM]
+    seen: Dict[frozenset, str] = {}
+    for path, raw in reader.objects(section, "associations", "demographics"):
+        reader.keys(raw, ("between", "strength", "value", "direction",
+                          "significant"), path)
+        between = raw.get("between")
+        if (not isinstance(between, list) or len(between) != 2
+                or not all(isinstance(name, str) for name in between)):
+            reader.fail(f"{path}.between",
+                        "Give the names of two demographic variables.",
+                        "اذكر اسمي متغيرين ديموغرافيين.")
+            continue
+        names = [name.strip() for name in between]
+        missing = [name for name in names if name not in variables]
+        for name in missing:
+            hint = difflib.get_close_matches(name, list(variables), n=1)
+            more_en = f" Did you mean '{hint[0]}'?" if hint else ""
+            more_ar = f" هل تقصد '{hint[0]}'؟" if hint else ""
+            reader.fail(f"{path}.between",
+                        f"No demographic variable is named '{name}'.{more_en}",
+                        f"لا يوجد متغير ديموغرافي باسم '{name}'.{more_ar}")
+        if missing:
+            continue
+        if names[0] == names[1]:
+            reader.fail(f"{path}.between", "Name two different variables.",
+                        "اذكر متغيرين مختلفين.")
+            continue
+        strength = AssociationStrength(reader.choice(
+            raw, "strength", path, strengths, AssociationStrength.MODERATE.value))
+        value = reader.number(raw, "value", path, 0.0, ASSOCIATION_V_MAX)
+        direction = reader.choice(raw, "direction", path,
+                                  [d.value for d in AssociationDirection],
+                                  AssociationDirection.POSITIVE.value)
+        significant = reader.flag(raw, "significant", path, True)
+        pair = frozenset(names)
+        if pair in seen:
+            reader.fail(f"{path}.between",
+                        f"These two are already linked in {seen[pair]}.",
+                        f"هذان المتغيران مربوطان بالفعل في {seen[pair]}.")
+            continue
+        seen[pair] = path
+        association = DemographicAssociation(
+            first=variables[names[0]].id, second=variables[names[1]].id,
+            strength=strength, direction=AssociationDirection(direction),
+            target_significant=significant)
+        if value is not None:
+            association.strength = AssociationStrength.CUSTOM
+            association.value = float(value)
+        spec.demographic_associations.append(association)
 
 
 def _read_differences(reader: _Reader, entry: Dict[str, Any], where: str,

@@ -26,20 +26,29 @@ difference really shows none even when it correlates with one that does.
 The noise ``e`` comes from a stream of its own.  When significance targeting is
 on, it is redrawn until each difference is significant or not as asked, the
 way a sample is redrawn for a path, and the closest draw is kept otherwise.
+
+A comparison variable linked to other demographic variables keeps the link:
+the part of its latent score the linked variables predict joins the
+propensity, so regrouping by the answers does not undo the association, and
+the redraws also check the chi-square test of each link.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy import stats as _stats
 
+from semsim.core.associations import chi_square, valid_associations
 from semsim.core.spec import (
     DemographicRole, DemographicVariable, GroupDifference, GroupDirection,
     ModelSpec,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from semsim.generation.demographics import DemographicDraw
 
 #: Mixed into the seed so group assignment draws from its own random stream.
 _STREAM = 15485863
@@ -149,8 +158,32 @@ def _correlations(differences: Sequence[GroupDifference], shares: np.ndarray
     return out
 
 
+def _linked_part(variable: DemographicVariable,
+                 drawn: Optional["DemographicDraw"]
+                 ) -> Tuple[Optional[np.ndarray], float]:
+    """What the linked variables' latent scores say about this one's.
+
+    Returns the conditional mean ``E[l | linked]`` for every respondent and
+    its variance, or ``(None, 0)`` when the variable is linked to nothing.
+    """
+    if drawn is None or drawn.scores is None:
+        return None, 0.0
+    own = drawn.structure.index(variable.id)
+    if own is None:
+        return None, 0.0
+    others = [j for j in range(len(drawn.structure.ids)) if j != own]
+    if not others:
+        return None, 0.0
+    matrix = drawn.structure.matrix
+    weights = np.linalg.solve(matrix[np.ix_(others, others)], matrix[others, own])
+    explained = float(matrix[own, others] @ weights)
+    return drawn.scores[:, others] @ weights, explained
+
+
 def _reassign(spec: ModelSpec, variable: DemographicVariable,
-              codes: np.ndarray, data: pd.DataFrame, rng: np.random.Generator
+              codes: np.ndarray, data: pd.DataFrame, rng: np.random.Generator,
+              current: Optional[pd.DataFrame] = None,
+              drawn: Optional["DemographicDraw"] = None
               ) -> Tuple[np.ndarray, List[str]]:
     """New codes for one variable, keeping its group sizes."""
     from semsim.analysis.demographics import _composite
@@ -188,10 +221,32 @@ def _reassign(spec: ModelSpec, variable: DemographicVariable,
             f"تتحقق كل الفروق المطلوبة في «{variable.name}» معًا بسبب "
             "الارتباط بين المتغيرات المستهدفة، فخُفِّضت.")
     signal = z @ weights
+    linked, linked_share = _linked_part(variable, drawn)
+    if linked is not None:
+        total = explained + linked_share
+        if total > _MAX_EXPLAINED:
+            shrink = np.sqrt(_MAX_EXPLAINED / total)
+            signal, linked = signal * shrink, linked * shrink
+            explained, linked_share = explained * shrink ** 2, linked_share * shrink ** 2
+        signal = signal + linked
+        explained += linked_share
     residual = np.sqrt(max(1.0 - explained, 0.0))
+
+    links = []
+    if current is not None:
+        others = {v.id: v for v in spec.demographics}
+        for association in valid_associations(spec):
+            if variable.id not in (association.first, association.second):
+                continue
+            other = others[association.second if association.first == variable.id
+                           else association.first]
+            if other.name in current.columns:
+                links.append((association, other,
+                              current[other.name].to_numpy(dtype=int)))
 
     attempts = MAX_ATTEMPTS if spec.significance_target.enabled else 1
     alpha = float(spec.significance_target.alpha)
+    wanted = len(differences) + len(links)
     best, best_hits = codes, -1
     for _ in range(attempts):
         candidate = _assign(signal + residual * rng.standard_normal(n), counts)
@@ -200,22 +255,27 @@ def _reassign(spec: ModelSpec, variable: DemographicVariable,
             p = _p_value(score, candidate, k)
             if p is None or (p < alpha) == difference.wants_significance:
                 hits += 1
+        for association, other, other_codes in links:
+            test = chi_square(candidate, other_codes, k, len(other.categories))
+            if test is None or (test[2] < alpha) == association.wants_significance:
+                hits += 1
         if hits > best_hits:
             best, best_hits = candidate, hits
-        if hits == len(differences):
+        if hits == wanted:
             break
-    if attempts > 1 and best_hits < len(differences):
+    if attempts > 1 and best_hits < wanted:
         notes.append(
-            f"GROUP_DIFFERENCE_SIGNIFICANCE: not every difference of "
-            f"'{variable.name}' reached the significance asked of it in this "
-            "sample; a larger sample or a larger difference would. | لم تصل "
-            f"كل فروق «{variable.name}» إلى الدلالة المطلوبة في هذه العينة؛ "
-            "عينة أكبر أو فرق أكبر يحقق ذلك.")
+            f"GROUP_DIFFERENCE_SIGNIFICANCE: not every difference or "
+            f"association of '{variable.name}' reached the significance asked "
+            "of it in this sample; a larger sample or a larger effect would. "
+            f"| لم تصل كل فروق «{variable.name}» أو ارتباطاته إلى الدلالة "
+            "المطلوبة في هذه العينة؛ عينة أكبر أو أثر أكبر يحقق ذلك.")
     return best, notes
 
 
 def apply_group_differences(spec: ModelSpec, data: pd.DataFrame,
-                            demographics: Optional[pd.DataFrame], seed: int
+                            demographics: Optional[pd.DataFrame], seed: int,
+                            drawn: Optional["DemographicDraw"] = None
                             ) -> Tuple[Optional[pd.DataFrame], List[str]]:
     """Regroup the respondents of every comparison variable with differences.
 
@@ -231,6 +291,9 @@ def apply_group_differences(spec: ModelSpec, data: pd.DataFrame,
         The drawn demographic columns.  Their group sizes are kept.
     seed : int
         The run's seed.
+    drawn : DemographicDraw, optional
+        The latent scores behind associated variables, so a regrouped
+        comparison variable keeps its associations.
 
     Returns
     -------
@@ -256,7 +319,7 @@ def apply_group_differences(spec: ModelSpec, data: pd.DataFrame,
             continue
         codes = demographics[variable.name].to_numpy(dtype=int)
         regrouped, extra = _reassign(spec, variable, codes, data,
-                                     _stream(seed, position))
+                                     _stream(seed, position), out, drawn)
         notes.extend(extra)
         if regrouped is not codes:
             if out is demographics:

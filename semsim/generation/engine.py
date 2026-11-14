@@ -165,9 +165,12 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
     warnings.extend(cm.warnings)
 
     demographics = None
+    drawn = None
     if spec.demographics:
-        from semsim.generation.demographics import draw_demographics
-        demographics = draw_demographics(spec, n_cases, actual_seed)
+        from semsim.generation.demographics import draw_demographics_jointly
+        drawn = draw_demographics_jointly(spec, n_cases, actual_seed)
+        demographics = drawn.frame
+        warnings.extend(drawn.notes)
     controls = _standardised_controls(cm, demographics)
 
     sigma_population = implied_module.implied_covariance(cm)
@@ -231,7 +234,7 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
         # or ANOVA on them finds the differences the researcher planned.
         from semsim.generation.group_differences import apply_group_differences
         demographics, notes = apply_group_differences(spec, data, demographics,
-                                                      actual_seed)
+                                                      actual_seed, drawn=drawn)
         warnings.extend(notes)
     shadow = (pd.DataFrame(y_star, columns=[f"{c}_star"
                                             for c in items_cm.item_names])

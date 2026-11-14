@@ -13,6 +13,7 @@ semsim/core/spec.py          ModelSpec dataclasses  (DONE — the contract)
         core/compile.py      ModelSpec -> LISREL matrices, fully standardised
         core/implied.py      Sigma(theta), Phi, total/indirect effects, PD repair
         core/validation.py   bilingual diagnostics (identification, Heywood, cycles)
+        core/associations.py Gaussian copula linking demographic variables
 
 semsim/generation/fleishman.py     Fleishman (1978) polynomial coefficients
            generation/vale_maurelli.py  Vale & Maurelli (1983) non-normal MVN
@@ -330,6 +331,31 @@ def realise_population(spec: ModelSpec, seed: int) -> ModelSpec
     # switched off, so it is never varied twice. calibrate() calls it once per
     # run; generate_dataset() calls it when given no compiled model.
 ```
+
+## `semsim/core/associations.py`
+
+```python
+def latent_structure(spec: ModelSpec) -> LatentStructure
+    # Every associated demographic variable gets a standard normal latent
+    # score; its categories are slices at its shares, in list order. Each
+    # link's latent correlation is found by bisection so the bivariate
+    # normal cross-table has the requested Cramér's V (sign from the
+    # direction). Unlinked pairs get the maximum-determinant completion
+    # (a chain A-B-C implies r_AC = r_AB * r_BC); a set that cannot hold
+    # is softened to the nearest positive definite matrix, with a note.
+def term_correlation(...) -> float
+    # Population correlation of two control terms (codes or dummies) of
+    # linked variables; ModelSpec.expanded() writes it into the model.
+def chi_square(codes_a, codes_b, k, m) -> (chi2, df, p, V) | None
+```
+
+`generation/demographics.draw_demographics_jointly` draws every variable as
+before, then replaces the linked ones with slices of correlated latent
+scores (exact quotas fill by rank). With significance targeting on, the
+scores are redrawn until each link's chi-square test matches its flag.
+The scores travel to `apply_group_differences`, where a linked comparison
+variable's propensity includes `E[latent | linked latents]`, so regrouping
+keeps the association.
 
 ## `semsim/generation/group_differences.py`
 

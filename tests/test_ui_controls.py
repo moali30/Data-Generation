@@ -603,3 +603,37 @@ def test_a_comparison_variable_gets_a_difference_editor(window, errors):
     directions[0].combo.setCurrentIndex(directions[0].combo.findData("descending"))
     assert difference.direction.value == "descending"
     assert not errors
+
+
+def test_two_demographics_can_be_linked(window, errors):
+    from semsim.core.spec import AssociationStrength
+    spec = window.state.spec
+    age = spec.add_demographic("Age", [("Young", 0.5), ("Old", 0.5)])
+    spec.add_demographic("Experience", [("Low", 0.5), ("High", 0.5)])
+    editor = window._pages[0]._demographics
+    editor.rebuild()
+    settle()
+    add = [b for b in editor.findChildren(QAbstractButton)
+           if getattr(b, "_key", "") == "dem.add_association"]
+    assert len(add) == 1
+    add[0].click()
+    settle()
+    assert len(spec.demographic_associations) == 1
+    association = spec.demographic_associations[0]
+    assert {association.first, association.second} == {
+        v.id for v in spec.demographics}
+
+    strengths = [c for c in editor.findChildren(EnumCombo)
+                 if c._prefix == "astrength"]
+    strengths[0].setCurrentIndex(
+        list(AssociationStrength).index(AssociationStrength.STRONG))
+    assert association.strength is AssociationStrength.STRONG
+    together = [c for c in editor.findChildren(IdCombo)
+                if c.combo.findData("positive") >= 0]
+    assert "Old" in together[0].combo.itemText(0)
+
+    # Deleting a variable takes its links with it.
+    editor._remove_variable(age)
+    settle()
+    assert spec.demographic_associations == []
+    assert not errors

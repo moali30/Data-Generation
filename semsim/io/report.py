@@ -420,6 +420,18 @@ def _demographics_section(bundle: ReportBundle, lang: str) -> str:
         pieces.append(heading("مسارات المتغيرات الضابطة", "Control paths")
                       + _table(pd.DataFrame(controls), lang=lang))
 
+    table = getattr(analysis, "associations", pd.DataFrame())
+    if not table.empty:
+        rows = [{
+            _t(lang, "المتغير الأول", "First variable"): row["variable_a"],
+            _t(lang, "المتغير الثاني", "Second variable"): row["variable_b"],
+            "χ²": row["chi_square"], "df": row["df"], "p": row["p"],
+            "Cramér's V": row["cramers_v"],
+        } for _i, row in table.iterrows()]
+        pieces.append(heading("الارتباط بين المتغيرات الديموغرافية (كاي تربيع)",
+                              "Associations between demographics (chi-square)")
+                      + _table(pd.DataFrame(rows), lang=lang))
+
     table = analysis.comparisons
     if not table.empty:
         rows = [{

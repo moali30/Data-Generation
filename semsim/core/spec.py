@@ -218,6 +218,34 @@ GROUP_D_MAX = 2.0
 GROUP_ETA_MAX = 0.40
 
 
+class AssociationStrength(str, Enum):
+    """Conventional strengths of an association, as Cramér's V (Cohen, 1988)."""
+
+    NONE = "none"
+    WEAK = "weak"
+    MODERATE = "moderate"
+    STRONG = "strong"
+    CUSTOM = "custom"
+
+    @property
+    def default_value(self) -> float:
+        return {AssociationStrength.NONE: 0.0, AssociationStrength.WEAK: 0.10,
+                AssociationStrength.MODERATE: 0.30,
+                AssociationStrength.STRONG: 0.50,
+                AssociationStrength.CUSTOM: 0.30}[self]
+
+
+class AssociationDirection(str, Enum):
+    """How the category lists of two associated variables line up."""
+
+    POSITIVE = "positive"   # the last categories of both go together
+    NEGATIVE = "negative"   # the last of the first goes with the first of the second
+
+
+#: Largest Cramér's V an association may ask for.
+ASSOCIATION_V_MAX = 0.90
+
+
 class PowerMethod(str, Enum):
     RMSEA_CLOSE_FIT = "rmsea_close_fit"   # MacCallum, Browne & Sugawara (1996)
     SATORRA_SARIS = "satorra_saris"       # power for a single parameter
@@ -793,6 +821,38 @@ class GroupDifference:
         return self.target_significant and self.size is not GroupEffect.NONE
 
 
+@dataclass
+class DemographicAssociation:
+    """Two demographic variables that go together, such as age and experience.
+
+    The strength is Cramér's V of their cross-table.  The categories are
+    matched in list order: with a positive direction the last categories of
+    the two variables go together, with a negative one the last category of
+    the first goes with the first category of the second.
+    """
+
+    id: str = field(default_factory=lambda: _new_id("da"))
+    first: str = ""         # demographic variable id
+    second: str = ""        # demographic variable id
+    strength: AssociationStrength = AssociationStrength.MODERATE
+    #: Read only when ``strength`` is :attr:`AssociationStrength.CUSTOM`.
+    value: float = 0.30
+    direction: AssociationDirection = AssociationDirection.POSITIVE
+    target_significant: bool = True
+
+    def resolved_value(self) -> float:
+        """The requested Cramér's V."""
+        raw = (float(self.value) if self.strength is AssociationStrength.CUSTOM
+               else self.strength.default_value)
+        return min(max(raw, 0.0), ASSOCIATION_V_MAX)
+
+    @property
+    def wants_significance(self) -> bool:
+        """Whether the chi-square test should come out significant."""
+        return (self.target_significant
+                and self.strength is not AssociationStrength.NONE)
+
+
 @dataclass(frozen=True)
 class DemographicTerm:
     """One column a demographic variable contributes to a regression.
@@ -912,6 +972,9 @@ class ModelSpec:
     #: respondent independently with the category shares as weights, so the
     #: achieved counts vary the way a collected sample's do.
     quota_exact: bool = False
+    #: Pairs of demographic variables that go together.
+    demographic_associations: List[DemographicAssociation] = field(
+        default_factory=list)
 
     # ------------------------------------------------------------------ #
     # Demographics and the model they enter
@@ -1003,10 +1066,12 @@ class ModelSpec:
         out = copy.deepcopy(self)
         term_ids: List[str] = []
         shares: Dict[str, Tuple[str, float]] = {}
+        sources: Dict[str, Tuple[DemographicVariable, DemographicTerm]] = {}
         for variable, term in active:
             suffix = term.key or "main"
             cid = f"__ctl_{variable.id}_{suffix}"
             term_ids.append(cid)
+            sources[cid] = (variable, term)
             if term.category is not None:
                 shares[cid] = (variable.id,
                                variable.normalised_proportions()[term.category])
@@ -1029,6 +1094,10 @@ class ModelSpec:
                         coefficient_is_manual=path.coefficient_is_manual,
                         target_significant=path.target_significant))
 
+        linked = None
+        if self.demographic_associations:
+            from semsim.core.associations import latent_structure, term_correlation
+            linked = latent_structure(self)
         for a, first in enumerate(term_ids):
             for second in term_ids[a + 1:]:
                 correlation = 0.0
@@ -1037,6 +1106,14 @@ class ModelSpec:
                     pa, pb = shares[first][1], shares[second][1]
                     denominator = max((1.0 - pa) * (1.0 - pb), 1e-12)
                     correlation = max(-math.sqrt(pa * pb / denominator), -0.999)
+                elif linked is not None:
+                    # Associated variables: their terms correlate as their
+                    # cross-table says, which the data will show.
+                    (va, ta), (vb, tb) = sources[first], sources[second]
+                    i, j = linked.index(va.id), linked.index(vb.id)
+                    if va.id != vb.id and i is not None and j is not None:
+                        correlation = term_correlation(
+                            va, ta, vb, tb, float(linked.matrix[i, j]))
                 out.latent_covariances.append(LatentCovariance(
                     construct_a=first, construct_b=second,
                     correlation=correlation))
@@ -1490,6 +1567,36 @@ class ModelSpec:
         variable.group_differences.append(difference)
         return difference
 
+    def add_demographic_association(
+        self,
+        first: "DemographicVariable | str",
+        second: "DemographicVariable | str",
+        *,
+        strength: AssociationStrength = AssociationStrength.MODERATE,
+        value: Optional[float] = None,
+        direction: AssociationDirection = AssociationDirection.POSITIVE,
+        target_significant: bool = True,
+    ) -> DemographicAssociation:
+        """Link two demographic variables (objects, ids or column names).
+
+        ``value`` is an exact Cramér's V and overrides ``strength``.
+        """
+        def resolve(ref: "DemographicVariable | str") -> str:
+            if isinstance(ref, DemographicVariable):
+                return ref.id
+            for variable in self.demographics:
+                if ref in (variable.id, variable.name):
+                    return variable.id
+            return str(ref)
+
+        association = DemographicAssociation(
+            first=resolve(first), second=resolve(second),
+            strength=AssociationStrength.CUSTOM if value is not None else strength,
+            value=float(value) if value is not None else 0.30,
+            direction=direction, target_significant=target_significant)
+        self.demographic_associations.append(association)
+        return association
+
     def ensure_unique_item_names(self) -> None:
         """Make every exported column name unique and syntactically safe."""
         seen: Dict[str, int] = {}
@@ -1539,6 +1646,7 @@ __all__ = [
     "AnalysisSpec", "ExportSpec", "ModelSpec",
     "DemographicKind", "DemographicRole", "DemographicCategory",
     "GroupEffect", "GroupDirection", "GroupDifference", "GROUP_D_MAX",
-    "GROUP_ETA_MAX",
+    "GROUP_ETA_MAX", "AssociationStrength", "AssociationDirection",
+    "DemographicAssociation", "ASSOCIATION_V_MAX",
     "DemographicTerm", "DemographicVariable", "ControlPath",
 ]

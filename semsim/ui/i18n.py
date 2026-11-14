@@ -320,6 +320,48 @@ STRINGS: Dict[str, Tuple[str, str]] = {
                                "Add a construct first"),
     "dem.block.all_differences": ("لكل متغير كامن فرق بالفعل",
                                   "Every construct already has a difference"),
+    "dem.associations_card": ("الارتباط بين المتغيرات الديموغرافية",
+                              "Associations between demographic variables"),
+    "dem.assoc.hint": (
+        "في العينات الحقيقية تسير بعض الخصائص معًا: الأكبر سنًا أكثر خبرة، "
+        "وأصحاب الدراسات العليا في مناصب أعلى. اربط المتغيرين هنا فيظهر "
+        "الارتباط في اختبار كاي تربيع. القوة هي معامل كرامر V، والاتجاه يحدد "
+        "أي فئات تجتمع معًا حسب ترتيبها في القائمة. المتغيرات غير المربوطة "
+        "مباشرة ترتبط بقدر ما تفرضه الروابط الأخرى.",
+        "In real samples some characteristics go together: older respondents "
+        "have more experience, postgraduates hold more senior posts. Link two "
+        "variables here and the chi-square test shows it. The strength is "
+        "Cramér's V, and the direction says which categories go together, by "
+        "their order in the lists. Variables not linked directly go together "
+        "only as far as the other links imply."),
+    "dem.add_association": ("إضافة ارتباط", "Add association"),
+    "dem.no_associations": (
+        "لا توجد ارتباطات، فكل متغير ديموغرافي مستقل عن الآخر",
+        "No associations, so every demographic variable is independent of "
+        "the others"),
+    "dem.assoc.first": ("المتغير الأول", "First variable"),
+    "dem.assoc.second": ("المتغير الثاني", "Second variable"),
+    "dem.assoc.strength": ("قوة الارتباط", "Strength"),
+    "dem.assoc.value": ("قيمة V", "V value"),
+    "dem.assoc.direction": ("ما يجتمع معًا", "What goes together"),
+    "dem.assoc.together": ("{a} مع {b}", "{a} with {b}"),
+    "dem.block.two_variables": ("أضف متغيرين ديموغرافيين على الأقل",
+                                "Add at least two demographic variables"),
+    "dem.block.all_associations": ("كل الأزواج الممكنة مربوطة بالفعل",
+                                   "Every possible pair is already linked"),
+    "adir.positive": ("الفئات الأخيرة معًا", "Last categories together"),
+    "adir.negative": ("أخيرة الأول مع أولى الثاني",
+                      "Last of the first with first of the second"),
+    "astrength.none": ("لا يوجد ارتباط", "None"),
+    "astrength.weak": ("ضعيف", "Weak"),
+    "astrength.moderate": ("متوسط", "Moderate"),
+    "astrength.strong": ("قوي", "Strong"),
+    "astrength.custom": ("مخصّص", "Custom"),
+    "dem.associations": ("الارتباط بين المتغيرات الديموغرافية (كاي تربيع)",
+                         "Associations between demographics (chi-square)"),
+    "dem.h.variable_a": ("المتغير الأول", "First variable"),
+    "dem.h.variable_b": ("المتغير الثاني", "Second variable"),
+    "dem.h.cramers_v": ("V كرامر", "Cramér's V"),
     "dem.frequencies": ("التكرارات: النسبة المطلوبة والمحققة",
                         "Frequencies: requested and achieved"),
     "dem.comparisons": ("اختبارات الفروق", "Group comparisons"),
