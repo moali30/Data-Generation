@@ -482,16 +482,17 @@ class NoiseSpec:
     measurement_jitter_sd: float = 0.0
 
 
-#: The named amounts of real-world variation, as
-#: ``(construct_level_sd, item_level_sd, item_spread_sd, loading_sd, path_sd)``.
+#: The named amounts of real-world variation, as ``(construct_level_sd,
+#: item_level_sd, item_spread_sd, loading_sd, path_sd, tail_share)``.
 #: ``realistic`` is what a published questionnaire study typically shows:
 #: construct means a few tenths of a point apart on a five-point scale, item
-#: means within a construct a tenth or two apart, and loadings and paths a few
-#: hundredths away from the values the researcher planned.
-HETEROGENEITY_PRESETS: Dict[str, Tuple[float, float, float, float, float]] = {
-    "mild": (0.15, 0.08, 0.05, 0.03, 0.015),
-    "realistic": (0.30, 0.15, 0.10, 0.05, 0.03),
-    "strong": (0.45, 0.25, 0.15, 0.08, 0.05),
+#: means within a construct a tenth or two apart, loadings and paths a few
+#: hundredths away from the values the researcher planned, and a few answers
+#: at the far end of even a strongly skewed item.
+HETEROGENEITY_PRESETS: Dict[str, Tuple[float, ...]] = {
+    "mild": (0.15, 0.08, 0.05, 0.03, 0.015, 0.025),
+    "realistic": (0.30, 0.15, 0.10, 0.05, 0.03, 0.05),
+    "strong": (0.45, 0.25, 0.15, 0.08, 0.05, 0.08),
 }
 
 
@@ -504,9 +505,9 @@ class HeterogeneitySpec:
     from that has every item mean at the same value, identical standard
     deviations and identical loadings, which no real questionnaire shows.
     These settings draw one population around the specification instead; see
-    :mod:`semsim.generation.heterogeneity`.  All values are standard
-    deviations: the first three on the z-scale of the latent response, the
-    last two on the standardised coefficient.
+    :mod:`semsim.generation.heterogeneity`.  The first five values are
+    standard deviations: three on the z-scale of the latent response, two on
+    the standardised coefficient.  ``tail_share`` is a proportion.
     """
 
     enabled: bool = True
@@ -523,9 +524,13 @@ class HeterogeneitySpec:
     loading_sd: float = 0.05
     #: Population paths and correlations scatter around the planned values.
     path_sd: float = 0.03
+    #: Share of each item's answers spread evenly over all categories, so even
+    #: a strongly skewed item has a few answers at the far end of the scale,
+    #: as every real sample does.
+    tail_share: float = 0.05
 
     def apply_preset(self, name: str) -> None:
-        """Set the five amounts from a named preset, or switch off for ``none``."""
+        """Set the amounts from a named preset, or switch off for ``none``."""
         if name == "none":
             self.enabled = False
             return
@@ -534,14 +539,15 @@ class HeterogeneitySpec:
             return
         self.enabled = True
         (self.construct_level_sd, self.item_level_sd, self.item_spread_sd,
-         self.loading_sd, self.path_sd) = values
+         self.loading_sd, self.path_sd, self.tail_share) = values
 
     def preset_name(self) -> str:
         """The preset these settings match, ``none``, or ``custom``."""
         if not self.enabled:
             return "none"
         current = (self.construct_level_sd, self.item_level_sd,
-                   self.item_spread_sd, self.loading_sd, self.path_sd)
+                   self.item_spread_sd, self.loading_sd, self.path_sd,
+                   self.tail_share)
         for name, values in HETEROGENEITY_PRESETS.items():
             if all(abs(a - b) < 1e-9 for a, b in zip(current, values)):
                 return name

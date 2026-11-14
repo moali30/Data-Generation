@@ -391,9 +391,14 @@ class DistributionPage(StagePage):
         self.path_sd = amount(0.15, 0.01)
         card.add(Field("d.variation.path", self.path_sd,
                        hint_key="d.variation.path.hint"))
+        self.tail_share = percent_spin(0.0, maximum=0.2)
+        self.tail_share.valueChanged.connect(
+            lambda _v: self._on_variation_amounts())
+        card.add(Field("d.variation.tail", self.tail_share,
+                       hint_key="d.variation.tail.hint"))
         self._variation_editors = [
             self.construct_level_sd, self.item_level_sd, self.item_spread_sd,
-            self.loading_sd, self.path_sd,
+            self.loading_sd, self.path_sd, self.tail_share,
         ]
 
     def _on_variation_preset(self, level: object) -> None:
@@ -419,6 +424,7 @@ class DistributionPage(StagePage):
         settings.item_spread_sd = float(self.item_spread_sd.value())
         settings.loading_sd = float(self.loading_sd.value())
         settings.path_sd = float(self.path_sd.value())
+        settings.tail_share = percent_value(self.tail_share)
         with self.quiet():
             self.variation.set_value(settings.preset_name())
         self._update_variation_gating()
@@ -433,6 +439,7 @@ class DistributionPage(StagePage):
             self.item_spread_sd.setValue(settings.item_spread_sd)
             self.loading_sd.setValue(settings.loading_sd)
             self.path_sd.setValue(settings.path_sd)
+            self.tail_share.setValue(settings.tail_share * 100.0)
         self._update_variation_gating()
 
     def _update_variation_gating(self) -> None:

@@ -319,6 +319,10 @@ def realise_population(spec: ModelSpec, seed: int) -> ModelSpec
     #   - loadings and second-order loadings move around the planned value;
     #   - paths meant to be significant, and exogenous correlations, move but
     #     keep their sign and at least 75% of their size.
+    #   - tail_share of each item's answers is spread over all categories;
+    #   - reverse-worded items get mirrored cut points and a loading
+    #     2 * loading_sd weaker (the engine mirrors style-shaped reverse items
+    #     itself when variation is off).
     # Explicit thresholds/proportions, null paths, interactions and anything
     # touching a control term are left alone. A change that compiles with more
     # warnings than the original is undone. The copy has heterogeneity

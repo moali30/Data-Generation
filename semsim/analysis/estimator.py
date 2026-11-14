@@ -1065,10 +1065,13 @@ class _Problem:
                               logdet_sample=self.logdet_sample)
 
 
-#: Finite stand-in for an inadmissible point when control terms are in the
-#: model.  Their variances are small, so the first line-search step easily
-#: leaves the admissible region, and an infinite value there makes L-BFGS-B
-#: stop at the start and report success.
+#: Finite stand-in for an inadmissible point.  L-BFGS-B's first line-search
+#: step is long, so it easily lands where the implied matrix is not positive
+#: definite; an infinite value there makes the line search give up, and
+#: L-BFGS-B then stops at the start and reports success.  Models with control
+#: terms hit it first (their variances are small), but any model can: a
+#: four-construct model with one correlated pair was handed back its
+#: generating values as estimates, with chi-square evaluated at them.
 _INADMISSIBLE_PENALTY = 1.0e8
 
 _OPTIMISER_CHAIN: Tuple[Tuple[str, Dict[str, Any]], ...] = (
@@ -1121,12 +1124,11 @@ def _run_optimiser(problem: _Problem, x0: np.ndarray
     best_iter = 0
     best_method = "start"
     current = best_x
-    has_covariates = bool(par.cm.covariate_rows)
 
     def objective(theta: np.ndarray) -> float:
         _cancel.check()
         value = problem.value(theta)
-        if has_covariates and not np.isfinite(value):
+        if not np.isfinite(value):
             return _INADMISSIBLE_PENALTY
         return value
 
@@ -1145,7 +1147,7 @@ def _run_optimiser(problem: _Problem, x0: np.ndarray
                 best_method = method
             # Reporting the unmoved start as a solution would hand back the
             # generating values as if they had been estimated.
-            stalled = has_covariates and best_method == "start"
+            stalled = best_method == "start"
             if bool(res.success) and np.isfinite(f) and not stalled:
                 return best_x, best_f, True, max(best_iter, 1), best_method
             if np.isfinite(f):

@@ -1,8 +1,14 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.3.0
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.3.1
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.3.1
+
+- إصلاح مهم في تقدير النموذج: في بعض النماذج (مثلًا أربع متغيرات فيها متغيرين مستقلين مترابطين) خوارزمية التقدير كانت بتقف عند نقطة البداية وتعتبر نفسها نجحت، فالمسارات كانت بتطلع **نفس الأرقام اللي أدخلتها بالظبط** (0.30 و0.50...) بدل ما تتقدّر من البيانات، ومؤشرات المطابقة كانت بتتحسب عند القيم دي فتطلع سيئة (RMSEA 0.066 و SRMR 0.23 بدل الهدف). دلوقتي التقدير بيتحرك فعلًا من البيانات، والمعايرة بتوصل للهدف.
+- الأسئلة معكوسة الصياغة بقت واقعية: العينة الراضية بقت **ترفض** عبارة زي «لست سعيدًا بالخدمة» (متوسطها الخام حوالي 2)، فبعد إعادة الترميز بتتماشى مع باقي أسئلة المتغير. وتشبعها بقى أضعف شوية من الأسئلة الإيجابية زي ما بيحصل في البيانات الحقيقية.
+- «غير موافق بشدة» بقت بتظهر في كل سؤال: إعداد جديد «الإجابات عند أطراف المقياس» بيوزّع نسبة صغيرة من الإجابات على كل الفئات (5% في المستوى الواقعي)، بدل ما يبقى في أسئلة محدش اختار فيها 1 أبدًا.
 
 ### الجديد في 1.3.0
 
@@ -80,9 +86,15 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.3.0
+## SEM Data Simulation Engine — v1.3.1
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.3.1
+
+- An important estimation fix: in some models (four constructs with two correlated independents, for example) the optimiser stopped at its starting point and reported success, so the paths came back as **exactly the numbers you entered** (0.30, 0.50...) instead of being estimated from the data, and the fit indices, computed at those values, came out poor (RMSEA 0.066 and SRMR 0.23 instead of the target). The estimates now really come from the data, and calibration reaches its target.
+- Reverse-worded items behave realistically: a satisfied sample now mostly *disagrees* with "I am unhappy with the service" (raw mean about 2), so after recoding it lines up with the rest of its construct, and it loads a little more weakly than the positively worded items, as real reversed items do.
+- "Strongly disagree" now turns up on every item: a new "Answers at the scale ends" amount spreads a small share of answers over every category (5% at the realistic level), instead of leaving items nobody ever answered 1 on.
 
 ### What's new in 1.3.0
 

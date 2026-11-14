@@ -227,3 +227,56 @@ def test_template_rejects_an_unknown_variation_level():
     with pytest.raises(ai_template.AiTemplateError) as info:
         ai_template.from_text(json.dumps(filled_template(variation="huge")))
     assert any(p.where == "realism.variation" for p in info.value.problems)
+
+
+# --------------------------------------------------------------------------- #
+# Reverse-worded items and the ends of the scale
+# --------------------------------------------------------------------------- #
+
+
+def reversed_model(enabled: bool) -> ModelSpec:
+    from semsim.core.spec import ResponseStyle
+    spec = model(enabled)
+    for item in spec.all_items():
+        item.scale.response_style = ResponseStyle.NEGATIVE_SKEW
+    spec.constructs[0].items[-1].reverse_coded = True
+    return spec
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_a_reverse_item_is_mostly_disagreed_with(enabled):
+    # A sample that mostly agrees with "I am satisfied" mostly disagrees with
+    # "I am unhappy": the raw reverse item sits low, and recoding it lines it
+    # up with its construct.
+    spec = reversed_model(enabled)
+    data = generate_dataset(spec, n=3000, seed=4).data
+    construct = spec.constructs[0]
+    names = [item.name for item in construct.items]
+    reverse, forward = names[-1], names[:-1]
+    assert data[reverse].mean() < 2.6
+    assert abs((6 - data[reverse]).mean() - data[forward].mean().mean()) < 0.5
+    assert np.corrcoef(data[reverse], data[forward].sum(axis=1))[0, 1] < 0
+
+
+def test_a_reverse_item_loads_more_weakly():
+    spec = reversed_model(True)
+    for seed in range(5):
+        population = realise_population(spec, seed)
+        planned = spec.constructs[0].items[-1].loading
+        assert population.constructs[0].items[-1].loading < planned
+
+
+def test_every_category_is_used_on_a_skewed_scale():
+    # A Beta-shaped agreement scale gives "strongly disagree" about one answer
+    # in six hundred; a real sample has a few on every item.
+    data = generate_dataset(reversed_model(True), n=1000, seed=2).data
+    counts = data.apply(lambda c: c.value_counts().reindex(range(1, 6),
+                                                           fill_value=0))
+    assert int(counts.to_numpy().min()) >= 1
+
+
+def test_tail_share_is_part_of_the_presets():
+    settings = ModelSpec().heterogeneity
+    assert settings.tail_share == pytest.approx(0.05)
+    settings.tail_share = 0.10
+    assert settings.preset_name() == "custom"

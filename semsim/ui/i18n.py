@@ -542,6 +542,15 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "changes a path's sign or shrinks it below three quarters of its "
         "value, and paths meant to be non-significant are left alone."),
 
+    "d.variation.tail": ("الإجابات عند أطراف المقياس", "Answers at the scale ends"),
+    "d.variation.tail.hint": (
+        "نسبة من إجابات كل سؤال تُوزَّع بالتساوي على كل الفئات، فيظهر بعض من "
+        "يختارون «غير موافق بشدة» حتى في المقاييس التي يميل أغلبها للموافقة، "
+        "كما في أي عينة حقيقية.",
+        "A share of each item's answers spread evenly over all categories, so "
+        "a few respondents pick 'strongly disagree' even on a scale most "
+        "people agree with, as in any real sample."),
+
     "d.noise": ("حقن التشويش العشوائي", "Noise injection"),
     "d.noise.explain": (
         "إضافة تباين غير مفسَّر لتجنّب المطابقة المفرطة (Overfitting)، لتظهر "

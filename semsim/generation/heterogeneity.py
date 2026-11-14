@@ -35,8 +35,19 @@ specification and changes four things:
 3. each path the researcher wants significant, and each correlation between
    exogenous constructs, moves a little around its planned value, never far
    enough to change its sign or halve it;
-4. nothing else: paths that must stay null, moderation terms, explicit cut
+4. reverse-worded items answer the mirror image of their construct's
+   distribution (a satisfied sample mostly *disagrees* with "I am unhappy
+   with the service"), and load a little more weakly than the items worded
+   in the construct's direction, as negatively worded items do (Weijters,
+   Baumgartner & Schillewaert, 2013);
+5. nothing else: paths that must stay null, moderation terms, explicit cut
    points and explicit category proportions are left exactly as given.
+
+A small ``tail_share`` of each item's answers is also spread evenly over the
+categories, so even a strongly skewed item has a few answers at the far end
+of the scale.  A pure Beta-shaped agreement scale leaves "strongly disagree"
+with about one answer in six hundred, and an item nobody ever answered 1 on
+is itself a sign of simulation.
 
 The population comes from a random stream of its own, keyed on the run seed,
 so the same seed gives the same population, and the draws that significance
@@ -54,6 +65,8 @@ Embretson, S. E., & Reise, S. P. (2000). *Item Response Theory for
 MacCallum, R. C., & Tucker, L. R. (1991). Representing sources of error in
     the common-factor model: Implications for theory and practice.
     *Psychological Bulletin*, 109(3), 502-511.
+Weijters, B., Baumgartner, H., & Schillewaert, N. (2013). Reversed item bias:
+    An integrative model. *Psychological Methods*, 18(3), 320-334.
 Rhemtulla, M., Brosseau-Liard, P. E., & Savalei, V. (2012). When can
     categorical variables be treated as continuous? *Psychological Methods*,
     17(3), 354-373.
@@ -96,6 +109,9 @@ _PATH_MIN = 0.05
 #: the planned style already gives it less.  An empty category breaks the
 #: polychoric correlations.
 _CATEGORY_FLOOR = 0.004
+
+#: A reverse-worded item loads this many ``loading_sd`` below its plan.
+_REVERSE_WEAKENING = 2.0
 
 __all__ = ["realise_population", "population_stream"]
 
@@ -204,10 +220,11 @@ def _vary_response_levels(spec: ModelSpec, settings: HeterogeneitySpec,
             for item in items:
                 shift = group_level + _normal(rng, settings.item_level_sd)
                 stretch = float(np.exp(_normal(rng, settings.item_spread_sd)))
-                _move_item(item, shift, stretch)
+                _move_item(item, shift, stretch, settings.tail_share)
 
 
-def _move_item(item: Item, shift: float, stretch: float) -> None:
+def _move_item(item: Item, shift: float, stretch: float,
+               tail_share: float = 0.0) -> None:
     """Move one item's response distribution up by ``shift`` (z units) and
     widen its cut points by ``stretch``.
 
@@ -215,6 +232,12 @@ def _move_item(item: Item, shift: float, stretch: float) -> None:
     falls in the higher categories and the item mean rises.  Stretching the
     cut points about their own centre gathers answers in the middle
     categories (``stretch > 1``) or pushes them to the ends (``< 1``).
+    ``tail_share`` of the answers is then spread evenly over the categories.
+
+    All of that is worked out in the construct's direction.  A reverse-worded
+    item's raw answers run the other way (the compiler negates its loading),
+    so its cut points are mirrored last: its raw distribution is the mirror
+    image of its construct's, and recoding it lines it up with the others.
     """
     scale = item.scale
     if scale.kind is ScaleKind.CONTINUOUS:
@@ -255,7 +278,14 @@ def _move_item(item: Item, shift: float, stretch: float) -> None:
             else:
                 high = middle
         t = low
-    item.scale = replace(scale, thresholds=[float(v) for v in moved(t)])
+    final = moved(t)
+    if tail_share > 0.0:
+        shares = th.category_probabilities(final)
+        shares = (1.0 - tail_share) * shares + tail_share / shares.size
+        final = th.thresholds_from_proportions(shares)
+    if item.reverse_coded:
+        final = -final[::-1]
+    item.scale = replace(scale, thresholds=[float(v) for v in final])
 
 
 # --------------------------------------------------------------------------- #
@@ -297,7 +327,11 @@ def _vary_loadings(spec: ModelSpec, settings: HeterogeneitySpec,
                    rng: np.random.Generator) -> None:
     for construct in _questionnaire_constructs(spec):
         for item in construct.all_items():
-            item.loading = _varied_loading(item.loading, settings.loading_sd, rng)
+            loading = _varied_loading(item.loading, settings.loading_sd, rng)
+            if item.reverse_coded and abs(loading) > _LOADING_MIN:
+                weaker = abs(loading) - _REVERSE_WEAKENING * settings.loading_sd
+                loading = float(np.sign(loading)) * max(weaker, _LOADING_MIN)
+            item.loading = loading
         for dimension in construct.dimensions:
             dimension.second_order_loading = _varied_loading(
                 dimension.second_order_loading, settings.loading_sd, rng)

@@ -63,8 +63,9 @@ anything.
   يسحب البرنامج مجتمعًا حول نموذجك: لكل متغير مستوى خاص على المقياس، ولكل سؤال
   صعوبة وتشتت خاصان (كما في نموذج الاستجابة المتدرجة لـ Samejima)، وتتفاوت
   التشبعات والمسارات قليلًا حول القيم المخططة دون أن تتغير إشارتها أو دلالتها
-  المطلوبة. وتُسحب الفئات الديموغرافية عشوائيًا بالنسب المطلوبة افتراضيًا،
-  فتتفاوت أعدادها كما في عينة حقيقية.
+  المطلوبة. والأسئلة معكوسة الصياغة تُجاب بعكس توزيع متغيرها وبتشبع أضعف قليلًا،
+  وتظهر بعض الإجابات عند طرفي المقياس في كل سؤال. وتُسحب الفئات الديموغرافية
+  عشوائيًا بالنسب المطلوبة افتراضيًا، فتتفاوت أعدادها كما في عينة حقيقية.
 
 ### التشغيل
 
@@ -149,8 +150,11 @@ a Monte Carlo study.
   level on the scale, each item its own difficulty and spread (as in
   Samejima's graded response model), and loadings and paths scatter a little
   around the planned values without changing sign or the requested
-  significance. Demographic categories are drawn at random with the requested
-  shares by default, so their counts vary the way a real sample's do.
+  significance. Reverse-worded items are answered as the mirror image of their
+  construct and load a little more weakly, and every item gets a few answers
+  at both ends of the scale. Demographic categories are drawn at random with
+  the requested shares by default, so their counts vary the way a real
+  sample's do.
 
 ### Running it
 

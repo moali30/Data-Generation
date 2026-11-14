@@ -691,8 +691,18 @@ def _apply_scales(spec: ModelSpec, cm: CompiledModel, y_star: np.ndarray,
             continue
         # No explicit flip here: the compiler already gave a reverse-worded
         # item a negative loading, so its continuous response already runs
-        # the other way and the thresholds map it correctly.
-        out[:, index] = th.apply_scale(y_star[:, index], item.scale)
+        # the other way.  Its response style, though, describes its
+        # construct: a satisfied sample that mostly agrees with the positive
+        # items mostly DISAGREES with "I am unhappy".  So a style-shaped
+        # reverse item takes the mirror image of the style's cut points.
+        # Explicit cut points or proportions describe the raw answers and are
+        # used as given (the population draw writes mirrored ones itself).
+        scale = item.scale
+        if (item.reverse_coded and scale.kind is ScaleKind.LIKERT
+                and not scale.thresholds and not scale.category_proportions):
+            tau = th.scale_thresholds(scale)
+            scale = replace(scale, thresholds=[float(v) for v in -tau[::-1]])
+        out[:, index] = th.apply_scale(y_star[:, index], scale)
 
     if any_ordinal and all(item.scale.kind is ScaleKind.LIKERT
                            for item in items):

@@ -518,3 +518,37 @@ def _run_without_pytest() -> int:  # pragma: no cover - convenience path
 
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(_run_without_pytest())
+
+
+def test_estimates_move_off_the_generating_values():
+    # L-BFGS-B's first step on this model leaves the admissible region; an
+    # infinite objective there used to stop it at the start and report
+    # success, so the planned coefficients came back as the "estimates" and
+    # chi-square was evaluated at them.
+    from semsim.core.spec import ConstructRole, LatentCovariance
+    from semsim.generation.engine import generate_dataset
+    spec = ModelSpec()
+    sq = spec.add_construct("SQ", n_items=5, loading=0.78)
+    tr = spec.add_construct("TR", n_items=4, loading=0.78)
+    sat = spec.add_construct("SAT", n_items=5, loading=0.78,
+                             role=ConstructRole.MEDIATOR)
+    loy = spec.add_construct("LOY", n_items=4, loading=0.78,
+                             role=ConstructRole.DEPENDENT)
+    for source, target, b in ((sq, sat, 0.5), (tr, sat, 0.3), (sat, loy, 0.5),
+                              (sq, loy, 0.15)):
+        spec.add_path(source.id, target.id, coefficient=b)
+    spec.latent_covariances.append(LatentCovariance(sq.id, tr.id, 0.45))
+    spec.fit_target.enabled = False
+    spec.noise.enabled = False
+    spec.heterogeneity.enabled = False
+    ds = generate_dataset(spec, n=2000, seed=3)
+    fitted = est.estimate(ds.model_frame, spec,
+                          estimator=spec.analysis.estimator)
+    assert fitted.converged
+    assert "start from" not in fitted.message
+    planned = np.array([0.5, 0.15, 0.5, 0.3])
+    got = np.sort(fitted.path_estimates["est"].to_numpy())
+    assert not np.allclose(got, np.sort(planned), atol=1e-6)
+    from semsim.analysis.fit_indices import compute
+    fit = compute(fitted.sample_cov, fitted.sigma_hat, fitted.n, fitted.n_free)
+    assert fit.srmr < 0.06
