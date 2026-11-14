@@ -420,6 +420,18 @@ def _demographics_section(bundle: ReportBundle, lang: str) -> str:
         pieces.append(heading("مسارات المتغيرات الضابطة", "Control paths")
                       + _table(pd.DataFrame(controls), lang=lang))
 
+    table = getattr(analysis, "associations", pd.DataFrame())
+    if not table.empty:
+        rows = [{
+            _t(lang, "المتغير الأول", "First variable"): row["variable_a"],
+            _t(lang, "المتغير الثاني", "Second variable"): row["variable_b"],
+            "χ²": row["chi_square"], "df": row["df"], "p": row["p"],
+            "Cramér's V": row["cramers_v"],
+        } for _i, row in table.iterrows()]
+        pieces.append(heading("الارتباط بين المتغيرات الديموغرافية (كاي تربيع)",
+                              "Associations between demographics (chi-square)")
+                      + _table(pd.DataFrame(rows), lang=lang))
+
     table = analysis.comparisons
     if not table.empty:
         rows = [{
@@ -502,6 +514,7 @@ def _distribution_section(bundle: ReportBundle, lang: str) -> str:
             f'{_tile(_t(lang, "محرك التوليد", "Engine"), getattr(getattr(dataset, "engine_used", None), "value", "-"))}'
             f'{_tile(_t(lang, "الخلايا المفقودة", "Missing cells"), int(dataset.data.isna().to_numpy().sum()) if hasattr(dataset, "data") else 0)}'
             f'</div>')
+        pieces.append(_screening_note(dataset, lang))
     if bundle.descriptives is not None:
         try:
             table = _drop_other_language(bundle.descriptives.to_table(lang), lang)
@@ -529,6 +542,33 @@ def _distribution_section(bundle: ReportBundle, lang: str) -> str:
     return _section("3", _t(lang, "توليد البيانات والتوزيعات",
                             "Distributions and generation"),
                     "".join(pieces), "Data Distribution & Generation Engine")
+
+
+def _screening_note(dataset: Any, lang: str) -> str:
+    """How many careless respondents the file holds, of which kind, and where."""
+    block = getattr(dataset, "careless", None)
+    if block is None or not getattr(block, "n", 0):
+        return ""
+    total = getattr(dataset, "n_in_file", "-")
+    n = getattr(dataset, "n", "-")
+    rows = ", ".join(str(r) for r in block.file_rows)
+    flat, late, random = (block.count("straightline"), block.count("partial"),
+                          block.count("random"))
+    text = _t(
+        lang,
+        f"فحص البيانات: يضم الملف {total} استجابة، منها {block.n} "
+        f"({block.n / max(int(total), 1) * 100:.1f}%) لمستجيبين غير مبالين: "
+        f"{flat} كرروا الإجابة نفسها في كل الأسئلة، و{late} كرروها في الجزء "
+        f"الأخير من الاستبيان، و{random} أجابوا عشوائيًا. صفوفهم في الملف: "
+        f"{rows}. كل النتائج في هذا التقرير محسوبة على الاستجابات الـ {n} "
+        f"الأخرى.",
+        f"Data screening: the file holds {total} responses, {block.n} "
+        f"({block.n / max(int(total), 1) * 100:.1f}%) of them from careless "
+        f"respondents: {flat} gave the same answer to every question, {late} "
+        f"did so for the last part of the questionnaire, and {random} answered "
+        f"at random. Their rows in the file: {rows}. Every result in this "
+        f"report uses the other {n}.")
+    return f'<p class="note">{_esc(text)}</p>'
 
 
 def _category_charts(bundle: ReportBundle, lang: str, limit: int = 6) -> str:

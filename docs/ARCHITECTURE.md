@@ -13,11 +13,16 @@ semsim/core/spec.py          ModelSpec dataclasses  (DONE — the contract)
         core/compile.py      ModelSpec -> LISREL matrices, fully standardised
         core/implied.py      Sigma(theta), Phi, total/indirect effects, PD repair
         core/validation.py   bilingual diagnostics (identification, Heywood, cycles)
+        core/associations.py Gaussian copula linking demographic variables
 
 semsim/generation/fleishman.py     Fleishman (1978) polynomial coefficients
            generation/vale_maurelli.py  Vale & Maurelli (1983) non-normal MVN
            generation/thresholds.py     continuous y* -> Likert categories
            generation/noise.py          careless responders, outliers, missingness
+           generation/careless.py       careless respondents added on top of the sample
+           generation/heterogeneity.py  one realistic population around the spec
+           generation/group_differences.py  comparison groups that differ as planned
+           generation/respondent_styles.py  each respondent's use of the scale
            generation/engine.py         orchestrator: spec -> DataFrame
 
 semsim/targeting/cudeck_browne.py  inject model error for a target RMSEA
@@ -296,15 +301,130 @@ class NoiseReport:
 
 def inject_careless(data: np.ndarray, scales: list[ScaleSpec], proportion: float,
                     style: str, rng) -> tuple[np.ndarray, list[int]]
+    # "realistic" (default): careless_patterns() on the chosen rows.
     # "random": uniform draws over the response scale.
     # "straightline": one category repeated across the whole row.
     # "mixed": half and half.
+def careless_patterns(block, scales, rng, *, reference=None) -> tuple[np.ndarray, list[str]]
+    # Each row becomes a straight-liner (35%), a late straight-liner who goes
+    # flat from 40-80% of the way down (35%) or a random responder (30%).
+    # The repeated code is the midpoint for a third of them and otherwise
+    # drawn from the attentive sample's pooled answers; a random answer comes
+    # half from the item's own distribution, half uniform over the scale.
 def inject_outliers(data, proportion, magnitude_sd, rng, scales=None) -> tuple[np.ndarray, int]
 def inject_missing(data, mechanism, proportion, rng, driver=None) -> tuple[np.ndarray, int]
     # MCAR: uniform. MAR: logistic in the driver column, so missingness depends
     # on an observed score (returns float array with np.nan).
 def apply_noise(data: np.ndarray, spec: ModelSpec, cm: CompiledModel,
-                rng) -> tuple[np.ndarray, NoiseReport]
+                rng, *, careless=True) -> tuple[np.ndarray, NoiseReport]
+    # careless=False skips the careless step (the engine passes it when
+    # spec.noise.careless_screened adds them on top instead).
+```
+
+## `semsim/generation/careless.py`
+
+```python
+@dataclass
+class CarelessBlock:
+    items: pd.DataFrame; demographics: pd.DataFrame | None
+    positions: list[int]          # zero-based rows of the file, ascending
+    kinds: list[str]              # straightline / partial / random
+    file_rows -> list[int]        # one-based, as a spreadsheet shows them
+
+def extra_count(spec, n) -> int
+    # k with k / (n + k) = noise.careless_proportion, when careless_screened.
+def draw_careless(spec, y_star, data, demographics, scales, score, k, seed)
+    # From its own stream [seed, 49979687]: first answers drawn from the
+    # attentive latent responses' mean and covariance and scored like theirs,
+    # made careless by careless_patterns(); demographics copied from random
+    # attentive rows; positions scattered over the n + k rows.
+def insert_rows(frame, extra, positions) -> pd.DataFrame
+```
+
+`GeneratedDataset.data` and `.demographics` stay the analysed sample (every
+target is calibrated on it). `.careless` holds the block; `.full_frame` is the
+file with the careless rows in place, `.clean_frame` the sample without them,
+`.n_in_file` the file's row count and `.in_file_order(frame)` lines a
+per-respondent extra (latent scores, continuous shadow) up with the file.
+
+## `semsim/generation/heterogeneity.py`
+
+```python
+def realise_population(spec: ModelSpec, seed: int) -> ModelSpec
+    # A deep copy describing one population around the specification, drawn
+    # from its own stream keyed on the run seed (spec.heterogeneity):
+    #   - each Likert item gets explicit cut points, shifted by its construct's
+    #     level plus its own difficulty and stretched by its own spread;
+    #   - loadings and second-order loadings move around the planned value;
+    #   - paths meant to be significant, and exogenous correlations, move but
+    #     keep their sign and at least 75% of their size.
+    #   - tail_share of each item's answers is spread over all categories;
+    #   - reverse-worded items get mirrored cut points and a loading
+    #     2 * loading_sd weaker (the engine mirrors style-shaped reverse items
+    #     itself when variation is off).
+    # Explicit thresholds/proportions, null paths, interactions and anything
+    # touching a control term are left alone. A change that compiles with more
+    # warnings than the original is undone. The copy has heterogeneity
+    # switched off, so it is never varied twice. calibrate() calls it once per
+    # run; generate_dataset() calls it when given no compiled model.
+```
+
+## `semsim/core/associations.py`
+
+```python
+def latent_structure(spec: ModelSpec) -> LatentStructure
+    # Every associated demographic variable gets a standard normal latent
+    # score; its categories are slices at its shares, in list order. Each
+    # link's latent correlation is found by bisection so the bivariate
+    # normal cross-table has the requested Cramér's V (sign from the
+    # direction). Unlinked pairs get the maximum-determinant completion
+    # (a chain A-B-C implies r_AC = r_AB * r_BC); a set that cannot hold
+    # is softened to the nearest positive definite matrix, with a note.
+def term_correlation(...) -> float
+    # Population correlation of two control terms (codes or dummies) of
+    # linked variables; ModelSpec.expanded() writes it into the model.
+def chi_square(codes_a, codes_b, k, m) -> (chi2, df, p, V) | None
+```
+
+`generation/demographics.draw_demographics_jointly` draws every variable as
+before, then replaces the linked ones with slices of correlated latent
+scores (exact quotas fill by rank). With significance targeting on, the
+scores are redrawn until each link's chi-square test matches its flag.
+The scores travel to `apply_group_differences`, where a linked comparison
+variable's propensity includes `E[latent | linked latents]`, so regrouping
+keeps the association.
+
+## `semsim/generation/group_differences.py`
+
+```python
+def apply_group_differences(spec: ModelSpec, data: pd.DataFrame,
+                            demographics: pd.DataFrame | None, seed: int
+                            ) -> tuple[pd.DataFrame | None, list[str]]
+    # For every comparison variable with group_differences, regroup the
+    # respondents by a propensity u = Z w + sqrt(1 - rho' w) e, where Z are
+    # the target constructs' standardised composites (the comparison
+    # table's own scores), rho the correlations that give each target its
+    # eta squared (d converted for two groups) once u is cut at the group
+    # shares, and w = R^-1 rho. The group sizes already drawn are filled in
+    # order of u, so the answers, the counts and every SEM result are
+    # untouched. With significance targeting on, e is redrawn (up to
+    # MAX_ATTEMPTS) until each test is significant or not as asked; the
+    # closest draw is kept otherwise, with a warning. generate_dataset()
+    # calls it once the answers are final.
+```
+
+## `semsim/generation/respondent_styles.py`
+
+```python
+def draw_respondent_styles(spec, n, seed) -> RespondentStyles | None
+    # From its own stream (spec.respondent_styles): a stretch
+    # s = exp(sd_e z - sd_e^2 / 2) (extreme versus midpoint) and a shift
+    # a = sd_a z (acquiescence) per respondent. _apply_scales maps each
+    # rating item's latent response y to m + s (y - m) + a before cutting,
+    # where m is the middle of the item's cut points. Reverse items carry
+    # a negative loading, so the shift agrees with them as written.
+    # The continuous shadow, the demographics and every other stream are
+    # untouched; continuous items are left alone.
 ```
 
 ## `semsim/generation/engine.py`
@@ -575,7 +695,9 @@ class CalibrationResult:
     estimation: EstimationResult
     fit: FitIndices
     rounds: int
-    history: pd.DataFrame        # round, rmsea_target, rmsea_realised, adjustment
+    draws: int
+    populations: int             # simulated populations tried (1 to 3)
+    history: pd.DataFrame        # round, population, rmsea_target, rmsea_realised, adjustment
     significance_ok: bool
     significance_table: pd.DataFrame
     converged: bool
@@ -587,6 +709,12 @@ def calibrate(spec: ModelSpec, *, n=None, seed=None, progress=None) -> Calibrati
     # (target/realised)^2 and re-draw. Honour
     # spec.fit_target.max_calibration_rounds and .tolerance, plus
     # spec.significance_target.max_resamples for the p-value side.
+    # All draws of one pass sample one population realised around the plan
+    # (heterogeneity). When that population misses a requested p-value,
+    # up to EXTRA_POPULATIONS (2) further populations are tried, seeded
+    # apart so the first pass is unchanged. Draws are scored by
+    # miss_distance(): missed paths, then log10 distance of p from alpha;
+    # the closest draw is kept when none matches.
 ```
 
 ---
@@ -621,6 +749,19 @@ proportions and one role: control, descriptive, group comparison or multi-group.
 - `semsim/analysis/demographics.py` produces the frequency table, Welch t-tests
   and one-way ANOVA, and configural, metric and structural invariance tests.
   Scalar invariance is not offered because the model has no mean structure.
+
+## `semsim/io/ai_template.py`
+
+A JSON document an AI assistant fills from a plain description of a study.
+`build_template()` holds the instructions, the allowed values and a valid
+worked example. It uses construct names rather than internal ids, so an
+assistant never has to invent or match ids.
+
+`from_text()` accepts an answer wrapped in chat text and collects every problem
+before raising `AiTemplateError`, each with its location and both languages.
+After the structural read it runs `validate()`, so a template is held to the
+same rules as a model built by hand. Changing a key means updating `_TOP_KEYS`
+or the matching `reader.keys(...)` call, the instructions and the example.
 
 ## `semsim/io/project.py`
 

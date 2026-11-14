@@ -4,7 +4,8 @@ semsim.analysis.demographics
 What each demographic role produces once the data exist.
 
 Every variable gets a frequency table setting the requested share against the
-achieved one.  A variable set aside for *comparison* gets a test of the
+achieved one, and every pair of variables the researcher linked gets a
+chi-square test of independence with Cramér's V.  A variable set aside for *comparison* gets a test of the
 difference on every construct's composite score: Welch's t-test for two groups
 and a one-way ANOVA for three or more.  A variable set aside for *multi-group
 analysis* gets a sequence of nested fits across its groups: configural, equal
@@ -39,7 +40,7 @@ from semsim.core.spec import (
 )
 
 __all__ = ["DemographicAnalysis", "analyse", "frequency_table",
-           "compare_groups", "invariance_tests"]
+           "association_tests", "compare_groups", "invariance_tests"]
 
 ALPHA = 0.05
 
@@ -52,6 +53,8 @@ _STRUCTURAL = _METRIC + (_estimator.KIND_PATH,)
 
 FREQUENCY_COLUMNS = ["variable", "category_ar", "category_en", "role",
                      "target_percent", "n", "achieved_percent", "difference"]
+ASSOCIATION_COLUMNS = ["variable_a", "variable_b", "chi_square", "df", "p",
+                       "cramers_v", "significant"]
 COMPARISON_COLUMNS = ["variable", "construct", "test", "statistic", "df1", "df2",
                       "p", "effect_size", "effect_kind", "means_ar", "means_en",
                       "significant"]
@@ -70,6 +73,8 @@ class DemographicAnalysis:
     ----------
     frequencies : pandas.DataFrame
         One row per category of every variable.
+    associations : pandas.DataFrame
+        One row per linked pair of variables.
     comparisons : pandas.DataFrame
         One row per comparison variable and construct.
     invariance : pandas.DataFrame
@@ -82,6 +87,8 @@ class DemographicAnalysis:
 
     frequencies: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(columns=FREQUENCY_COLUMNS))
+    associations: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=ASSOCIATION_COLUMNS))
     comparisons: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(columns=COMPARISON_COLUMNS))
     invariance: pd.DataFrame = field(
@@ -137,6 +144,55 @@ def frequency_table(spec: ModelSpec, demographics: pd.DataFrame) -> pd.DataFrame
                 "difference": count / total * 100.0 - share * 100.0,
             })
     return pd.DataFrame(rows, columns=FREQUENCY_COLUMNS)
+
+
+# --------------------------------------------------------------------------- #
+# Associations
+# --------------------------------------------------------------------------- #
+
+
+def association_tests(spec: ModelSpec, demographics: pd.DataFrame) -> pd.DataFrame:
+    """Chi-square test of every pair of demographic variables the model links.
+
+    Parameters
+    ----------
+    spec : ModelSpec
+        Supplies the variables and their associations.
+    demographics : pandas.DataFrame
+        The dataset's demographic columns.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns in :data:`ASSOCIATION_COLUMNS`: Pearson's chi-square without
+        continuity correction, its degrees of freedom and p value, and
+        Cramér's V.
+
+    References
+    ----------
+    Cramér, H. (1946). *Mathematical Methods of Statistics*, section 21.9.
+        Princeton University Press.
+    Agresti, A. (2013). *Categorical Data Analysis* (3rd ed.), chapter 3.
+        Wiley.
+    """
+    from semsim.core.associations import chi_square, valid_associations
+    variables = {v.id: v for v in spec.demographics}
+    rows: List[Dict[str, Any]] = []
+    for association in valid_associations(spec):
+        first, second = variables[association.first], variables[association.second]
+        if (first.name not in demographics.columns
+                or second.name not in demographics.columns):
+            continue
+        test = chi_square(demographics[first.name].to_numpy(),
+                          demographics[second.name].to_numpy(),
+                          len(first.categories), len(second.categories))
+        if test is None:
+            continue
+        statistic, df, p, v = test
+        rows.append({"variable_a": first.name, "variable_b": second.name,
+                     "chi_square": statistic, "df": df, "p": p,
+                     "cramers_v": v, "significant": bool(p < ALPHA)})
+    return pd.DataFrame(rows, columns=ASSOCIATION_COLUMNS)
 
 
 # --------------------------------------------------------------------------- #
@@ -572,6 +628,7 @@ def analyse(spec: ModelSpec, dataset: Any) -> Optional[DemographicAnalysis]:
     if demographics is None or demographics.empty:
         return None
     out = DemographicAnalysis(frequencies=frequency_table(spec, demographics))
+    out.associations = association_tests(spec, demographics)
     out.comparisons = compare_groups(spec, dataset.data, demographics, out.notes)
     out.invariance, out.group_paths = invariance_tests(
         spec, dataset.data, demographics, out.notes)

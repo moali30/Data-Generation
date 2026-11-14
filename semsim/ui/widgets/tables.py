@@ -84,6 +84,8 @@ DEFAULT_HEADER_KEYS: Dict[str, str] = {
     "delta_chi_square": "dem.h.delta_chi2", "delta_df": "dem.h.delta_df",
     "delta_p": "dem.h.delta_p", "delta_cfi": "dem.h.delta_cfi",
     "invariant": "dem.h.invariant", "group": "dem.h.group",
+    "variable_a": "dem.h.variable_a", "variable_b": "dem.h.variable_b",
+    "cramers_v": "dem.h.cramers_v",
 }
 #: Columns holding counts render without decimals.
 INTEGER_COLUMNS = {"n", "df", "n_items", "n_free", "count", "n_missing",

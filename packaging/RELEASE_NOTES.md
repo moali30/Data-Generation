@@ -1,8 +1,76 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.1.0
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.7.0
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.7.0
+
+- مستجيبون غير مبالين في ملف البيانات، زي أي استبيان إلكتروني حقيقي. الافتراضي 5% من الاستجابات، بمزيج واقعي: ناس بتكرر نفس الإجابة في كل الأسئلة (غالبًا المحايد أو الموافق مش "غير موافق بشدة")، وناس بتقرا أول الاستبيان وبعدين تكرر نفس الإجابة للباقي، وناس بتجاوب عشوائي.
+- بيتضافوا فوق حجم العينة ومتوزعين في صفوف عشوائية في الملف: لو العينة 400، الملف فيه 421 صف، والـ 21 الزيادة هما اللي الباحث بيحذفهم في فحص البيانات. كل الأهداف (المسارات والدلالة والمطابقة) بتتحقق على الـ 400 بعد الحذف، والعينة نفسها بتطلع زي ما كانت بالظبط.
+- صفحة النتائج والتقرير وورقة المواصفات في Excel وسكربت R بيقولوا عدد المستجيبين غير المبالين ونوعهم وأرقام صفوفهم في الملف.
+- في كارت التشويش: نمط جديد «واقعي» (الافتراضي)، واختيار «إضافتهم فوق حجم العينة». لو شلت العلامة بيرجعوا جوه العينة ويفضلوا في التحليل زي الإصدارات القديمة.
+- قالب الذكاء الاصطناعي: `careless_percent` افتراضيه 5، ومفتاح جديد `careless_removed`.
+- المشاريع المحفوظة قبل كده بتفتح بنفس إعداداتها (نسبة 0% فضلت 0%).
+
+### الجديد في 1.6.1
+
+- إصلاح: مسار ضعيف طالبه دال كان ممكن يطلع غير دال في حوالي 1 من كل 10 تشغيلات (في مثال القالب SQ ← LOY طلع p = 0.86). السبب إن المجتمع اللي البرنامج بيسحب منه بيختلف شوية عن الخطة، وساعات الاختلاف ده بيصغّر المسار لدرجة إن العينة ما تقدرش تظهره، وإعادة سحب العينة من نفس المجتمع ما كانتش بتحل المشكلة. دلوقتي لو المجتمع ما حققش المطلوب، البرنامج بيجرب لحد مجتمعين تانيين حوالين نفس الخطة.
+- لو مفيش سحبة حققت المطلوب، البرنامج بيحتفظ بأقرب سحبة (أقل عدد مسارات مخالفة، وبعدين أقرب قيم p لمستوى الدلالة) بدل أول سحبة.
+- التشغيلات اللي كانت بتنجح من أول مجتمع بتطلع نفس البيانات بالظبط زي الإصدار 1.6.0.
+
+### الجديد في 1.6.0
+
+- أسلوب إجابة خاص بكل مستجيب: في البيانات الحقيقية فيه ناس بتختار الطرفين (1 و5) كل ما توافق أو ترفض، وناس بتلزم المنتصف، وناس بتوافق على أي عبارة حتى المعكوسة. دلوقتي كل مستجيب بياخد أسلوب ثابت في كل الأسئلة، بدل ما كل المستجيبين يستخدموا المقياس بنفس الطريقة.
+- كارت جديد في صفحة «توليد البيانات والتوزيعات» اسمه «أسلوب الإجابة عند كل مستجيب»: بدون، خفيف، واقعي (الافتراضي)، قوي، أو مخصّص بقيمتين (الأطراف مقابل المنتصف، والميل للموافقة).
+- متوسطات الأسئلة شبه ما بتتغيرش، والمسارات بتتحرك حوالي 0.02 في المستوى الواقعي، لأن أسلوب الإجابة بيضيف تباين طريقة مشترك صغير زي البيانات الحقيقية (اختبار هارمان بيرتفع حوالي نقطتين مئويتين). والعبارات المعكوسة ارتباطها السالب بباقي الأسئلة بيضعف شوية بسبب الميل للموافقة.
+- قالب الذكاء الاصطناعي فيه مفتاح جديد `realism.respondent_styles`.
+
+### الجديد في 1.5.0
+
+- الارتباط بين المتغيرات الديموغرافية: كارت جديد في تبويب الديموغرافيا تربط فيه متغيرين بيمشوا مع بعض في العينات الحقيقية (السن وسنين الخبرة، المؤهل والمستوى الوظيفي). بتختار قوة الارتباط (ضعيف، متوسط، قوي، أو قيمة V لكرامر بالظبط)، والفئات اللي بتجتمع مع بعض، وهل اختبار كاي تربيع مطلوب يطلع دال. قبل كده كل متغير كان مستقل تمامًا عن التاني، فكاي تربيع بينهم كان بيطلع غير دال دايمًا.
+- كل متغير بيحافظ على نِسب فئاته، والمتغيرات اللي مش مربوطة والإجابات نفسها مش بتتغير. والمتغيرات المربوطة بطريق غير مباشر بترتبط بالقدر اللي بتفرضه الروابط (السن مع الخبرة والخبرة مع الوظيفة، فالسن بيرتبط بالوظيفة شوية).
+- لو المتغيرين المربوطين ضابطين، النموذج بقى يعرف الارتباط بينهم فعلًا، فالمعايرة بتوصل لهدف المطابقة. ولو متغير المقارنة ليه فروق ومربوط بمتغير تاني، الارتباط بيفضل موجود بعد توزيع الفروق.
+- النتائج والتقرير فيهم جدول جديد لاختبار كاي تربيع ومعامل V لكل ارتباط، وقالب الذكاء الاصطناعي فيه مفتاح جديد `associations`.
+
+### الجديد في 1.4.0
+
+- الفروق بين الفئات الديموغرافية: المتغير اللي دوره «اختبار فروق» بقى ليه قسم «الفروق بين الفئات»، تختار فيه المتغير الكامن، وحجم الفرق (صغير، متوسط، كبير، أو قيمة d / مربع إيتا بالظبط)، والفئة الأعلى، وهل الفرق مطلوب يطلع دال ولا لأ. قبل كده الفئات كانت بتتوزع بمعزل عن الإجابات، فاختبار t وتحليل التباين كانوا بيطلعوا غير دالين دايمًا، وده مستحيل في بيانات حقيقية.
+- الإجابات نفسها ونتائج النموذج مش بتتغير: البرنامج بيوزّع المستجيبين على الفئات حسب إجاباتهم، مع الاحتفاظ بعدد كل فئة. والمتغيرات اللي مالهاش فرق محدد بتختلف بقدر ارتباطها بالمتغير اللي له فرق، زي البيانات الحقيقية. وتقدر تثبّت متغير مرتبط على «لا يوجد فرق».
+- قالب الذكاء الاصطناعي فيه مفتاح جديد `differences` لمتغيرات المقارنة، والمساعد بيتوجّه يضيفه لما يكون عندك فرض عن فروق ديموغرافية.
+
+### الجديد في 1.3.1
+
+- إصلاح مهم في تقدير النموذج: في بعض النماذج (مثلًا أربع متغيرات فيها متغيرين مستقلين مترابطين) خوارزمية التقدير كانت بتقف عند نقطة البداية وتعتبر نفسها نجحت، فالمسارات كانت بتطلع **نفس الأرقام اللي أدخلتها بالظبط** (0.30 و0.50...) بدل ما تتقدّر من البيانات، ومؤشرات المطابقة كانت بتتحسب عند القيم دي فتطلع سيئة (RMSEA 0.066 و SRMR 0.23 بدل الهدف). دلوقتي التقدير بيتحرك فعلًا من البيانات، والمعايرة بتوصل للهدف.
+- الأسئلة معكوسة الصياغة بقت واقعية: العينة الراضية بقت **ترفض** عبارة زي «لست سعيدًا بالخدمة» (متوسطها الخام حوالي 2)، فبعد إعادة الترميز بتتماشى مع باقي أسئلة المتغير. وتشبعها بقى أضعف شوية من الأسئلة الإيجابية زي ما بيحصل في البيانات الحقيقية.
+- «غير موافق بشدة» بقت بتظهر في كل سؤال: إعداد جديد «الإجابات عند أطراف المقياس» بيوزّع نسبة صغيرة من الإجابات على كل الفئات (5% في المستوى الواقعي)، بدل ما يبقى في أسئلة محدش اختار فيها 1 أبدًا.
+
+### الجديد في 1.3.0
+
+- البيانات بقت شبه البيانات اللي بتتجمع فعلًا. قبل كده كل أسئلة المتغير كان ليها نفس المتوسط (3.00 مثلًا) ونفس الانحراف المعياري ونفس التشبع، والتوزيع متماثل تمامًا، وده بيكشف إن البيانات مولَّدة. دلوقتي البرنامج بيسحب «مجتمع واقعي» حوالين نموذجك: كل متغير ليه مستوى خاص على المقياس، وكل سؤال ليه صعوبة وتشتت خاصين، والتشبعات والمسارات بتتفاوت شوية حوالين القيم اللي حددتها من غير ما إشارتها أو الدلالة المطلوبة تتغير.
+- إعداد جديد في صفحة «توليد البيانات والتوزيعات» اسمه «التباين الواقعي بين الأسئلة والمتغيرات»: بدون، خفيف، واقعي (الافتراضي)، قوي، أو مخصّص بخمس قيم.
+- العينة الديموغرافية بقت تتسحب عشوائيًا بالنسب المطلوبة افتراضيًا، فالأعداد بتطلع زي العينات الحقيقية (317 و204 و158 بدل 320 و200 و160). الحصص الدقيقة لسه موجودة لو العينة حصصية فعلًا.
+- قالب الذكاء الاصطناعي فيه مفتاح جديد `realism.variation`، والحصص العشوائية بقت الافتراضية، والمساعد بيتوجّه يختار نمط الاستجابة المناسب لكل متغير (مقاييس الرضا والثقة والنية بتميل للموافقة) بدل ما يخلي كل المتغيرات متماثلة حوالين المنتصف.
+
+### الجديد في 1.2.3
+
+- إصلاح قفل البرنامج فجأة أول ما تبدأ المحاكاة (في 1.2.1 و 1.2.2). شريط التقدم كان بيتحدّث من خيط الحساب بدل الواجهة، فالبرنامج كان بيقفل من غير أي رسالة.
+
+### الجديد في 1.2.2
+
+- النماذج اللي فيها أثر تعديل (تفاعلات) بقت توصل لهدف المطابقة زي أي نموذج تاني. قبل كده كانت البيانات بتطابق النموذج تقريبًا تمامًا، والـ RMSEA بيطلع قريب من الصفر مهما كان الهدف، والمعايرة مكانتش بتقدر تحركه. أثر التعديل نفسه فضل زي ما هو.
+
+### الجديد في 1.2.1
+
+- زر «إيقاف» يوقف المحاكاة فعلًا: الأزرار ترجع فورًا، والحساب يتوقف خلال جزء من الثانية. قبل كده كان الإيقاف يُتجاهل أثناء المعايرة والمحاكاة تكمل.
+- شريط الحالة يعرض الوقت المنقضي والوقت المتبقي المتوقع لانتهاء المحاكاة، ويتحدّث كل ثانية. شريط التقدم بقى يتحرك أثناء حساب القوة الإحصائية وكل سحبة في المعايرة بدل ما يقف.
+- مخطط المسار اتعاد رسمه: المتغيرات المعدِّلة في صف فوق أو تحت النموذج وسهمها ينزل على المسار اللي بتعدّله، والوسيط في مكانه بين المتغيرات اللي بتأثر فيه وبين التابع، والأسماء الطويلة جوه الشكل، ومعاها الرمز والدور، ومفتاح للرسم.
+- قالب الذكاء الاصطناعي بقى يشرح للمساعد إزاي يكتب أثر التعديل والارتباطات بالشكل الصحيح، عشان الرسمة تطلع مظبوطة. ولو المساعد كتب التعديل غلط (مسار مباشر بدل تعديل، أو معدِّل مش بيعدّل حاجة) البرنامج بيرجّعه بالخطأ عشان يصلحه.
+
+### الجديد في 1.2.0
+
+- قالب JSON للذكاء الاصطناعي من قائمة ملف: احفظه أو انسخه، وأرسله إلى أي مساعد مع شرح البيانات التي تحتاجها، ثم استورد ما يرجعه من ملف أو من الحافظة.
+- لو في القالب أخطاء يعرضها البرنامج كلها بمكانها، وزر واحد ينسخها لترسلها إلى المساعد ليصححها.
 
 ### الجديد في 1.1.0
 
@@ -53,9 +121,77 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.1.0
+## SEM Data Simulation Engine — v1.7.0
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.7.0
+
+- The data file now holds careless respondents, as every online survey does. By default they are 5% of the responses, in a realistic mix: some give the same answer to every question (mostly the neutral or an agreeing option, rarely "strongly disagree"), some read the first part and then repeat one answer for the rest, and some answer at random.
+- They come on top of the sample, at random rows of the file: a sample of 400 gives a file of 421 rows, and the 21 extra are the ones a researcher removes when screening the data. Every target (paths, significance, fit) holds on the 400 that remain, and the sample itself is exactly what it would have been without them.
+- The results page, the report, the Excel specification sheet and the R script say how many careless respondents there are, of which kind, and which rows of the file they are.
+- The noise card has a new "Realistic" style (the default) and an "Add them on top of the sample" option. Unticked, they replace part of the sample and stay in the analysis, as in earlier versions.
+- AI template: `careless_percent` defaults to 5, and a new `careless_removed` key.
+- Projects saved earlier open with their own settings (a 0% share stays 0%).
+
+### What's new in 1.6.1
+
+- Fix: a weak path asked to be significant could come out non-significant in about one run in ten (in the template example, SQ -> LOY at p = 0.86). The simulated population varies a little around the plan, and that variation sometimes shrank the path below what the sample could show; re-drawing samples from the same population could not help. When a population misses the requested pattern, up to two other populations around the same plan are now tried.
+- When no draw reaches the pattern, the closest one is kept (fewest missed paths, then p-values nearest alpha) instead of the first.
+- Runs that succeeded with the first population give exactly the same data as in 1.6.0.
+
+### What's new in 1.6.0
+
+- Each respondent now has an answering style of their own. In real data some people pick the ends (1 and 5) whenever they agree or disagree, some keep to the middle, and some agree with any statement, reverse-worded ones included. Each respondent now keeps one style across all the items, instead of everyone using the scale alike.
+- A new "How each respondent answers" card on the data generation page: none, mild, realistic (the default), strong, or custom with two amounts (extremes versus midpoint, and agreeing regardless).
+- Item means barely change and paths move by about 0.02 at the realistic level, because answering styles add a little shared method variance, as in collected data (Harman's test rises by about two percentage points). Reverse-worded items correlate a little less negatively with the rest because of acquiescence.
+- The AI template has a new `realism.respondent_styles` key.
+
+### What's new in 1.5.0
+
+- Associations between demographic variables: a new card on the demographics tab links two variables that go together in real samples (age and years of experience, education and job level). You choose the strength (weak, moderate, strong, or an exact Cramér's V), which categories go together, and whether the chi-square test should be significant. Until now every variable was independent of every other, so every chi-square between them came out non-significant.
+- Every variable keeps its category shares, and the unlinked variables and the answers do not change. Variables linked only through others go together as far as the links imply (age with experience and experience with job level makes age go a little with job level).
+- When both linked variables are controls, the model now knows how they correlate, so calibration still reaches its fit target. A comparison variable with group differences keeps its association after it is regrouped.
+- Results and the report gain a chi-square and Cramér's V table for each link, and the AI template a new `associations` key.
+
+### What's new in 1.4.0
+
+- Group differences on demographics: a variable with the Group comparison role now has a "Group differences" section where you choose the construct, the size of the difference (small, medium, large, or an exact d or eta squared), which group scores highest, and whether the test should come out significant. Until now groups were assigned apart from the answers, so every t-test and ANOVA came out non-significant, which no real sample does.
+- The answers and the model results do not change: respondents are placed in groups according to their answers, and each group keeps its size. Constructs with no difference of their own differ as far as they correlate with one that has, as in real data, and a correlated construct can be held level with "None".
+- The AI template has a new `differences` key for comparison variables, and the assistant is told to add it when you hypothesise demographic differences.
+
+### What's new in 1.3.1
+
+- An important estimation fix: in some models (four constructs with two correlated independents, for example) the optimiser stopped at its starting point and reported success, so the paths came back as **exactly the numbers you entered** (0.30, 0.50...) instead of being estimated from the data, and the fit indices, computed at those values, came out poor (RMSEA 0.066 and SRMR 0.23 instead of the target). The estimates now really come from the data, and calibration reaches its target.
+- Reverse-worded items behave realistically: a satisfied sample now mostly *disagrees* with "I am unhappy with the service" (raw mean about 2), so after recoding it lines up with the rest of its construct, and it loads a little more weakly than the positively worded items, as real reversed items do.
+- "Strongly disagree" now turns up on every item: a new "Answers at the scale ends" amount spreads a small share of answers over every category (5% at the realistic level), instead of leaving items nobody ever answered 1 on.
+
+### What's new in 1.3.0
+
+- Generated data now look collected rather than simulated. Every item of a construct used to share the same mean (3.00, say), the same standard deviation and the same loading, in a perfectly symmetric distribution, which gave the data away. The program now draws one realistic population around your model: each construct has its own level on the scale, each item its own difficulty and spread, and the loadings and paths scatter a little around the values you set without changing sign or the significance you asked for.
+- A new "Real-world variation" setting on the Distributions page: none, mild, realistic (the default), strong, or custom with five amounts.
+- Demographic categories are now drawn at random with the requested shares by default, so the counts vary the way a real sample's do (317, 204, 158 rather than 320, 200, 160). Exact quotas remain available for a genuine quota sample.
+- The AI template has a new `realism.variation` key, defaults to random quotas, and steers the assistant to choose each construct's response style on its own merits (satisfaction, trust and intention scales lean towards agreement) instead of centring every construct on the midpoint.
+
+### What's new in 1.2.3
+
+- Fixes the program closing without a message as soon as a simulation started (in 1.2.1 and 1.2.2). The progress bar was being updated from the computation thread instead of the interface.
+
+### What's new in 1.2.2
+
+- Models with moderation (interactions) now reach their fit target like any other model. Their data used to fit almost perfectly, with RMSEA near zero whatever the target, and calibration could not move it. The moderation effects themselves are unchanged.
+
+### What's new in 1.2.1
+
+- Stop really stops a run: the controls come back at once and the computation halts within a fraction of a second. It used to be ignored during calibration, and the run carried on.
+- The status bar shows the time elapsed and the estimated time left, updated every second. The progress bar now moves during the power analysis and with every calibration draw instead of freezing.
+- The path diagram is redrawn: moderators sit in a band above or below the model with their arrow landing on the path they moderate, a mediator sits between what feeds it and the outcome, long names fit inside their ellipse with their code and role, and a legend explains the lines.
+- The AI template now tells the assistant exactly how to write a moderation and a correlation, so the diagram comes out right. A moderation written wrongly (a plain path instead of an interaction, or a moderator that moderates nothing) is sent back with the problem to fix.
+
+### What's new in 1.2.0
+
+- An AI template in the File menu: save or copy it, send it to any assistant with a description of the data you need, and import the answer from a file or the clipboard.
+- Problems in a filled template are all listed with their locations, and one button copies them to send back to the assistant.
 
 ### What's new in 1.1.0
 

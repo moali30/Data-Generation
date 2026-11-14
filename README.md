@@ -58,6 +58,31 @@ anything.
   لذا يتحول البرنامج تلقائيًا إلى توليد درجات المتغيرات الكامنة عند وجود تعديل.
 - **واقعية الاستجابة البشرية.** مستجيبون غير مبالين (خط مستقيم أو إجابات
   عشوائية)، وقيم شاذة مقيَّدة بمدى المقياس، وفقد عشوائي مشروط (MAR).
+- **مجتمع واقعي لا نموذج مثالي.** لا تتساوى في البيانات الحقيقية متوسطات
+  الأسئلة ولا انحرافاتها ولا تشبعاتها، ولا تأتي المسارات أرقامًا مدوّرة. لذا
+  يسحب البرنامج مجتمعًا حول نموذجك: لكل متغير مستوى خاص على المقياس، ولكل سؤال
+  صعوبة وتشتت خاصان (كما في نموذج الاستجابة المتدرجة لـ Samejima)، وتتفاوت
+  التشبعات والمسارات قليلًا حول القيم المخططة دون أن تتغير إشارتها أو دلالتها
+  المطلوبة. والأسئلة معكوسة الصياغة تُجاب بعكس توزيع متغيرها وبتشبع أضعف قليلًا،
+  وتظهر بعض الإجابات عند طرفي المقياس في كل سؤال. وتُسحب الفئات الديموغرافية
+  عشوائيًا بالنسب المطلوبة افتراضيًا، فتتفاوت أعدادها كما في عينة حقيقية.
+- **فروق حقيقية بين الفئات.** لمتغير المقارنة تحدد على أي متغير كامن تختلف
+  فئاته، وبأي حجم (d لكوهين أو مربع إيتا)، وأي فئة أعلى، وهل الفرق دال. يُوزَّع
+  المستجيبون على الفئات حسب إجاباتهم مع الاحتفاظ بعدد كل فئة، فتظهر الفروق في
+  اختبار t وتحليل التباين دون أن تتغير الإجابات أو نتائج النموذج.
+- **ارتباط بين المتغيرات الديموغرافية.** تربط متغيرين يسيران معًا في
+  العينات الحقيقية، كالعمر وسنوات الخبرة، بقوة تحددها بمعامل كرامر V. تُقطع
+  فئات كل متغير من درجة كامنة مرتبطة بدرجات المتغيرات الأخرى (رابطة جاوس)،
+  فيحتفظ كل متغير بنسب فئاته ويظهر الارتباط في اختبار كاي تربيع.
+- **أسلوب إجابة لكل مستجيب.** يأخذ كل مستجيب ميلًا ثابتًا في كل الأسئلة:
+  إلى الطرفين أو إلى المنتصف، وإلى الموافقة أيًّا كانت صياغة العبارة
+  (Baumgartner & Steenkamp, 2001)، فيضيف ذلك تباين الطريقة الصغير الذي
+  تحمله البيانات المجموعة فعلًا.
+- **مستجيبون غير مبالين يحذفهم الباحث.** يضم الملف نسبة من الاستجابات
+  المعطاة دون قراءة (5% افتراضيًا): نفس الإجابة لكل الأسئلة، أو من منتصف
+  الاستبيان، أو إجابات عشوائية (Meade & Craig, 2012; Curran, 2016).
+  تُضاف فوق حجم العينة في صفوف متفرقة، وتتحقق كل النتائج المخططة على
+  العينة بعد حذفها، ويذكر البرنامج أرقام صفوفها.
 
 ### التشغيل
 
@@ -136,6 +161,38 @@ a Monte Carlo study.
 - **Human response realism.** Careless respondents (straight-lining or random
   clicking), outliers clipped to the legal response range, and MAR missingness
   driven by an observed score.
+- **A realistic population, not a textbook one.** In real data no two items
+  share a mean, a spread or a loading, and no path is a round number. The
+  engine draws one population around your model: each construct gets its own
+  level on the scale, each item its own difficulty and spread (as in
+  Samejima's graded response model), and loadings and paths scatter a little
+  around the planned values without changing sign or the requested
+  significance. Reverse-worded items are answered as the mirror image of their
+  construct and load a little more weakly, and every item gets a few answers
+  at both ends of the scale. Demographic categories are drawn at random with
+  the requested shares by default, so their counts vary the way a real
+  sample's do.
+- **Real group differences.** For a comparison variable you set which
+  constructs its groups differ on, by how much (Cohen's d or eta squared),
+  which group scores highest and whether the difference is significant.
+  Respondents are placed in groups by their answers, each group keeping its
+  size, so the t-test and ANOVA show the differences while the answers and
+  the model results stay exactly as they were.
+- **Associated demographics.** Link two variables that go together in real
+  samples, such as age and years of experience, at a Cramér's V you set.
+  Each variable's categories are cut from a latent score correlated with
+  the others' (a Gaussian copula), so every variable keeps its shares and
+  the chi-square test shows the link.
+- **Respondent answering styles.** Each respondent keeps one tendency
+  across all the items: towards the ends or the middle of the scale, and
+  towards agreeing whatever the wording (Baumgartner & Steenkamp, 2001),
+  adding the small method variance collected data carry.
+- **Careless respondents to screen out.** The file holds a share of
+  responses given without reading (5% by default): one answer repeated
+  from the start or part-way through, or random answers (Meade & Craig,
+  2012; Curran, 2016). They come on top of the sample at scattered rows,
+  every planned result holds once they are removed, and the program
+  says which rows they are.
 
 ### Running it
 
@@ -199,19 +256,38 @@ simulated is the model you re-estimate.
 
 ## References
 
+- Baumgartner, H., & Steenkamp, J.-B. E. M. (2001). Response styles in
+  marketing research: A cross-national investigation. *Journal of
+  Marketing Research, 38*, 143–156.
 - Browne, M. W., & Cudeck, R. (1993). Alternative ways of assessing model fit.
+- Cohen, J. (1988). *Statistical Power Analysis for the Behavioral
+  Sciences* (2nd ed.). Erlbaum.
+- Cramér, H. (1946). *Mathematical Methods of Statistics*. Princeton
+  University Press.
+- Curran, P. G. (2016). Methods for the detection of carelessly invalid
+  responses in survey data. *Journal of Experimental Social Psychology,
+  66*, 4–19.
 - Cudeck, R., & Browne, M. W. (1992). Constructing a covariance matrix that
   yields a specified minimizer and a specified minimum discrepancy function
   value. *Psychometrika, 57*, 357–369.
 - Fleishman, A. I. (1978). A method for simulating non-normal distributions.
   *Psychometrika, 43*, 521–532.
+- Embretson, S. E., & Reise, S. P. (2000). *Item Response Theory for
+  Psychologists*. Erlbaum.
 - Hu, L., & Bentler, P. M. (1999). Cutoff criteria for fit indexes in
   covariance structure analysis. *Structural Equation Modeling, 6*, 1–55.
+- MacCallum, R. C., & Tucker, L. R. (1991). Representing sources of error in
+  the common-factor model. *Psychological Bulletin, 109*, 502–511.
 - MacCallum, R. C., Browne, M. W., & Sugawara, H. M. (1996). Power analysis and
   determination of sample size for covariance structure modeling.
   *Psychological Methods, 1*, 130–149.
+- Nelsen, R. B. (2006). *An Introduction to Copulas* (2nd ed.). Springer.
+- Meade, A. W., & Craig, S. B. (2012). Identifying careless responses in
+  survey data. *Psychological Methods, 17*, 437–455.
 - Muthén, L. K., & Muthén, B. O. (2002). How to use a Monte Carlo study to
   decide on sample size and determine power.
+- Samejima, F. (1969). Estimation of latent ability using a response pattern
+  of graded scores. *Psychometrika Monograph Supplement, 34*(4, Pt. 2).
 - Satorra, A., & Saris, W. E. (1985). Power of the likelihood ratio test in
   covariance structure analysis. *Psychometrika, 50*, 83–90.
 - Vale, C. D., & Maurelli, V. A. (1983). Simulating multivariate nonnormal

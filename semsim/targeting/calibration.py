@@ -21,6 +21,15 @@ Path significance is handled in the same spirit: a draw whose p-values
 contradict the requested pattern is rejected and re-drawn with a fresh seed,
 up to ``significance_target.max_resamples``.  Rejection sampling is honest
 about what it is -- the returned result says how many draws it took.
+
+Every draw comes from one simulated population, which varies a little
+around the plan (:mod:`semsim.generation.heterogeneity`).  That variation can
+leave a weak path the researcher wants significant smaller than planned, too
+small for the sample to show it, and then no number of further samples from
+that population helps.  So when a population misses a requested p-value, up
+to ``EXTRA_POPULATIONS`` other populations around the same plan are tried,
+each as plausible as the first.  When none reaches the pattern, the draw
+closest to it is kept: the fewest misses, then the p-values nearest alpha.
 """
 
 from __future__ import annotations
@@ -33,6 +42,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from semsim.core import cancel as _cancel
 from semsim.core.compile import CompiledModel, compile_model
 from semsim.core.errors import SemSimError
 from semsim.core import implied as implied_module
@@ -48,6 +58,13 @@ MAX_STEP = 3.0
 #: Damping on the multiplicative update, so the loop converges instead of
 #: oscillating around the target.
 DAMPING = 0.75
+#: How many further populations are tried when the first one leaves a path
+#: the researcher wants significant out of the sample's reach.
+EXTRA_POPULATIONS = 2
+#: Seed offsets for the further populations and for their samples, so the
+#: first population and its draws are exactly those of a single-population run.
+POPULATION_SEED_STRIDE = 7_368_787
+SAMPLE_SEED_STRIDE = 500_000
 
 
 @dataclass
@@ -59,6 +76,7 @@ class CalibrationResult:
     fit: Any = None
     rounds: int = 0
     draws: int = 1
+    populations: int = 1
     history: pd.DataFrame = field(default_factory=pd.DataFrame)
     significance_ok: bool = True
     significance_table: pd.DataFrame = field(default_factory=pd.DataFrame)
@@ -80,6 +98,7 @@ class CalibrationResult:
         return {
             "rounds": self.rounds,
             "draws": self.draws,
+            "populations": self.populations,
             "target_rmsea": self.target_rmsea,
             "realised_rmsea": self.realised_rmsea,
             "within_tolerance": self.within_tolerance,
@@ -127,10 +146,7 @@ def calibrate(spec: ModelSpec, *, n: Optional[int] = None,
 
     plan = significance_module.build_plan(spec, compiled, n_cases,
                                           compute_power=False)
-    working = significance_module.apply_plan(spec, plan)
-    working.power.n = n_cases
-    if plan.coefficients:
-        compiled = compile_model(working)
+    planned = significance_module.apply_plan(spec, plan)
 
     target_rmsea = _target_rmsea(spec)
     tolerance = float(spec.fit_target.tolerance)
@@ -144,54 +160,111 @@ def calibrate(spec: ModelSpec, *, n: Optional[int] = None,
             "no lack of fit to target.")
 
     estimate = estimate_fn or _default_estimator()
+    checking = bool(spec.significance_target.enabled)
     max_resamples = (max(int(spec.significance_target.max_resamples), 0)
-                     if spec.significance_target.enabled else 0)
+                     if checking else 0)
+    # Another population only differs from the first when the population
+    # varies around the plan at all.
+    from semsim.generation.heterogeneity import realise_population
+    varies = bool(getattr(planned.heterogeneity, "enabled", False))
+    populations = 1 + (EXTRA_POPULATIONS if varies and max_resamples else 0)
 
     history: List[Dict[str, Any]] = []
-    hopeless: Dict[str, int] = {}
     injected = target_rmsea
     best: Optional[Tuple[float, Dict[str, Any]]] = None
     draws = 0
     converged = False
+    populations_used = 0
 
-    for round_index in range(1, max_rounds + 1):
-        report("status.calibrating", 0.1 + 0.8 * (round_index - 1) / max_rounds)
-        # Once a path is known to be out of reach, rejection sampling has
-        # nothing left to try, so later rounds draw once and move on.
-        resamples = 0 if any(c >= HOPELESS_AFTER for c in hopeless.values()) \
-            else max_resamples
-        attempt, draws_used = _draw_until_significant(
-            working, compiled, n_cases, base_seed + 1000 * round_index,
-            injected if targeting_fit else 0.0, df, estimate,
-            resamples, warnings, hopeless)
-        draws += draws_used
-        realised = attempt["rmsea"]
-        history.append({
-            "round": round_index,
-            "injected_rmsea": injected,
-            "realised_rmsea": realised,
-            "target_rmsea": target_rmsea,
-            "deviation": realised - target_rmsea,
-            "draws": draws_used,
-            "significance_ok": attempt["significance_ok"],
-        })
+    for population_index in range(populations):
+        populations_used = population_index + 1
+        last_population = population_index == populations - 1
+        # Every round and every re-draw of one pass samples from the same
+        # population, so rejection sampling selects among samples of it.
+        working = realise_population(
+            planned, base_seed + POPULATION_SEED_STRIDE * population_index)
+        working.power.n = n_cases
+        compiled = compile_model(working)
+        hopeless: Dict[str, int] = {}
+        sample_seed = base_seed + SAMPLE_SEED_STRIDE * population_index
+        span = (0.1, 0.9) if population_index == 0 else (0.9, 0.97)
 
-        score = _score(attempt, target_rmsea, targeting_fit)
-        if best is None or score < best[0]:
-            best = (score, attempt)
+        def fraction(done: float, _span: Tuple[float, float] = span) -> float:
+            return _span[0] + (_span[1] - _span[0]) * done / max_rounds
 
-        if not targeting_fit:
-            converged = attempt["significance_ok"] or max_resamples == 0
+        for round_index in range(1, max_rounds + 1):
+            report("status.calibrating", fraction(round_index - 1))
+            # Once a path is known to be out of reach, rejection sampling has
+            # nothing left to try, so later rounds draw once and move on.
+            stuck = any(c >= HOPELESS_AFTER for c in hopeless.values())
+            resamples = 0 if stuck else max_resamples
+
+            def on_draw(done: int, total: int, _round: int = round_index,
+                        _fraction: Callable[[float], float] = fraction) -> None:
+                # Each fit is the slow part, so the bar moves once per draw
+                # rather than once per round -- and Stop is honoured between
+                # them.
+                report("status.calibrating",
+                       _fraction((_round - 1) + done / max(total, 1)))
+
+            attempt, draws_used = _draw_until_significant(
+                working, compiled, n_cases, sample_seed + 1000 * round_index,
+                injected if targeting_fit else 0.0, df, estimate,
+                resamples, warnings, hopeless, on_draw=on_draw,
+                check=checking)
+            draws += draws_used
+            realised = attempt["rmsea"]
+            history.append({
+                "round": len(history) + 1,
+                "population": population_index + 1,
+                "injected_rmsea": injected,
+                "realised_rmsea": realised,
+                "target_rmsea": target_rmsea,
+                "deviation": realised - target_rmsea,
+                "draws": draws_used,
+                "significance_ok": attempt["significance_ok"],
+            })
+
+            score = _score(attempt, target_rmsea, targeting_fit)
+            if best is None or score < best[0]:
+                best = (score, attempt)
+
+            # Significance is settled when it was met, when nothing was asked
+            # of it, or when this population has shown it cannot meet it.
+            settled = (attempt["significance_ok"] or max_resamples == 0
+                       or any(c >= HOPELESS_AFTER for c in hopeless.values()))
+            if not targeting_fit:
+                converged = attempt["significance_ok"] or max_resamples == 0
+                break
+            if abs(realised - target_rmsea) <= tolerance and settled:
+                converged = attempt["significance_ok"] or max_resamples == 0
+                break
+            injected = _next_injection(injected, realised, target_rmsea, warnings)
+            if not attempt["significance_ok"] and not last_population:
+                # A fresh population is a better bet than more samples from
+                # one that keeps missing.
+                break
+
+        if best is not None and best[1]["significance_ok"]:
             break
-        if abs(realised - target_rmsea) <= tolerance and attempt["significance_ok"]:
-            converged = True
-            break
-        injected = _next_injection(injected, realised, target_rmsea, warnings)
 
     assert best is not None
     attempt = best[1]
     significance_ok, table = significance_module.check_realised(
         attempt["estimation"], spec, spec.significance_target.alpha)
+
+    if significance_ok:
+        # A population that missed and was replaced leaves nothing to report.
+        warnings = [w for w in warnings if not w.startswith(_MISS_CODES)]
+    elif populations_used > 1:
+        warnings = [w for w in warnings
+                    if not w.startswith("SIGNIFICANCE_NOT_REACHED")]
+        warnings.append(
+            f"SIGNIFICANCE_NOT_REACHED: {draws} draw(s) from "
+            f"{populations_used} simulated populations did not reproduce the "
+            "requested pattern of significant and non-significant paths. The "
+            "closest draw was kept. Rejection sampling cannot create power "
+            "that is not there.")
 
     result = CalibrationResult(
         dataset=attempt["dataset"],
@@ -199,6 +272,7 @@ def calibrate(spec: ModelSpec, *, n: Optional[int] = None,
         fit=attempt["fit"],
         rounds=len(history),
         draws=draws,
+        populations=populations_used,
         history=pd.DataFrame(history),
         significance_ok=significance_ok,
         significance_table=table,
@@ -230,6 +304,8 @@ def calibrate(spec: ModelSpec, *, n: Optional[int] = None,
 HOPELESS_AFTER = 3
 #: "A wide margin" means a p-value this many times alpha.
 HOPELESS_RATIO = 5.0
+#: Warnings about a missed significance pattern.
+_MISS_CODES = ("UNDERPOWERED_PATH", "SIGNIFICANCE_NOT_REACHED")
 
 
 def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
@@ -237,7 +313,9 @@ def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
                             df: int, estimate: Callable[..., Any],
                             max_resamples: int,
                             warnings: List[str],
-                            hopeless: Optional[Dict[str, int]] = None
+                            hopeless: Optional[Dict[str, int]] = None,
+                            on_draw: Optional[Callable[[int, int], None]] = None,
+                            check: Optional[bool] = None
                             ) -> Tuple[Dict[str, Any], int]:
     """Draw, fit, and re-draw while the p-value pattern is wrong.
 
@@ -247,8 +325,14 @@ def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
     costs tens of seconds per fit, so twenty-five futile draws is a quarter of
     an hour of a frozen progress bar. The loop watches for that and stops,
     saying what the actual fix is.
+
+    ``check`` says whether to test the p-values at all (by default, whenever
+    re-drawing is allowed); a draw is then scored by how far it is from the
+    requested pattern, and when none matches, the closest one is returned.
     """
     sigma = _generating_matrix(compiled, injected_rmsea, df, seed, warnings)
+    if check is None:
+        check = bool(max_resamples)
     fallback: Optional[Dict[str, Any]] = None
     attempts = max_resamples + 1
     alpha = working.significance_target.alpha
@@ -260,13 +344,16 @@ def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
     used = 0
 
     for attempt_index in range(attempts):
+        _cancel.check()
+        if on_draw is not None and attempt_index:
+            on_draw(attempt_index, attempts)
         used = attempt_index + 1
         dataset = generate_dataset(working, n=n, seed=seed + attempt_index,
                                    sigma_override=sigma, compiled=compiled)
         estimation, fit = _fit(dataset, working, estimate, warnings)
         ok = True
         table = pd.DataFrame()
-        if estimation is not None and max_resamples:
+        if estimation is not None and check:
             ok, table = significance_module.check_realised(
                 estimation, working, alpha)
         record = {
@@ -276,11 +363,14 @@ def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
             "rmsea": float(getattr(fit, "rmsea", float("nan"))
                            if fit is not None else float("nan")),
             "significance_ok": ok,
+            "miss": miss_distance(table, alpha) if not ok else (0, 0.0),
         }
         if ok:
             return record, used
-        if fallback is None:
+        if fallback is None or record["miss"] < fallback["miss"]:
             fallback = record
+        if not max_resamples:
+            break
         for label in _underpowered(table, alpha):
             hopeless[label] = hopeless.get(label, 0) + 1
         stuck = [label for label, count in hopeless.items()
@@ -301,6 +391,40 @@ def _draw_until_significant(working: ModelSpec, compiled: CompiledModel,
                    "paths. The closest draw was kept. Rejection sampling "
                    "cannot create power that is not there.")
     return (fallback if fallback is not None else record), used
+
+
+def miss_distance(table: pd.DataFrame, alpha: float) -> Tuple[int, float]:
+    """How far a draw is from the requested pattern of p-values.
+
+    Returns ``(misses, distance)``: the number of paths on the wrong side of
+    alpha, then the sum over those paths of how many orders of magnitude
+    their p-value is from alpha.  Tuples compare in that order, so the draw
+    with fewer misses wins and, among equals, the one whose misses are
+    nearest to alpha.
+    """
+    if table is None or table.empty or "p" not in table.columns:
+        return (0, 0.0)
+    misses, distance = 0, 0.0
+    for _index, row in table.iterrows():
+        if row.get("requested") == row.get("realised"):
+            continue
+        misses += 1
+        try:
+            p_value = float(row.get("p"))
+        except (TypeError, ValueError):
+            p_value = float("nan")
+        if not math.isfinite(p_value):
+            distance += _MAX_MISS
+            continue
+        p_value = min(max(p_value, 1e-300), 1.0)
+        ratio = (p_value / alpha if row.get("requested") == "significant"
+                 else alpha / p_value)
+        distance += min(abs(math.log10(ratio)), _MAX_MISS)
+    return (misses, float(distance))
+
+
+#: Cap on one path's contribution to :func:`miss_distance`.
+_MAX_MISS = 5.0
 
 
 def _underpowered(table: pd.DataFrame, alpha: float) -> List[str]:
@@ -392,8 +516,14 @@ def _next_injection(injected: float, realised: float, target: float,
 
 
 def _score(attempt: Dict[str, Any], target: float, targeting_fit: bool) -> float:
-    """Lower is better; used to keep the best round when none converges."""
-    penalty = 0.0 if attempt["significance_ok"] else 1.0
+    """Lower is better; used to keep the best round when none converges.
+
+    Significance comes first -- fewer missed paths, then p-values nearer
+    alpha -- and the RMSEA only decides between draws that miss alike.
+    """
+    misses, distance = attempt.get("miss", (0, 0.0))
+    penalty = 0.0 if attempt["significance_ok"] else (
+        10.0 * max(misses, 1) + min(distance, 9.0))
     if not targeting_fit:
         return penalty
     realised = attempt["rmsea"]

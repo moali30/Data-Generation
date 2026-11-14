@@ -79,6 +79,40 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "menu.file.recent": ("المشاريع الأخيرة", "Recent projects"),
     "menu.file.recent.empty": ("لا توجد مشاريع حديثة", "No recent projects"),
     "menu.file.export": ("تصدير البيانات…", "Export data…"),
+    "menu.file.ai": ("قالب الذكاء الاصطناعي", "AI template"),
+    "menu.file.ai.save": ("حفظ القالب لإرساله إلى الذكاء الاصطناعي…",
+                          "Save the template for an AI assistant…"),
+    "menu.file.ai.copy": ("نسخ القالب", "Copy the template"),
+    "menu.file.ai.import_file": ("استيراد قالب معبّأ من ملف…",
+                                 "Import a filled template from a file…"),
+    "menu.file.ai.import_paste": ("استيراد قالب معبّأ من الحافظة",
+                                  "Import a filled template from the clipboard"),
+    "ai.saved_help": (
+        "تم حفظ القالب في:\n{path}\n\n"
+        "1. أرسل الملف إلى مساعد الذكاء الاصطناعي.\n"
+        "2. اشرح له البيانات التي تحتاجها بالضبط.\n"
+        "3. استورد ما يرجعه من قائمة ملف ← قالب الذكاء الاصطناعي.",
+        "The template was saved to:\n{path}\n\n"
+        "1. Send the file to an AI assistant.\n"
+        "2. Explain exactly what data you need.\n"
+        "3. Import its answer from File → AI template."),
+    "ai.clipboard_empty": ("الحافظة فارغة. انسخ رد مساعد الذكاء الاصطناعي أولًا.",
+                           "The clipboard is empty. Copy the assistant's answer first."),
+    "ai.problems_title": ("تعذّر استيراد القالب", "The template could not be imported"),
+    "ai.problems_intro": (
+        "النموذج الحالي لم يتغير. انسخ هذه المشكلات وأرسلها إلى مساعد الذكاء "
+        "الاصطناعي ليصححها.",
+        "Your current model is unchanged. Copy these problems and send them to "
+        "the assistant to correct."),
+    "ai.warnings_title": ("ملاحظات على القالب", "Notes on the template"),
+    "ai.warnings_intro": (
+        "تم استيراد النموذج. راجع هذه الملاحظات.",
+        "The model was imported. Review these notes."),
+    "ai.copy_problems": ("نسخ للذكاء الاصطناعي", "Copy for the assistant"),
+    "ai.copied": ("تم النسخ", "Copied"),
+    "ai.close": ("إغلاق", "Close"),
+    "status.ai_copied": ("تم نسخ القالب", "Template copied"),
+    "status.ai_imported": ("تم استيراد القالب المعبّأ", "Filled template imported"),
     "menu.file.exit": ("إغلاق", "Exit"),
     "menu.model": ("النموذج", "Model"),
     "menu.model.validate": ("فحص النموذج", "Validate model"),
@@ -228,9 +262,9 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "its effect from the main relationships."),
     "dem.role_hint.comparison": (
         "يُختبر الفرق بين فئاته على كل متغير كامن: اختبار t لفئتين، وتحليل "
-        "التباين لثلاث فئات فأكثر.",
+        "التباين لثلاث فئات فأكثر. حدّد أدناه الفروق التي تريد أن تظهر.",
         "Its categories are compared on every construct: a t-test for two groups, "
-        "ANOVA for three or more."),
+        "ANOVA for three or more. Set below the differences you want to see."),
     "dem.role_hint.mga": (
         "يُقدَّر النموذج على كل فئة، ويُختبر ثبات التشبعات والمسارات عبر الفئات.",
         "The model is fitted in each category, and the loadings and paths are "
@@ -253,6 +287,81 @@ STRINGS: Dict[str, Tuple[str, str]] = {
                             "Add a structural path first so a dependent construct exists"),
     "dem.block.all_controls": ("كل المسارات الممكنة لهذا المتغير مضافة",
                                "Every possible path of this variable is already added"),
+    "dem.differences": ("الفروق بين الفئات", "Group differences"),
+    "dem.diff.hint": (
+        "يُوزَّع المستجيبون على الفئات حسب إجاباتهم، فتظهر الفروق في اختبار t "
+        "وتحليل التباين دون أن تتغير الإجابات أو نتائج النموذج. الحجم هو d "
+        "لكوهين لفئتين، ومربع إيتا لثلاث فئات فأكثر. المتغيرات التي لا فرق لها "
+        "هنا تختلف بقدر ارتباطها بالمتغيرات التي لها فرق.",
+        "Respondents are placed in groups according to their answers, so the "
+        "differences show in the t-test and ANOVA while the answers and the "
+        "model results stay the same. The size is Cohen's d for two groups and "
+        "eta squared for three or more. Constructs not listed here differ only "
+        "as far as they correlate with those that are."),
+    "dem.add_difference": ("إضافة فرق", "Add difference"),
+    "dem.no_differences": (
+        "لا توجد فروق بعد، فستختلف الفئات بالصدفة فقط وتكون الاختبارات غير "
+        "دالة غالبًا",
+        "No differences yet, so the groups differ only by chance and the tests "
+        "will mostly be non-significant"),
+    "dem.diff.size": ("حجم الفرق", "Size"),
+    "dem.diff.value_d": ("قيمة d", "d value"),
+    "dem.diff.value_eta": ("مربع إيتا", "Eta squared"),
+    "dem.diff.direction": ("الفئة الأعلى", "Highest group"),
+    "dem.diff.highest": ("الأعلى: {category}", "Highest: {category}"),
+    "gdir.ascending": ("الفئة الأخيرة أعلى", "Last category highest"),
+    "gdir.descending": ("الفئة الأولى أعلى", "First category highest"),
+    "geffect.none": ("لا يوجد فرق", "None"),
+    "geffect.small": ("صغير", "Small"),
+    "geffect.medium": ("متوسط", "Medium"),
+    "geffect.large": ("كبير", "Large"),
+    "geffect.custom": ("مخصّص", "Custom"),
+    "dem.block.no_construct": ("أضف متغيرًا كامنًا أولًا",
+                               "Add a construct first"),
+    "dem.block.all_differences": ("لكل متغير كامن فرق بالفعل",
+                                  "Every construct already has a difference"),
+    "dem.associations_card": ("الارتباط بين المتغيرات الديموغرافية",
+                              "Associations between demographic variables"),
+    "dem.assoc.hint": (
+        "في العينات الحقيقية تسير بعض الخصائص معًا: الأكبر سنًا أكثر خبرة، "
+        "وأصحاب الدراسات العليا في مناصب أعلى. اربط المتغيرين هنا فيظهر "
+        "الارتباط في اختبار كاي تربيع. القوة هي معامل كرامر V، والاتجاه يحدد "
+        "أي فئات تجتمع معًا حسب ترتيبها في القائمة. المتغيرات غير المربوطة "
+        "مباشرة ترتبط بقدر ما تفرضه الروابط الأخرى.",
+        "In real samples some characteristics go together: older respondents "
+        "have more experience, postgraduates hold more senior posts. Link two "
+        "variables here and the chi-square test shows it. The strength is "
+        "Cramér's V, and the direction says which categories go together, by "
+        "their order in the lists. Variables not linked directly go together "
+        "only as far as the other links imply."),
+    "dem.add_association": ("إضافة ارتباط", "Add association"),
+    "dem.no_associations": (
+        "لا توجد ارتباطات، فكل متغير ديموغرافي مستقل عن الآخر",
+        "No associations, so every demographic variable is independent of "
+        "the others"),
+    "dem.assoc.first": ("المتغير الأول", "First variable"),
+    "dem.assoc.second": ("المتغير الثاني", "Second variable"),
+    "dem.assoc.strength": ("قوة الارتباط", "Strength"),
+    "dem.assoc.value": ("قيمة V", "V value"),
+    "dem.assoc.direction": ("ما يجتمع معًا", "What goes together"),
+    "dem.assoc.together": ("{a} مع {b}", "{a} with {b}"),
+    "dem.block.two_variables": ("أضف متغيرين ديموغرافيين على الأقل",
+                                "Add at least two demographic variables"),
+    "dem.block.all_associations": ("كل الأزواج الممكنة مربوطة بالفعل",
+                                   "Every possible pair is already linked"),
+    "adir.positive": ("الفئات الأخيرة معًا", "Last categories together"),
+    "adir.negative": ("أخيرة الأول مع أولى الثاني",
+                      "Last of the first with first of the second"),
+    "astrength.none": ("لا يوجد ارتباط", "None"),
+    "astrength.weak": ("ضعيف", "Weak"),
+    "astrength.moderate": ("متوسط", "Moderate"),
+    "astrength.strong": ("قوي", "Strong"),
+    "astrength.custom": ("مخصّص", "Custom"),
+    "dem.associations": ("الارتباط بين المتغيرات الديموغرافية (كاي تربيع)",
+                         "Associations between demographics (chi-square)"),
+    "dem.h.variable_a": ("المتغير الأول", "First variable"),
+    "dem.h.variable_b": ("المتغير الثاني", "Second variable"),
+    "dem.h.cramers_v": ("V كرامر", "Cramér's V"),
     "dem.frequencies": ("التكرارات: النسبة المطلوبة والمحققة",
                         "Frequencies: requested and achieved"),
     "dem.comparisons": ("اختبارات الفروق", "Group comparisons"),
@@ -324,6 +433,14 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "s.diagram.export": ("تصدير المخطط صورة", "Export diagram as image"),
     "s.diagram.empty": ("لا يوجد متغيرات كامنة لعرضها بعد",
                         "No latent variables to draw yet"),
+    "s.diagram.legend": ("مفتاح الرسم", "Legend"),
+    "s.diagram.lg.path": ("مسار مباشر (أثر مستهدف دال)",
+                          "Direct path (targeted significant)"),
+    "s.diagram.lg.null": ("مسار مستهدف غير دال", "Path targeted non-significant"),
+    "s.diagram.lg.moderation": ("أثر تعديل على العلاقة", "Moderation of a path"),
+    "s.diagram.lg.main": ("الأثر المباشر للمعدِّل", "Moderator main effect"),
+    "s.diagram.lg.covariance": ("ارتباط بين متغيرين مستقلين",
+                                "Correlation between exogenous constructs"),
     "s.diagram.saved": ("تم حفظ صورة المخطط", "Diagram image saved"),
     "s.diagram.save_failed": ("تعذّر حفظ الصورة في هذا المكان",
                               "The image could not be saved there"),
@@ -452,6 +569,88 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "This skewness/kurtosis pair is mathematically impossible: kurtosis "
         "must exceed skewness² − 2."),
 
+    "d.variation": ("التباين الواقعي بين الأسئلة والمتغيرات",
+                    "Real-world variation"),
+    "d.variation.explain": (
+        "في البيانات الحقيقية لا تتساوى متوسطات الأسئلة ولا انحرافاتها ولا "
+        "تشبعاتها، ولا تأتي المسارات أرقامًا مدوّرة. هذا الخيار يسحب مجتمعًا "
+        "واقعيًا حول نموذجك: لكل متغير مستوى خاص، ولكل سؤال صعوبة وتشتت خاصان، "
+        "وتتفاوت التشبعات والمسارات قليلًا حول القيم المخططة دون أن تتغير "
+        "إشارتها أو دلالتها المطلوبة.",
+        "In real data item means, spreads and loadings are never equal, and "
+        "paths are never round numbers. This draws one realistic population "
+        "around your model: each construct gets its own level, each item its "
+        "own difficulty and spread, and loadings and paths scatter a little "
+        "around the planned values without changing sign or the requested "
+        "significance."),
+    "d.styles": ("أسلوب الإجابة عند كل مستجيب", "How each respondent answers"),
+    "d.styles.explain": (
+        "المستجيبون لا يستخدمون المقياس بالطريقة نفسها: بعضهم يختار الطرفين "
+        "(1 و5) كلما وافق أو رفض، وبعضهم يلزم المنتصف، وبعضهم يوافق على أي "
+        "عبارة حتى العبارات المعكوسة. يأخذ كل مستجيب أسلوبًا خاصًا به في كل "
+        "الأسئلة، فتظهر البيانات كما تُجمع فعلًا. يضيف ذلك قدرًا صغيرًا من "
+        "تباين الطريقة المشترك (يحرّك المسار المعياري نحو 0.02 في المستوى "
+        "الواقعي).",
+        "Respondents do not use the scale alike: some pick the ends (1 and 5) "
+        "whenever they agree or disagree, some keep to the middle, and some "
+        "agree with any statement, reverse-worded ones included. Each "
+        "respondent keeps one style across all the items, as in collected "
+        "data. This adds a little shared method variance (a standardised path "
+        "moves by about 0.02 at the realistic level)."),
+    "d.styles.level": ("مقدار اختلاف الأسلوب", "Amount of style difference"),
+    "d.styles.extreme": ("الأطراف مقابل المنتصف", "Extremes versus midpoint"),
+    "d.styles.extreme.hint": (
+        "مدى اختلاف المستجيبين بين من يختار الطرفين ومن يلزم المنتصف.",
+        "How far respondents range from always picking the ends to keeping "
+        "to the middle."),
+    "d.styles.acquiescence": ("الميل للموافقة", "Agreeing regardless"),
+    "d.styles.acquiescence.hint": (
+        "مدى اختلاف المستجيبين في الموافقة على العبارات أيًّا كان مضمونها.",
+        "How far respondents differ in agreeing with statements whatever "
+        "they say."),
+    "d.variation.level": ("مقدار التباين", "Amount of variation"),
+    "d.variation.none": ("بدون (نموذج مثالي)", "None (textbook model)"),
+    "d.variation.mild": ("خفيف", "Mild"),
+    "d.variation.realistic": ("واقعي (موصى به)", "Realistic (recommended)"),
+    "d.variation.strong": ("قوي", "Strong"),
+    "d.variation.custom": ("مخصّص", "Custom"),
+    "d.variation.construct_level": ("تفاوت مستوى المتغيرات",
+                                    "Construct level spread"),
+    "d.variation.construct_level.hint": (
+        "بوحدات الانحراف المعياري للاستجابة الكامنة. القيمة 0.30 تباعد بين "
+        "متوسطات المتغيرات بنحو ربع درجة على مقياس خماسي.",
+        "In SD units of the latent response. 0.30 puts construct means about "
+        "a quarter of a point apart on a five-point scale."),
+    "d.variation.item_level": ("تفاوت صعوبة الأسئلة", "Item difficulty spread"),
+    "d.variation.item_level.hint": (
+        "مقدار اختلاف متوسط كل سؤال عن متوسط متغيره.",
+        "How far each item's mean departs from its construct's."),
+    "d.variation.item_spread": ("تفاوت تشتت الأسئلة", "Item spread variation"),
+    "d.variation.item_spread.hint": (
+        "يجعل الانحرافات المعيارية للأسئلة غير متساوية.",
+        "Makes the items' standard deviations differ."),
+    "d.variation.loading": ("تفاوت التشبعات", "Loading scatter"),
+    "d.variation.loading.hint": (
+        "الانحراف المعياري للتشبع في المجتمع حول القيمة المخططة.",
+        "SD of each population loading around its planned value."),
+    "d.variation.path": ("تفاوت المسارات", "Path scatter"),
+    "d.variation.path.hint": (
+        "الانحراف المعياري للمسار في المجتمع حول القيمة المخططة. لا يغيّر "
+        "إشارة المسار ولا ينقصه عن ثلاثة أرباع قيمته، والمسارات المطلوب أن "
+        "تكون غير دالة تبقى كما هي.",
+        "SD of each population path around its planned value. It never "
+        "changes a path's sign or shrinks it below three quarters of its "
+        "value, and paths meant to be non-significant are left alone."),
+
+    "d.variation.tail": ("الإجابات عند أطراف المقياس", "Answers at the scale ends"),
+    "d.variation.tail.hint": (
+        "نسبة من إجابات كل سؤال تُوزَّع بالتساوي على كل الفئات، فيظهر بعض من "
+        "يختارون «غير موافق بشدة» حتى في المقاييس التي يميل أغلبها للموافقة، "
+        "كما في أي عينة حقيقية.",
+        "A share of each item's answers spread evenly over all categories, so "
+        "a few respondents pick 'strongly disagree' even on a scale most "
+        "people agree with, as in any real sample."),
+
     "d.noise": ("حقن التشويش العشوائي", "Noise injection"),
     "d.noise.explain": (
         "إضافة تباين غير مفسَّر لتجنّب المطابقة المفرطة (Overfitting)، لتظهر "
@@ -466,14 +665,28 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "measurement does."),
     "d.careless": ("نسبة المستجيبين غير المبالين", "Careless respondents"),
     "d.careless.explain": (
-        "مستجيبون يجيبون دون قراءة — إمّا بخط مستقيم (نفس الإجابة لكل الأسئلة) "
-        "أو بإجابات عشوائية. ظاهرة حقيقية في الاستبيانات الإلكترونية.",
-        "Respondents who answer without reading: a straight line of identical "
-        "answers, or random clicking. A real feature of online surveys."),
+        "مستجيبون يجيبون دون قراءة: الإجابة نفسها لكل الأسئلة، أو يقرؤون "
+        "أول الاستبيان ثم يكررون الإجابة نفسها لما تبقّى، أو يختارون "
+        "عشوائيًا. يعود كل استبيان إلكتروني بنسبة منهم (غالبًا بين 2% و10%)، "
+        "ويحذفهم الباحث قبل التحليل. النسبة هنا من إجمالي الاستجابات في "
+        "الملف. وعند إضافتهم فوق حجم العينة تتحقق كل النتائج المخططة على "
+        "العينة بعد حذفهم، ويذكر البرنامج أرقام صفوفهم.",
+        "Respondents who answer without reading: the same answer to every "
+        "question, a careful start that turns into one repeated answer, or "
+        "random clicks. Every online survey brings some back (often 2% to "
+        "10%), and researchers remove them before analysing. The share is of "
+        "all the responses in the file. Added on top of the sample, every "
+        "planned result holds once they are removed, and the program says "
+        "which rows they are."),
     "d.careless_style": ("نمط عدم المبالاة", "Careless style"),
+    "d.careless.realistic": ("واقعي: مزيج من الأنواع الثلاثة",
+                             "Realistic: a mix of all three"),
     "d.careless.random": ("عشوائي", "Random"),
     "d.careless.straightline": ("خط مستقيم", "Straight-lining"),
     "d.careless.mixed": ("مختلط", "Mixed"),
+    "d.careless_screened": (
+        "إضافتهم فوق حجم العينة (يحذفهم الباحث قبل التحليل)",
+        "Add them on top of the sample (removed before analysis)"),
     "d.outliers": ("نسبة القيم الشاذة", "Outliers"),
     "d.outlier_magnitude": ("حجم الشذوذ (بالانحرافات المعيارية)",
                             "Outlier magnitude (SD)"),
@@ -658,6 +871,13 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "r.min": ("الأدنى", "Min"),
     "r.max": ("الأعلى", "Max"),
     "r.missing": ("المفقود", "Missing"),
+    "r.careless_note": (
+        "يضم الملف {total} استجابة، منها {k} لمستجيبين غير مبالين في "
+        "الصفوف: {rows}. كل النتائج في هذه الصفحة محسوبة على الاستجابات الـ "
+        "{n} الأخرى، فاحذف هذه الصفوف قبل تحليل الملف.",
+        "The file holds {total} responses, {k} of them from careless "
+        "respondents, in rows {rows}. Every result on this page uses the "
+        "other {n}, so remove those rows before analysing the file."),
     "r.floor": ("نسبة أدنى فئة", "Floor %"),
     "r.ceiling": ("نسبة أعلى فئة", "Ceiling %"),
     "r.mardia": ("اختبار مارديا للاعتدالية المتعددة",
@@ -704,6 +924,10 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "البيانات الحالية لا تحتوي على أعمدة للأسئلة: {names}. ولّد بيانات جديدة أولًا.",
         "The current data has no columns for: {names}. Generate new data first."),
     "status.cancelled": ("أُلغيت العملية", "Cancelled"),
+    "status.elapsed": ("المنقضي {t}", "Elapsed {t}"),
+    "status.eta": ("المتبقي تقريبًا {t}", "About {t} left"),
+    "status.eta_pending": ("جارٍ تقدير الوقت المتبقي…", "Estimating time left…"),
+    "status.eta_soon": ("يوشك على الانتهاء…", "Almost done…"),
     "status.failed": ("فشلت العملية", "Failed"),
     "status.power": ("جارٍ حساب القوة الإحصائية…", "Computing statistical power…"),
     "status.saved": ("تم حفظ المشروع: {name}", "Project saved: {name}"),

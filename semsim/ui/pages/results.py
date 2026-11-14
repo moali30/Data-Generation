@@ -43,6 +43,16 @@ HEADLINE = [
 ]
 
 
+def careless_note(dataset: Any) -> str:
+    """Which file rows are careless respondents, ahead of the data summary."""
+    block = getattr(dataset, "careless", None)
+    if block is None or not getattr(block, "n", 0):
+        return ""
+    return translator.t(
+        "r.careless_note", total=getattr(dataset, "n_in_file", "-"),
+        k=block.n, n=getattr(dataset, "n", "-"),
+        rows=", ".join(str(r) for r in block.file_rows)) + "\n"
+
 class ResultsPage(StagePage):
     TITLE_KEY = "stage.6.title"
     SUBTITLE_KEY = "stage.6.subtitle"
@@ -181,6 +191,7 @@ class ResultsPage(StagePage):
         page = self._tab()
         self._panel("r.data_preview", page, max_rows=25)
         self._data_note = QLabel()
+        self._data_note.setWordWrap(True)
         theme.set_role(self._data_note, "hint")
         page.add(self._data_note)
         page.add_stretch()
@@ -202,6 +213,7 @@ class ResultsPage(StagePage):
         self._demographics_empty = InfoBanner("dem.none")
         page.add(self._demographics_empty)
         self._panel("dem.frequencies", page, max_rows=30)
+        self._panel("dem.associations", page, max_rows=20)
         self._panel("dem.comparisons", page, max_rows=30)
         self._panel("dem.invariance", page, max_rows=20)
         self._panel("dem.group_paths", page, max_rows=30)
@@ -395,8 +407,8 @@ class ResultsPage(StagePage):
             f"(p = {descriptives.mardia_kurtosis_p:.4g})   —   {verdict}")
 
     def _fill_demographics(self, analysis: Any) -> None:
-        keys = ("dem.frequencies", "dem.comparisons", "dem.invariance",
-                "dem.group_paths")
+        keys = ("dem.frequencies", "dem.associations", "dem.comparisons",
+                "dem.invariance", "dem.group_paths")
         self._demographics_empty.setVisible(analysis is None)
         if analysis is None:
             for key in keys:
@@ -414,6 +426,10 @@ class ResultsPage(StagePage):
         if not frequencies.empty:
             frequencies["role"] = frequencies["role"].map(
                 lambda v: translator.t(f"drole.{v}"))
+        associations = _localise(getattr(analysis, "associations",
+                                         pd.DataFrame()))
+        if not associations.empty:
+            associations["significant"] = associations["significant"].map(yes_no)
         comparisons = _localise(analysis.comparisons)
         if not comparisons.empty:
             comparisons["test"] = comparisons["test"].map(
@@ -424,7 +440,7 @@ class ResultsPage(StagePage):
         invariance = _localise(analysis.invariance)
         if not invariance.empty:
             invariance["invariant"] = invariance["invariant"].map(yes_no)
-        frames = (frequencies, comparisons, invariance,
+        frames = (frequencies, associations, comparisons, invariance,
                   _localise(analysis.group_paths))
         for key, frame in zip(keys, frames):
             self._panels[key].set_frame(frame)
@@ -446,6 +462,7 @@ class ResultsPage(StagePage):
         missing = int(data.isna().to_numpy().sum())
         total = data.size or 1
         self._data_note.setText(
+            careless_note(dataset) +
             f"{translator.t('r.n')} = {len(data)}   |   "
             f"{translator.t('m.items')} = {data.shape[1]}   |   "
             f"{translator.t('r.missing')} = {missing} "

@@ -182,6 +182,70 @@ class DemographicRole(str, Enum):
     MGA = "mga"
 
 
+class GroupEffect(str, Enum):
+    """Conventional sizes of a difference between groups (Cohen, 1988).
+
+    Two groups are sized by Cohen's d and three or more by eta squared, the
+    measures the comparison table reports for each.
+    """
+
+    NONE = "none"
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
+    CUSTOM = "custom"
+
+    def default_value(self, n_groups: int) -> float:
+        """The size's conventional value: d for two groups, eta squared otherwise."""
+        if n_groups <= 2:
+            return {GroupEffect.NONE: 0.0, GroupEffect.SMALL: 0.20,
+                    GroupEffect.MEDIUM: 0.50, GroupEffect.LARGE: 0.80,
+                    GroupEffect.CUSTOM: 0.30}[self]
+        return {GroupEffect.NONE: 0.0, GroupEffect.SMALL: 0.01,
+                GroupEffect.MEDIUM: 0.06, GroupEffect.LARGE: 0.14,
+                GroupEffect.CUSTOM: 0.04}[self]
+
+
+class GroupDirection(str, Enum):
+    """Which end of a comparison variable's category list scores higher."""
+
+    ASCENDING = "ascending"     # the last category scores highest
+    DESCENDING = "descending"   # the first category scores highest
+
+
+#: Largest d and eta squared a group difference may ask for.
+GROUP_D_MAX = 2.0
+GROUP_ETA_MAX = 0.40
+
+
+class AssociationStrength(str, Enum):
+    """Conventional strengths of an association, as Cramér's V (Cohen, 1988)."""
+
+    NONE = "none"
+    WEAK = "weak"
+    MODERATE = "moderate"
+    STRONG = "strong"
+    CUSTOM = "custom"
+
+    @property
+    def default_value(self) -> float:
+        return {AssociationStrength.NONE: 0.0, AssociationStrength.WEAK: 0.10,
+                AssociationStrength.MODERATE: 0.30,
+                AssociationStrength.STRONG: 0.50,
+                AssociationStrength.CUSTOM: 0.30}[self]
+
+
+class AssociationDirection(str, Enum):
+    """How the category lists of two associated variables line up."""
+
+    POSITIVE = "positive"   # the last categories of both go together
+    NEGATIVE = "negative"   # the last of the first goes with the first of the second
+
+
+#: Largest Cramér's V an association may ask for.
+ASSOCIATION_V_MAX = 0.90
+
+
 class PowerMethod(str, Enum):
     RMSEA_CLOSE_FIT = "rmsea_close_fit"   # MacCallum, Browne & Sugawara (1996)
     SATORRA_SARIS = "satorra_saris"       # power for a single parameter
@@ -466,9 +530,17 @@ class NoiseSpec:
     #: Multiplicative inflation of every unique variance (1.0 == untouched).
     #: Values above 1 attenuate reliability the way real measurement does.
     unique_variance_inflation: float = 1.0
-    #: Share of respondents who answer without reading (flat or random lines).
-    careless_proportion: float = 0.0
-    careless_style: str = "random"          # "random" | "straightline" | "mixed"
+    #: Share of the collected responses given without reading (flat lines,
+    #: lines that go flat part-way through, random answers).  Screened survey
+    #: data typically lose a few percent this way.
+    careless_proportion: float = 0.05
+    #: "realistic" (a mix of all three) | "random" | "straightline" | "mixed"
+    careless_style: str = "realistic"
+    #: True: careless respondents come on top of the planned sample, as the
+    #: responses a researcher removes when screening the data, so the file
+    #: holds n + k rows and the analysis the planned n.  False: they replace
+    #: part of the sample and stay in the analysis.
+    careless_screened: bool = True
     #: Share of cells replaced by multivariate outliers.
     outlier_proportion: float = 0.0
     outlier_magnitude_sd: float = 3.5
@@ -480,6 +552,136 @@ class NoiseSpec:
     #: Jitter added to every item before categorisation, in SD units.  Small
     #: values break the perfect-fit artefact without disturbing the model.
     measurement_jitter_sd: float = 0.0
+
+
+#: The named amounts of real-world variation, as ``(construct_level_sd,
+#: item_level_sd, item_spread_sd, loading_sd, path_sd, tail_share)``.
+#: ``realistic`` is what a published questionnaire study typically shows:
+#: construct means a few tenths of a point apart on a five-point scale, item
+#: means within a construct a tenth or two apart, loadings and paths a few
+#: hundredths away from the values the researcher planned, and a few answers
+#: at the far end of even a strongly skewed item.
+HETEROGENEITY_PRESETS: Dict[str, Tuple[float, ...]] = {
+    "mild": (0.15, 0.08, 0.05, 0.03, 0.015, 0.025),
+    "realistic": (0.30, 0.15, 0.10, 0.05, 0.03, 0.05),
+    "strong": (0.45, 0.25, 0.15, 0.08, 0.05, 0.08),
+}
+
+
+@dataclass
+class HeterogeneitySpec:
+    """How far the simulated population departs from the textbook model.
+
+    A specification gives every item of a construct the same loading and the
+    same response style, and every path a round number.  Data drawn straight
+    from that has every item mean at the same value, identical standard
+    deviations and identical loadings, which no real questionnaire shows.
+    These settings draw one population around the specification instead; see
+    :mod:`semsim.generation.heterogeneity`.  The first five values are
+    standard deviations: three on the z-scale of the latent response, two on
+    the standardised coefficient.  ``tail_share`` is a proportion.
+    """
+
+    enabled: bool = True
+    #: Constructs differ in their average level (one construct sits higher on
+    #: the scale than another).
+    construct_level_sd: float = 0.30
+    #: Items differ in how easy they are to agree with, around their
+    #: construct's level.
+    item_level_sd: float = 0.15
+    #: Items differ in how spread out their answers are (log of the stretch
+    #: applied to the cut points).
+    item_spread_sd: float = 0.10
+    #: Population loadings scatter around the planned loading.
+    loading_sd: float = 0.05
+    #: Population paths and correlations scatter around the planned values.
+    path_sd: float = 0.03
+    #: Share of each item's answers spread evenly over all categories, so even
+    #: a strongly skewed item has a few answers at the far end of the scale,
+    #: as every real sample does.
+    tail_share: float = 0.05
+
+    def apply_preset(self, name: str) -> None:
+        """Set the amounts from a named preset, or switch off for ``none``."""
+        if name == "none":
+            self.enabled = False
+            return
+        values = HETEROGENEITY_PRESETS.get(name)
+        if values is None:
+            return
+        self.enabled = True
+        (self.construct_level_sd, self.item_level_sd, self.item_spread_sd,
+         self.loading_sd, self.path_sd, self.tail_share) = values
+
+    def preset_name(self) -> str:
+        """The preset these settings match, ``none``, or ``custom``."""
+        if not self.enabled:
+            return "none"
+        current = (self.construct_level_sd, self.item_level_sd,
+                   self.item_spread_sd, self.loading_sd, self.path_sd,
+                   self.tail_share)
+        for name, values in HETEROGENEITY_PRESETS.items():
+            if all(abs(a - b) < 1e-9 for a, b in zip(current, values)):
+                return name
+        return "custom"
+
+
+#: Respondent answering styles: (extreme_sd, acquiescence_sd).
+RESPONDENT_STYLE_PRESETS: Dict[str, Tuple[float, ...]] = {
+    "mild": (0.10, 0.05),
+    "realistic": (0.20, 0.08),
+    "strong": (0.30, 0.12),
+}
+
+
+@dataclass
+class RespondentStyleSpec:
+    """How each respondent uses the rating scale, whatever the question.
+
+    Real respondents differ in more than their opinions.  Some answer at the
+    ends of the scale and others keep to the middle (extreme versus midpoint
+    responding), and some agree with whatever they are asked, positively
+    worded or not (acquiescence).  See
+    :mod:`semsim.generation.respondent_styles`.  Both values are standard
+    deviations on the z-scale of the latent response: ``extreme_sd`` of the
+    log of each respondent's stretch around the scale's neutral point,
+    ``acquiescence_sd`` of each respondent's shift towards agreeing.
+
+    References
+    ----------
+    Baumgartner, H., & Steenkamp, J.-B. E. M. (2001). Response styles in
+        marketing research: A cross-national investigation. *Journal of
+        Marketing Research*, 38(2), 143-156.
+    """
+
+    enabled: bool = True
+    extreme_sd: float = 0.20
+    acquiescence_sd: float = 0.08
+
+    def apply_preset(self, name: str) -> None:
+        """Set the amounts from a named preset, or switch off for ``none``."""
+        if name == "none":
+            self.enabled = False
+            return
+        values = RESPONDENT_STYLE_PRESETS.get(name)
+        if values is None:
+            return
+        self.enabled = True
+        self.extreme_sd, self.acquiescence_sd = values
+
+    def preset_name(self) -> str:
+        """The preset these settings match, ``none``, or ``custom``."""
+        if not self.enabled:
+            return "none"
+        current = (self.extreme_sd, self.acquiescence_sd)
+        for name, values in RESPONDENT_STYLE_PRESETS.items():
+            if all(abs(a - b) < 1e-9 for a, b in zip(current, values)):
+                return name
+        return "custom"
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and (self.extreme_sd > 0 or self.acquiescence_sd > 0)
 
 
 @dataclass
@@ -635,6 +837,88 @@ class ControlPath:
         return self.effect_size.default_coefficient
 
 
+@dataclass
+class GroupDifference:
+    """How the groups of one comparison variable differ on one construct.
+
+    The size is Cohen's d when the variable has two categories and eta
+    squared when it has three or more.  The groups are ordered along the
+    category list, so with three or more the means rise (or fall) from the
+    first category to the last.
+    """
+
+    id: str = field(default_factory=lambda: _new_id("gd"))
+    target: str = ""        # construct id
+    size: GroupEffect = GroupEffect.SMALL
+    #: Read only when ``size`` is :attr:`GroupEffect.CUSTOM`.
+    value: float = 0.30
+    direction: GroupDirection = GroupDirection.ASCENDING
+    target_significant: bool = True
+
+    def resolved_value(self, n_groups: int) -> float:
+        """The requested d (two groups) or eta squared (three or more)."""
+        raw = (float(self.value) if self.size is GroupEffect.CUSTOM
+               else self.size.default_value(n_groups))
+        ceiling = GROUP_D_MAX if n_groups <= 2 else GROUP_ETA_MAX
+        return min(max(raw, 0.0), ceiling)
+
+    def eta_squared(self, shares: Sequence[float]) -> float:
+        """The requested difference as a share of the construct's variance.
+
+        Parameters
+        ----------
+        shares : sequence of float
+            The groups' shares of the sample, summing to one.
+
+        References
+        ----------
+        Cohen, J. (1988). *Statistical Power Analysis for the Behavioral
+            Sciences* (2nd ed.), chapter 2. Erlbaum.
+        """
+        value = self.resolved_value(len(shares))
+        if len(shares) > 2:
+            return value
+        balance = float(shares[0]) * float(shares[1])
+        return value * value * balance / (1.0 + value * value * balance)
+
+    @property
+    def wants_significance(self) -> bool:
+        """Whether the sample should show the difference as significant."""
+        return self.target_significant and self.size is not GroupEffect.NONE
+
+
+@dataclass
+class DemographicAssociation:
+    """Two demographic variables that go together, such as age and experience.
+
+    The strength is Cramér's V of their cross-table.  The categories are
+    matched in list order: with a positive direction the last categories of
+    the two variables go together, with a negative one the last category of
+    the first goes with the first category of the second.
+    """
+
+    id: str = field(default_factory=lambda: _new_id("da"))
+    first: str = ""         # demographic variable id
+    second: str = ""        # demographic variable id
+    strength: AssociationStrength = AssociationStrength.MODERATE
+    #: Read only when ``strength`` is :attr:`AssociationStrength.CUSTOM`.
+    value: float = 0.30
+    direction: AssociationDirection = AssociationDirection.POSITIVE
+    target_significant: bool = True
+
+    def resolved_value(self) -> float:
+        """The requested Cramér's V."""
+        raw = (float(self.value) if self.strength is AssociationStrength.CUSTOM
+               else self.strength.default_value)
+        return min(max(raw, 0.0), ASSOCIATION_V_MAX)
+
+    @property
+    def wants_significance(self) -> bool:
+        """Whether the chi-square test should come out significant."""
+        return (self.target_significant
+                and self.strength is not AssociationStrength.NONE)
+
+
 @dataclass(frozen=True)
 class DemographicTerm:
     """One column a demographic variable contributes to a regression.
@@ -662,6 +946,8 @@ class DemographicVariable:
     categories: List[DemographicCategory] = field(default_factory=list)
     #: Used only when ``role is CONTROL``.
     control_paths: List[ControlPath] = field(default_factory=list)
+    #: Used only when ``role is COMPARISON``.
+    group_differences: List[GroupDifference] = field(default_factory=list)
 
     @property
     def is_dummy_coded(self) -> bool:
@@ -733,6 +1019,9 @@ class ModelSpec:
     # -- generation -------------------------------------------------------- #
     distribution: DistributionSpec = field(default_factory=DistributionSpec)
     noise: NoiseSpec = field(default_factory=NoiseSpec)
+    heterogeneity: HeterogeneitySpec = field(default_factory=HeterogeneitySpec)
+    respondent_styles: RespondentStyleSpec = field(
+        default_factory=RespondentStyleSpec)
     engine: GenerationEngine = GenerationEngine.AUTO
 
     # -- targeting --------------------------------------------------------- #
@@ -748,8 +1037,12 @@ class ModelSpec:
     # -- demographics ------------------------------------------------------ #
     demographics: List[DemographicVariable] = field(default_factory=list)
     #: ``True`` fills each category's quota exactly; ``False`` draws every
-    #: respondent independently with the category shares as weights.
-    quota_exact: bool = True
+    #: respondent independently with the category shares as weights, so the
+    #: achieved counts vary the way a collected sample's do.
+    quota_exact: bool = False
+    #: Pairs of demographic variables that go together.
+    demographic_associations: List[DemographicAssociation] = field(
+        default_factory=list)
 
     # ------------------------------------------------------------------ #
     # Demographics and the model they enter
@@ -841,10 +1134,12 @@ class ModelSpec:
         out = copy.deepcopy(self)
         term_ids: List[str] = []
         shares: Dict[str, Tuple[str, float]] = {}
+        sources: Dict[str, Tuple[DemographicVariable, DemographicTerm]] = {}
         for variable, term in active:
             suffix = term.key or "main"
             cid = f"__ctl_{variable.id}_{suffix}"
             term_ids.append(cid)
+            sources[cid] = (variable, term)
             if term.category is not None:
                 shares[cid] = (variable.id,
                                variable.normalised_proportions()[term.category])
@@ -867,6 +1162,10 @@ class ModelSpec:
                         coefficient_is_manual=path.coefficient_is_manual,
                         target_significant=path.target_significant))
 
+        linked = None
+        if self.demographic_associations:
+            from semsim.core.associations import latent_structure, term_correlation
+            linked = latent_structure(self)
         for a, first in enumerate(term_ids):
             for second in term_ids[a + 1:]:
                 correlation = 0.0
@@ -875,6 +1174,14 @@ class ModelSpec:
                     pa, pb = shares[first][1], shares[second][1]
                     denominator = max((1.0 - pa) * (1.0 - pb), 1e-12)
                     correlation = max(-math.sqrt(pa * pb / denominator), -0.999)
+                elif linked is not None:
+                    # Associated variables: their terms correlate as their
+                    # cross-table says, which the data will show.
+                    (va, ta), (vb, tb) = sources[first], sources[second]
+                    i, j = linked.index(va.id), linked.index(vb.id)
+                    if va.id != vb.id and i is not None and j is not None:
+                        correlation = term_correlation(
+                            va, ta, vb, tb, float(linked.matrix[i, j]))
                 out.latent_covariances.append(LatentCovariance(
                     construct_a=first, construct_b=second,
                     correlation=correlation))
@@ -1305,6 +1612,59 @@ class ModelSpec:
         variable.control_paths.append(path)
         return path
 
+    def add_group_difference(
+        self,
+        variable: DemographicVariable,
+        target: str,
+        *,
+        size: GroupEffect = GroupEffect.SMALL,
+        value: Optional[float] = None,
+        direction: GroupDirection = GroupDirection.ASCENDING,
+        target_significant: bool = True,
+    ) -> GroupDifference:
+        """Make a comparison variable's groups differ on a construct (id or name).
+
+        ``value`` is an exact d (two categories) or eta squared (three or
+        more) and overrides ``size``.
+        """
+        difference = GroupDifference(
+            target=self._resolve_construct_ref(target),
+            size=GroupEffect.CUSTOM if value is not None else size,
+            value=float(value) if value is not None else 0.30,
+            direction=direction, target_significant=target_significant)
+        variable.group_differences.append(difference)
+        return difference
+
+    def add_demographic_association(
+        self,
+        first: "DemographicVariable | str",
+        second: "DemographicVariable | str",
+        *,
+        strength: AssociationStrength = AssociationStrength.MODERATE,
+        value: Optional[float] = None,
+        direction: AssociationDirection = AssociationDirection.POSITIVE,
+        target_significant: bool = True,
+    ) -> DemographicAssociation:
+        """Link two demographic variables (objects, ids or column names).
+
+        ``value`` is an exact Cramér's V and overrides ``strength``.
+        """
+        def resolve(ref: "DemographicVariable | str") -> str:
+            if isinstance(ref, DemographicVariable):
+                return ref.id
+            for variable in self.demographics:
+                if ref in (variable.id, variable.name):
+                    return variable.id
+            return str(ref)
+
+        association = DemographicAssociation(
+            first=resolve(first), second=resolve(second),
+            strength=AssociationStrength.CUSTOM if value is not None else strength,
+            value=float(value) if value is not None else 0.30,
+            direction=direction, target_significant=target_significant)
+        self.demographic_associations.append(association)
+        return association
+
     def ensure_unique_item_names(self) -> None:
         """Make every exported column name unique and syntactically safe."""
         seen: Dict[str, int] = {}
@@ -1348,9 +1708,14 @@ __all__ = [
     "Bilingual", "ScaleSpec", "Item", "Dimension", "Construct",
     "CrossLoading", "CrossLoadingPolicy", "ErrorCovariance", "CommonMethodBias",
     "Path", "LatentCovariance", "Interaction", "IndirectEffect",
-    "NoiseSpec", "DistributionSpec",
+    "NoiseSpec", "HeterogeneitySpec", "HETEROGENEITY_PRESETS",
+    "DistributionSpec",
     "FitTargetSpec", "SignificanceTargetSpec", "PowerSpec",
     "AnalysisSpec", "ExportSpec", "ModelSpec",
     "DemographicKind", "DemographicRole", "DemographicCategory",
+    "GroupEffect", "GroupDirection", "GroupDifference", "GROUP_D_MAX",
+    "GROUP_ETA_MAX", "AssociationStrength", "AssociationDirection",
+    "RespondentStyleSpec", "RESPONDENT_STYLE_PRESETS",
+    "DemographicAssociation", "ASSOCIATION_V_MAX",
     "DemographicTerm", "DemographicVariable", "ControlPath",
 ]

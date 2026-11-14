@@ -72,9 +72,9 @@ try:  # pragma: no cover - packaging detail
     try:
         PROGRAM_VERSION = _pkg_version("semsim")
     except PackageNotFoundError:
-        PROGRAM_VERSION = "1.1.0"
+        PROGRAM_VERSION = "1.7.0"
 except Exception:  # pragma: no cover - very old interpreters
-    PROGRAM_VERSION = "1.1.0"
+    PROGRAM_VERSION = "1.7.0"
 
 #: SPSS variable names are limited to 64 *bytes* (not characters).
 SPSS_MAX_NAME_BYTES = 64
@@ -610,7 +610,7 @@ def export_xlsx(ds: "GeneratedDataset", path: Any, *,
 
     for attribute, title in (("latent_scores", "LatentScores"),
                              ("continuous_shadow", "ContinuousShadow")):
-        extra = getattr(ds, attribute, None)
+        extra = _in_file_order(ds, getattr(ds, attribute, None))
         if isinstance(extra, pd.DataFrame) and not extra.empty:
             worksheet = workbook.create_sheet(_sheet_title(title, titles))
             titles.append(worksheet.title)
@@ -722,6 +722,7 @@ def specification_table(ds: Any, spec: Optional[ModelSpec] = None, *,
          else int(pd.DataFrame(ds.data).shape[0])),
         (_label(lang, "بذرة العشوائية", "Random seed"), getattr(ds, "seed", None)),
     ]
+    rows += careless_rows(ds, lang)
     engine_used = getattr(ds, "engine_used", None)
     if engine_used is not None:
         rows.append((_label(lang, "المحرّك المستخدم فعليًا", "Engine used"),
@@ -732,6 +733,21 @@ def specification_table(ds: Any, spec: Optional[ModelSpec] = None, *,
     return pd.DataFrame(
         {_label(lang, "الخاصية", "property"): [r[0] for r in rows],
          _label(lang, "القيمة", "value"): [_flat(r[1]) for r in rows]})
+
+
+def careless_rows(ds: Any, lang: str) -> List[Tuple[str, Any]]:
+    """Specification rows saying which file rows to screen out, if any."""
+    block = getattr(ds, "careless", None)
+    if block is None or not getattr(block, "n", 0):
+        return []
+    total = getattr(ds, "n_in_file", None)
+    return [
+        (_label(lang, "عدد الاستجابات في الملف", "Responses in the file"), total),
+        (_label(lang, "المستجيبون غير المبالين (يُحذفون قبل التحليل)",
+                "Careless respondents (remove before analysis)"), block.n),
+        (_label(lang, "أرقام صفوفهم في الملف", "Their rows in the file"),
+         ", ".join(str(r) for r in block.file_rows)),
+    ]
 
 
 def demographic_codebook(spec: ModelSpec, *, lang: str = "ar") -> pd.DataFrame:
@@ -1070,6 +1086,16 @@ def export_rds_script(ds: "GeneratedDataset", path: Any) -> None:
         lines.append("  df[[v]] <- factor(df[[v]], ordered = TRUE)")
         lines.append("}")
         lines.append("")
+    block = getattr(ds, "careless", None)
+    if block is not None and getattr(block, "n", 0):
+        lines.append("# Careless respondents, removed before the analysis the "
+                     "simulator reports:")
+        lines.append("careless_rows <- c(")
+        lines.extend(_r_vector_lines([str(r) for r in block.file_rows],
+                                     quote=False))
+        lines.append(")")
+        lines.append("# df <- df[-careless_rows, ]")
+        lines.append("")
     lines += [
         f'saveRDS(df, file = "{rds_name}")',
         f'cat("wrote {rds_name}:", nrow(df), "rows x", ncol(df), "columns\\n")',
@@ -1132,12 +1158,14 @@ def _r_comment_vector(prefix: str, names: Sequence[str],
     return lines
 
 
-def _r_vector_lines(names: Sequence[str], indent: str = "  ") -> List[str]:
-    """Wrap a long R character vector over several lines."""
+def _r_vector_lines(names: Sequence[str], indent: str = "  ",
+                   quote: bool = True) -> List[str]:
+    """Wrap a long R vector over several lines (character unless ``quote``)."""
     out: List[str] = []
     current = indent
     for position, name in enumerate(names):
-        piece = f'"{name}"' + ("," if position < len(names) - 1 else "")
+        value = f'"{name}"' if quote else str(name)
+        piece = value + ("," if position < len(names) - 1 else "")
         if len(current) + len(piece) + 1 > _WRAP_WIDTH and current.strip():
             out.append(current.rstrip())
             current = indent
@@ -1993,13 +2021,13 @@ def export_all(ds: "GeneratedDataset", directory: Any,
         written.append(str(r_path))
 
     if getattr(export_spec, "include_latent_scores", False):
-        scores = getattr(ds, "latent_scores", None)
+        scores = _in_file_order(ds, getattr(ds, "latent_scores", None))
         if isinstance(scores, pd.DataFrame) and not scores.empty:
             scores_path = folder / f"{base}_latent_scores.csv"
             export_csv(_Frame(scores), scores_path, decimal_places=places)
             written.append(str(scores_path))
     if getattr(export_spec, "include_continuous_shadow", False):
-        shadow = getattr(ds, "continuous_shadow", None)
+        shadow = _in_file_order(ds, getattr(ds, "continuous_shadow", None))
         if isinstance(shadow, pd.DataFrame) and not shadow.empty:
             shadow_path = folder / f"{base}_continuous.csv"
             export_csv(_Frame(shadow), shadow_path, decimal_places=places)
@@ -2024,6 +2052,14 @@ def export_all(ds: "GeneratedDataset", directory: Any,
                     "AMOS notes", "تعليمات AMOS")
         written.append(str(amos_path))
     return written
+
+
+def _in_file_order(ds: Any, frame: Any) -> Any:
+    """A per-respondent extra lined up with the file's rows."""
+    align = getattr(ds, "in_file_order", None)
+    if isinstance(frame, pd.DataFrame) and callable(align):
+        return align(frame)
+    return frame
 
 
 class _Frame:

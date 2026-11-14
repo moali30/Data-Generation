@@ -451,6 +451,25 @@ def test_applying_to_a_construct_survives_a_new_model(window):
     assert page.apply_notice.isVisibleTo(page)
 
 
+def test_variation_level_drives_the_amounts(window, errors):
+    page = window._pages[2]
+    settings = window.state.spec.heterogeneity
+    assert page.variation.value() == "realistic"
+    page.variation.setCurrentIndex(page.variation.findData("strong"))
+    assert settings.enabled and settings.preset_name() == "strong"
+    assert page.path_sd.value() == pytest.approx(settings.path_sd)
+
+    page.variation.setCurrentIndex(page.variation.findData("none"))
+    assert not settings.enabled
+    assert not page.loading_sd.isEnabled()
+
+    page.variation.setCurrentIndex(page.variation.findData("mild"))
+    page.path_sd.setValue(0.07)
+    assert settings.path_sd == pytest.approx(0.07)
+    assert page.variation.value() == "custom"
+    assert not errors
+
+
 def test_rechecking_the_model_is_confirmed(window):
     from semsim.ui.pages.validation_panel import ValidationDialog
     dialog = ValidationDialog(window.state, window)
@@ -552,3 +571,100 @@ def test_every_stage_has_an_arabic_subtitle():
     for stage in range(1, 7):
         arabic, _english = STRINGS[f"stage.{stage}.subtitle"]
         assert re.search(r"[؀-ۿ]", arabic), stage
+
+
+def test_a_comparison_variable_gets_a_difference_editor(window, errors):
+    from semsim.core.spec import DemographicRole, GroupEffect
+    spec = window.state.spec
+    variable = spec.add_demographic("Gender", [("Male", 0.6), ("Female", 0.4)],
+                                    role=DemographicRole.COMPARISON)
+    editor = window._pages[0]._demographics
+    editor.rebuild()
+    settle()
+    add = [b for b in editor.findChildren(QAbstractButton)
+           if getattr(b, "_key", "") == "dem.add_difference"]
+    assert len(add) == 1
+    add[0].click()
+    settle()
+    assert len(variable.group_differences) == 1
+    difference = variable.group_differences[0]
+    assert difference.target == spec.constructs[0].id
+
+    sizes = [c for c in editor.findChildren(EnumCombo) if c._prefix == "geffect"]
+    assert len(sizes) == 1
+    sizes[0].setCurrentIndex(list(GroupEffect).index(GroupEffect.LARGE))
+    assert difference.size is GroupEffect.LARGE
+    assert difference.resolved_value(2) == pytest.approx(0.8)
+
+    directions = [c for c in editor.findChildren(IdCombo)
+                  if c.combo.findData("ascending") >= 0]
+    assert len(directions) == 1
+    assert "Female" in directions[0].combo.itemText(0)
+    directions[0].combo.setCurrentIndex(directions[0].combo.findData("descending"))
+    assert difference.direction.value == "descending"
+    assert not errors
+
+
+def test_two_demographics_can_be_linked(window, errors):
+    from semsim.core.spec import AssociationStrength
+    spec = window.state.spec
+    age = spec.add_demographic("Age", [("Young", 0.5), ("Old", 0.5)])
+    spec.add_demographic("Experience", [("Low", 0.5), ("High", 0.5)])
+    editor = window._pages[0]._demographics
+    editor.rebuild()
+    settle()
+    add = [b for b in editor.findChildren(QAbstractButton)
+           if getattr(b, "_key", "") == "dem.add_association"]
+    assert len(add) == 1
+    add[0].click()
+    settle()
+    assert len(spec.demographic_associations) == 1
+    association = spec.demographic_associations[0]
+    assert {association.first, association.second} == {
+        v.id for v in spec.demographics}
+
+    strengths = [c for c in editor.findChildren(EnumCombo)
+                 if c._prefix == "astrength"]
+    strengths[0].setCurrentIndex(
+        list(AssociationStrength).index(AssociationStrength.STRONG))
+    assert association.strength is AssociationStrength.STRONG
+    together = [c for c in editor.findChildren(IdCombo)
+                if c.combo.findData("positive") >= 0]
+    assert "Old" in together[0].combo.itemText(0)
+
+    # Deleting a variable takes its links with it.
+    editor._remove_variable(age)
+    settle()
+    assert spec.demographic_associations == []
+    assert not errors
+
+
+def test_style_level_drives_the_amounts(window, errors):
+    page = window._pages[2]
+    settings = window.state.spec.respondent_styles
+    assert page.styles_level.value() == "realistic"
+    page.styles_level.setCurrentIndex(page.styles_level.findData("strong"))
+    assert settings.preset_name() == "strong"
+    assert page.extreme_sd.value() == pytest.approx(settings.extreme_sd)
+    page.styles_level.setCurrentIndex(page.styles_level.findData("none"))
+    assert not settings.enabled and not page.extreme_sd.isEnabled()
+    page.styles_level.setCurrentIndex(page.styles_level.findData("mild"))
+    page.acquiescence_sd.setValue(0.25)
+    assert settings.acquiescence_sd == pytest.approx(0.25)
+    assert page.styles_level.value() == "custom"
+    assert not errors
+
+
+def test_careless_respondents_default_to_being_screened_out(window, errors):
+    page = window._pages[2]
+    noise = window.state.spec.noise
+    assert page.careless_style.value() == "realistic"
+    assert page.careless_screened.isChecked() and noise.careless_screened
+    page.careless_screened.setChecked(False)
+    assert not noise.careless_screened
+    page.careless_style.setCurrentIndex(
+        page.careless_style.findData("straightline"))
+    assert noise.careless_style == "straightline"
+    page.noise_enabled.setChecked(False)
+    assert not page.careless_screened.isEnabled()
+    assert not errors

@@ -14,6 +14,9 @@ Four decisions live here, in the order a researcher makes them:
     the resulting category proportions drawn as bars.  The bars are painted by
     hand in :class:`_ProportionChart`: matplotlib cannot repaint fast enough to
     follow a spin box, and this chart has to follow one.
+*   **Real-world variation** -- how far constructs and items differ from one
+    another, and how far the population loadings and paths scatter around the
+    planned values, so the data do not carry the uniformity of a textbook model.
 *   **Noise injection** -- the deliberate imperfections (careless respondents,
     outliers, missingness, jitter) that keep a simulated matrix from fitting
     too perfectly.
@@ -45,8 +48,13 @@ from semsim.ui.widgets.common import (
 )
 
 #: ``NoiseSpec.careless_style`` is a bare string, not an enum; these are its
-#: three legal values, each with a catalogue entry of its own.
-CARELESS_STYLES: Tuple[str, str, str] = ("random", "straightline", "mixed")
+#: legal values, each with a catalogue entry of its own.
+CARELESS_STYLES: Tuple[str, ...] = ("realistic", "random", "straightline",
+                                    "mixed")
+
+#: The variation presets offered, plus ``custom`` for hand-set amounts.
+VARIATION_LEVELS: Tuple[str, ...] = ("none", "mild", "realistic", "strong",
+                                     "custom")
 
 #: numpy's default_rng accepts anything up to 2**32-1; a spin box is int-sized.
 MAX_SEED: int = 2_147_483_647
@@ -187,6 +195,8 @@ class DistributionPage(StagePage):
 
         self._build_global()
         self._build_preview()
+        self._build_variation()
+        self._build_respondent_styles()
         self._build_noise()
         self._build_reproducibility()
         self.scroll.add_stretch()
@@ -352,7 +362,152 @@ class DistributionPage(StagePage):
         self._apply_scale(construct.all_items())
 
     # ------------------------------------------------------------------ #
-    # 3. Noise injection
+    # 3. Real-world variation
+    # ------------------------------------------------------------------ #
+
+    def _build_variation(self) -> None:
+        card = self.add_card("d.variation")
+        card.add(InfoBanner("d.variation.explain"))
+
+        self.variation = EnumCombo(str, "d.variation", members=VARIATION_LEVELS)
+        self.variation.value_changed.connect(self._on_variation_preset)
+        card.add(Field("d.variation.level", self.variation))
+
+        def amount(maximum: float, step: float) -> "object":
+            box = float_spin(0.0, maximum, 0.0, decimals=2, step=step)
+            box.valueChanged.connect(lambda _v: self._on_variation_amounts())
+            return box
+
+        self.construct_level_sd = amount(1.0, 0.05)
+        card.add(Field("d.variation.construct_level", self.construct_level_sd,
+                       hint_key="d.variation.construct_level.hint"))
+        self.item_level_sd = amount(1.0, 0.05)
+        card.add(Field("d.variation.item_level", self.item_level_sd,
+                       hint_key="d.variation.item_level.hint"))
+        self.item_spread_sd = amount(0.5, 0.01)
+        card.add(Field("d.variation.item_spread", self.item_spread_sd,
+                       hint_key="d.variation.item_spread.hint"))
+        self.loading_sd = amount(0.2, 0.01)
+        card.add(Field("d.variation.loading", self.loading_sd,
+                       hint_key="d.variation.loading.hint"))
+        self.path_sd = amount(0.15, 0.01)
+        card.add(Field("d.variation.path", self.path_sd,
+                       hint_key="d.variation.path.hint"))
+        self.tail_share = percent_spin(0.0, maximum=0.2)
+        self.tail_share.valueChanged.connect(
+            lambda _v: self._on_variation_amounts())
+        card.add(Field("d.variation.tail", self.tail_share,
+                       hint_key="d.variation.tail.hint"))
+        self._variation_editors = [
+            self.construct_level_sd, self.item_level_sd, self.item_spread_sd,
+            self.loading_sd, self.path_sd, self.tail_share,
+        ]
+
+    def _on_variation_preset(self, level: object) -> None:
+        if self._updating:
+            return
+        settings = self.spec.heterogeneity
+        level = str(level or "realistic")
+        if level == "custom":
+            # Keep the current amounts as the starting point for editing.
+            settings.enabled = True
+        else:
+            settings.apply_preset(level)
+        self._show_variation()
+        self.edit()
+
+    def _on_variation_amounts(self) -> None:
+        if self._updating:
+            return
+        settings = self.spec.heterogeneity
+        settings.enabled = True
+        settings.construct_level_sd = float(self.construct_level_sd.value())
+        settings.item_level_sd = float(self.item_level_sd.value())
+        settings.item_spread_sd = float(self.item_spread_sd.value())
+        settings.loading_sd = float(self.loading_sd.value())
+        settings.path_sd = float(self.path_sd.value())
+        settings.tail_share = percent_value(self.tail_share)
+        with self.quiet():
+            self.variation.set_value(settings.preset_name())
+        self._update_variation_gating()
+        self.edit()
+
+    def _show_variation(self) -> None:
+        settings = self.spec.heterogeneity
+        with self.quiet():
+            self.variation.set_value(settings.preset_name())
+            self.construct_level_sd.setValue(settings.construct_level_sd)
+            self.item_level_sd.setValue(settings.item_level_sd)
+            self.item_spread_sd.setValue(settings.item_spread_sd)
+            self.loading_sd.setValue(settings.loading_sd)
+            self.path_sd.setValue(settings.path_sd)
+            self.tail_share.setValue(settings.tail_share * 100.0)
+        self._update_variation_gating()
+
+    def _update_variation_gating(self) -> None:
+        enabled = bool(self.spec.heterogeneity.enabled)
+        for editor in self._variation_editors:
+            editor.setEnabled(enabled)
+
+    # ------------------------------------------------------------------ #
+    # Respondent answering styles
+    # ------------------------------------------------------------------ #
+
+    def _build_respondent_styles(self) -> None:
+        card = self.add_card("d.styles")
+        card.add(InfoBanner("d.styles.explain"))
+        self.styles_level = EnumCombo(str, "d.variation", members=VARIATION_LEVELS)
+        self.styles_level.value_changed.connect(self._on_styles_preset)
+        card.add(Field("d.styles.level", self.styles_level))
+        self.extreme_sd = float_spin(0.0, 0.6, 0.0, decimals=2, step=0.05)
+        self.extreme_sd.valueChanged.connect(lambda _v: self._on_styles_amounts())
+        card.add(Field("d.styles.extreme", self.extreme_sd,
+                       hint_key="d.styles.extreme.hint"))
+        self.acquiescence_sd = float_spin(0.0, 0.4, 0.0, decimals=2, step=0.01)
+        self.acquiescence_sd.valueChanged.connect(
+            lambda _v: self._on_styles_amounts())
+        card.add(Field("d.styles.acquiescence", self.acquiescence_sd,
+                       hint_key="d.styles.acquiescence.hint"))
+
+    def _on_styles_preset(self, level: object) -> None:
+        if self._updating:
+            return
+        settings = self.spec.respondent_styles
+        level = str(level or "realistic")
+        if level == "custom":
+            settings.enabled = True
+        else:
+            settings.apply_preset(level)
+        self._show_styles()
+        self.edit()
+
+    def _on_styles_amounts(self) -> None:
+        if self._updating:
+            return
+        settings = self.spec.respondent_styles
+        settings.enabled = True
+        settings.extreme_sd = float(self.extreme_sd.value())
+        settings.acquiescence_sd = float(self.acquiescence_sd.value())
+        with self.quiet():
+            self.styles_level.set_value(settings.preset_name())
+        self._update_styles_gating()
+        self.edit()
+
+    def _show_styles(self) -> None:
+        settings = self.spec.respondent_styles
+        with self.quiet():
+            self.styles_level.set_value(settings.preset_name())
+            self.extreme_sd.setValue(settings.extreme_sd)
+            self.acquiescence_sd.setValue(settings.acquiescence_sd)
+        self._update_styles_gating()
+
+    def _update_styles_gating(self) -> None:
+        enabled = bool(self.spec.respondent_styles.enabled)
+        self.extreme_sd.setEnabled(enabled)
+        self.acquiescence_sd.setEnabled(enabled)
+
+    # ------------------------------------------------------------------ #
+    # 4. Noise injection
     # ------------------------------------------------------------------ #
 
     def _build_noise(self) -> None:
@@ -377,6 +532,10 @@ class DistributionPage(StagePage):
                                         members=CARELESS_STYLES)
         self.careless_style.value_changed.connect(lambda _v: self._on_noise())
         card.add(Field("d.careless_style", self.careless_style))
+
+        self.careless_screened = TCheckBox("d.careless_screened")
+        self.careless_screened.toggled.connect(lambda _c: self._on_noise())
+        card.add(self.careless_screened)
 
         self.outliers = percent_spin(0.0)
         self.outliers.valueChanged.connect(lambda _v: self._on_noise())
@@ -403,7 +562,8 @@ class DistributionPage(StagePage):
         card.add(Field("d.jitter", self.jitter))
 
         self._noise_editors = [
-            self.inflation, self.careless, self.careless_style, self.outliers,
+            self.inflation, self.careless, self.careless_style,
+            self.careless_screened, self.outliers,
             self.outlier_sd, self.missing_mechanism, self.missing_proportion,
             self.mar_driver, self.jitter,
         ]
@@ -415,7 +575,8 @@ class DistributionPage(StagePage):
         noise.enabled = bool(self.noise_enabled.isChecked())
         noise.unique_variance_inflation = float(self.inflation.value())
         noise.careless_proportion = percent_value(self.careless)
-        noise.careless_style = str(self.careless_style.value() or "random")
+        noise.careless_style = str(self.careless_style.value() or "realistic")
+        noise.careless_screened = bool(self.careless_screened.isChecked())
         noise.outlier_proportion = percent_value(self.outliers)
         noise.outlier_magnitude_sd = float(self.outlier_sd.value())
         noise.missing_mechanism = enum_value(
@@ -438,7 +599,7 @@ class DistributionPage(StagePage):
                                    and mechanism is MissingMechanism.MAR)
 
     # ------------------------------------------------------------------ #
-    # 4. Reproducibility
+    # 5. Reproducibility
     # ------------------------------------------------------------------ #
 
     def _build_reproducibility(self) -> None:
@@ -542,6 +703,8 @@ class DistributionPage(StagePage):
             self.inflation.setValue(noise.unique_variance_inflation)
             self.careless.setValue(noise.careless_proportion * 100.0)
             self.careless_style.set_value(noise.careless_style)
+            self.careless_screened.setChecked(
+                bool(getattr(noise, "careless_screened", True)))
             self.outliers.setValue(noise.outlier_proportion * 100.0)
             self.outlier_sd.setValue(noise.outlier_magnitude_sd)
             self.missing_mechanism.set_value(noise.missing_mechanism)
@@ -570,6 +733,8 @@ class DistributionPage(StagePage):
 
         self._check_feasible()
         self._update_preview()
+        self._show_variation()
+        self._show_styles()
         self._update_noise_gating()
         self._update_engine_note()
 

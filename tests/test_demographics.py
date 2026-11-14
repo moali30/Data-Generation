@@ -20,7 +20,7 @@ from semsim.analysis.estimator import estimate
 from semsim.core import examples
 from semsim.core.compile import compile_model
 from semsim.core.spec import (
-    DemographicKind, DemographicRole, EffectSize, MissingMechanism,
+    DemographicKind, DemographicRole, EffectSize, MissingMechanism, ModelSpec,
 )
 from semsim.core.validation import validate
 from semsim.generation.demographics import allocate_quota
@@ -37,6 +37,9 @@ def plain_model():
     spec = examples.simple_mediation()
     spec.fit_target.enabled = False
     spec.noise.enabled = False
+    # Most tests here count cases per category, which only a quota design
+    # fixes in advance; weighted sampling has tests of its own.
+    spec.quota_exact = True
     return spec
 
 
@@ -84,6 +87,7 @@ def codes(ds, name):
 
 def test_quota_is_exact():
     spec = plain_model()
+    spec.quota_exact = True
     spec.add_demographic("Gender", [("m", 0.6), ("f", 0.4)])
     spec.add_demographic("Edu", [("b", 0.7), ("p", 0.3)],
                          kind=DemographicKind.ORDINAL)
@@ -95,6 +99,12 @@ def test_quota_is_exact():
 def test_quota_sums_to_n_when_shares_do_not_divide_evenly():
     counts = allocate_quota([1 / 3, 1 / 3, 1 / 3], 100)
     assert counts.sum() == 100 and sorted(counts) == [33, 33, 34]
+
+
+def test_weighted_sampling_is_the_default():
+    # A collected sample never lands exactly on its target shares, so new
+    # models draw respondents at random unless a quota design is asked for.
+    assert ModelSpec().quota_exact is False
 
 
 def test_weighted_sampling_is_random_but_on_target():
@@ -131,7 +141,8 @@ def test_descriptive_variable_leaves_the_answers_untouched():
 def test_a_model_without_demographics_has_no_extra_columns():
     ds = generate_dataset(plain_model(), n=100, seed=5)
     assert ds.demographics is None
-    assert ds.model_frame is ds.data and ds.full_frame is ds.data
+    assert ds.model_frame is ds.data and ds.clean_frame is ds.data
+    assert list(ds.full_frame.columns) == list(ds.data.columns)
 
 
 # --------------------------------------------------------------------------- #
@@ -172,6 +183,10 @@ def test_degrees_of_freedom_match_the_estimator():
 
 def test_control_coefficient_and_substantive_paths_are_recovered():
     spec = with_controls()
+    # Recovery is checked against clean data: answering styles add a little
+    # method variance on purpose, which shaves about 0.006 off this
+    # coefficient and is tested on its own.
+    spec.respondent_styles.enabled = False
     ds = generate_dataset(spec, n=6000, seed=11)
     result = estimate(ds.model_frame, spec, use_polychoric=False)
     table = result.path_estimates.set_index(["source", "target"])
@@ -408,11 +423,12 @@ def test_a_valid_model_has_no_demographic_errors():
 
 def test_project_round_trip(tmp_path):
     spec = with_controls()
-    spec.quota_exact = False
+    # The non-default value, so a round trip that dropped it would show.
+    spec.quota_exact = True
     path = project.save(spec, tmp_path / "model")
     again = project.load(path)
     variable = again.demographics[0]
-    assert again.quota_exact is False
+    assert again.quota_exact is True
     assert variable.role is DemographicRole.CONTROL
     assert variable.categories[0].proportion == pytest.approx(0.6)
     assert variable.control_paths[0].effect_size is EffectSize.CUSTOM

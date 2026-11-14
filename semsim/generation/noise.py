@@ -7,10 +7,15 @@ that looks like it came off a questionnaire filled in by human beings.
 Three contaminations are applied, always in this order:
 
 1. **Careless responders** -- a share of respondents who answer without
-   reading.  Two archetypes are implemented: the *straight-liner*, who ticks
-   one category all the way down the page, and the *random responder*, who
-   answers uniformly over each item's response scale (Meade & Craig, 2012;
-   Huang, Curran, Keeney, Poposki & DeShon, 2012).
+   reading (Meade & Craig, 2012; Huang, Curran, Keeney, Poposki & DeShon,
+   2012).  The ``realistic`` style mixes three kinds, as screened survey data
+   show them: the *straight-liner*, who ticks one category all the way down
+   the page, mostly the middle or an agreeing one; the *late straight-liner*,
+   who reads the first part of the questionnaire and then ticks one category
+   for the rest (Bowling et al., 2016); and the *random responder*, whose
+   answers have nothing to do with the questions.  The older styles keep one
+   archetype each: ``straightline``, ``random`` (uniform over each item's
+   scale) and ``mixed`` (half of each).
 2. **Outliers** -- single cells pushed ``magnitude_sd`` standard deviations away
    from their column mean (Aguinis, Gottfredson & Joo, 2013).  On an ordinal
    item the value is then clipped back into the legal response range, which is
@@ -29,6 +34,10 @@ References
 ----------
 Meade, A. W., & Craig, S. B. (2012). Identifying careless responses in survey
     data. *Psychological Methods*, 17(3), 437-455.
+Bowling, N. A., Huang, J. L., Bragg, C. B., Khazon, S., Liu, M., &
+    Blackmore, C. E. (2016). Who cares and who is careless? Insufficient
+    effort responding as a reflection of respondent personality. *Journal of
+    Personality and Social Psychology*, 111(2), 218-229.
 Huang, J. L., Curran, P. G., Keeney, J., Poposki, E. M., & DeShon, R. P.
     (2012). Detecting and deterring insufficient effort responding to surveys.
     *Journal of Business and Psychology*, 27(1), 99-114.
@@ -58,15 +67,38 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "NoiseReport",
     "CARELESS_STYLES",
+    "CARELESS_KINDS",
     "MAR_LOGIT_SLOPE",
+    "careless_patterns",
     "inject_careless",
     "inject_outliers",
     "inject_missing",
     "apply_noise",
 ]
 
-#: The careless-responding archetypes understood by :func:`inject_careless`.
-CARELESS_STYLES: Tuple[str, ...] = ("random", "straightline", "mixed")
+#: The careless-responding styles understood by :func:`inject_careless`.
+CARELESS_STYLES: Tuple[str, ...] = ("realistic", "random", "straightline",
+                                    "mixed")
+
+#: The kinds of careless respondent the ``realistic`` style draws, with their
+#: shares.  Straight-lining is the most common insufficient-effort pattern
+#: and often starts part-way through a long questionnaire; the rest answer
+#: without regard to the content (Meade & Craig, 2012; Bowling et al., 2016).
+CARELESS_KINDS: Tuple[Tuple[str, float], ...] = (
+    ("straightline", 0.35), ("partial", 0.35), ("random", 0.30))
+
+#: Share of straight-liners who take the middle of the scale; the others
+#: pick the way the attentive sample answers, so mostly an agreeing option.
+_MIDPOINT_SHARE: float = 0.35
+
+#: A late straight-liner stops reading somewhere in this part of the
+#: questionnaire, and keeps at least ``_PARTIAL_MIN_TAIL`` items flat.
+_PARTIAL_START: Tuple[float, float] = (0.4, 0.8)
+_PARTIAL_MIN_TAIL: int = 3
+
+#: A random responder's answer comes from the item's own answer distribution
+#: this often, and is spread evenly over the scale otherwise.
+_RANDOM_FROM_ITEM: float = 0.5
 
 #: Default steepness of the MAR logistic link, in standardised driver units.
 #: 1.5 gives a clearly detectable but not degenerate dependence.
@@ -268,12 +300,13 @@ def inject_careless(
         padded with "continuous, unbounded"; extra entries are ignored.
     proportion : float
         Share of respondents who answer carelessly, in ``[0, 1]``.
-    style : {"random", "straightline", "mixed"}
+    style : {"realistic", "random", "straightline", "mixed"}
         ``"straightline"`` draws **one** category for the whole row and repeats
         it across every item -- the classic flat-liner.  ``"random"`` draws
         each cell uniformly over that item's own response scale, honouring a
         per-item ``n_categories`` that may differ across items.  ``"mixed"``
         splits the careless rows between the two archetypes, roughly half each.
+        ``"realistic"`` hands the rows to :func:`careless_patterns`.
     rng : numpy.random.Generator
         The only source of randomness.
 
@@ -324,6 +357,10 @@ def inject_careless(
         return out, []
 
     rows = rng.choice(n, size=n_careless, replace=False)
+    if key == "realistic":
+        block, _kinds = careless_patterns(arr[rows], scales, rng, reference=arr)
+        out = _assign_block(out, rows, block)
+        return out, sorted(int(r) for r in rows)
     is_ordinal, _lower, upper = _ordinal_flags_and_bounds(scales, p)
     col_lo, col_hi = _column_range(arr)
 
@@ -369,6 +406,140 @@ def inject_careless(
         out = _assign_block(out, random_rows, block)
 
     return out, sorted(int(r) for r in rows)
+
+
+def careless_patterns(
+    block: np.ndarray,
+    scales: Sequence[Optional[ScaleSpec]],
+    rng: np.random.Generator,
+    *,
+    reference: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, List[str]]:
+    """Turn every row of ``block`` into a realistic careless respondent.
+
+    Parameters
+    ----------
+    block : numpy.ndarray
+        ``(k, p)`` answers these respondents would have given had they read
+        the questions, in questionnaire order.  A late straight-liner keeps
+        the first part of them.
+    scales : sequence of ScaleSpec
+        One scale per column, as for :func:`inject_careless`.
+    rng : numpy.random.Generator
+        The only source of randomness.
+    reference : numpy.ndarray, optional
+        The attentive respondents' answers, ``(n, p)``.  Straight-liners pick
+        a category the way this sample answers (mostly the agreeing side of a
+        satisfied sample), and random responders draw half their answers from
+        each item's own distribution in it.  Defaults to ``block``.
+
+    Returns
+    -------
+    tuple
+        ``(careless, kinds)``: a new ``(k, p)`` array, and for each row one of
+        ``"straightline"``, ``"partial"`` (straight-lined from part-way
+        through) or ``"random"``.
+
+    Notes
+    -----
+    The straight-lined category comes from the middle of the scale for a
+    third of straight-liners and from the attentive sample's pooled answers
+    for the rest, so whole rows of "strongly disagree" stay rare, as they are
+    in collected data.  It is a code that exists on every ordinal item, and a
+    continuous item gets the matching quantile of its own metric.
+    Reverse-worded items get the same raw code as the rest of the row, which
+    is what makes straight-lining visible in screening.
+    """
+    arr = _as_matrix(block)
+    out = arr.astype(float).copy()
+    k, p = out.shape
+    ref = arr if reference is None else _as_matrix(reference)
+    ref = np.asarray(ref, dtype=float)
+    if k == 0 or p == 0:
+        return out, []
+    names = [name for name, _share in CARELESS_KINDS]
+    shares = np.array([share for _name, share in CARELESS_KINDS], dtype=float)
+    kinds = [str(x) for x in rng.choice(names, size=k, p=shares / shares.sum())]
+
+    is_ordinal, lower, upper = _ordinal_flags_and_bounds(list(scales), p)
+    ordinal = np.flatnonzero(is_ordinal)
+    if ordinal.size:
+        low_ref = int(np.nanmax(lower[ordinal]))
+        high_ref = int(np.nanmin(upper[ordinal]))
+    else:
+        low_ref, high_ref = 1, 5
+    high_ref = max(high_ref, low_ref + 1)
+    codes = np.arange(low_ref, high_ref + 1)
+    probabilities = _straightline_probabilities(ref, ordinal, lower, upper,
+                                                codes)
+    mean_c, sd_c = _column_stats(ref)
+
+    for row, kind in enumerate(kinds):
+        if kind == "random":
+            out[row] = _random_row(ref, is_ordinal, lower, upper, rng)
+            continue
+        code = int(rng.choice(codes, p=probabilities))
+        start = 0
+        if kind == "partial":
+            if p >= 2 * _PARTIAL_MIN_TAIL:
+                share = rng.uniform(*_PARTIAL_START)
+                start = int(np.ceil(share * p))
+                start = int(min(max(start, 1), p - _PARTIAL_MIN_TAIL))
+            else:
+                kinds[row] = "straightline"
+        flat = np.empty(p, dtype=float)
+        flat[is_ordinal] = float(code)
+        cont = ~is_ordinal
+        if cont.any():
+            z = ndtri((code - low_ref + 0.5) / (high_ref - low_ref + 1))
+            flat[cont] = mean_c[cont] + sd_c[cont] * z
+        out[row, start:] = flat[start:]
+    return out, kinds
+
+
+def _straightline_probabilities(ref: np.ndarray, ordinal: np.ndarray,
+                                lower: np.ndarray, upper: np.ndarray,
+                                codes: np.ndarray) -> np.ndarray:
+    """Which category a straight-liner repeats: the middle, or as others answer."""
+    same = ordinal[(lower[ordinal] == codes[0]) & (upper[ordinal] == codes[-1])]
+    values = ref[:, same].ravel() if same.size else np.empty(0)
+    values = np.rint(values[np.isfinite(values)])
+    pooled = np.array([(values == c).sum() for c in codes], dtype=float)
+    if pooled.sum() <= 0:
+        pooled = np.ones(codes.size)
+    pooled /= pooled.sum()
+    middle = np.zeros(codes.size)
+    centre = (codes[0] + codes[-1]) / 2.0
+    for c in (np.floor(centre), np.ceil(centre)):
+        middle[codes == c] += 1.0
+    middle /= middle.sum()
+    mixed = _MIDPOINT_SHARE * middle + (1.0 - _MIDPOINT_SHARE) * pooled
+    return mixed / mixed.sum()
+
+
+def _random_row(ref: np.ndarray, is_ordinal: np.ndarray, lower: np.ndarray,
+                upper: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Answers chosen without reading: half as others answer, half anywhere."""
+    p = ref.shape[1]
+    row = np.empty(p, dtype=float)
+    for j in range(p):
+        column = ref[:, j]
+        column = column[np.isfinite(column)]
+        from_item = column.size > 0 and rng.random() < _RANDOM_FROM_ITEM
+        if is_ordinal[j]:
+            if from_item:
+                row[j] = float(np.rint(column[rng.integers(column.size)]))
+            else:
+                row[j] = float(rng.integers(int(lower[j]), int(upper[j]) + 1))
+            row[j] = float(np.clip(row[j], lower[j], upper[j]))
+        elif column.size:
+            if from_item:
+                row[j] = float(column[rng.integers(column.size)])
+            else:
+                row[j] = float(rng.uniform(column.min(), column.max()))
+        else:
+            row[j] = 0.0
+    return row
 
 
 # --------------------------------------------------------------------------- #
@@ -773,8 +944,14 @@ def apply_noise(
     spec: ModelSpec,
     cm: Optional["CompiledModel"],
     rng: np.random.Generator,
+    *,
+    careless: bool = True,
 ) -> Tuple[np.ndarray, NoiseReport]:
     """Apply every realism contamination requested by ``spec.noise``.
+
+    ``careless=False`` leaves the careless step out: the engine passes it
+    when careless respondents are added on top of the sample instead of
+    replacing some of it (``spec.noise.careless_screened``).
 
     The three steps run in a fixed order -- careless responders, then outliers,
     then missingness -- because that is the order in which they happen to a
@@ -889,7 +1066,7 @@ def apply_noise(
     )
 
     # -- 1. careless responders ------------------------------------------ #
-    if careless_prop > 0.0:
+    if careless and careless_prop > 0.0:
         style = str(getattr(noise, "careless_style", "random") or "random")
         out, rows = inject_careless(out, scales, careless_prop, style, rng)
         report.n_careless = len(rows)

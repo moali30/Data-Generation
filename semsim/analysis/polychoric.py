@@ -108,6 +108,7 @@ import numpy as np
 import pandas as pd
 from scipy import optimize, stats
 
+from semsim.core import cancel as _cancel
 from semsim.core.errors import SpecificationError
 
 __all__ = [
@@ -741,6 +742,7 @@ def polychoric_matrix(data: pd.DataFrame,
     values = frame.to_numpy(dtype=float)
     out = np.eye(p, dtype=float)
     for i in range(p):
+        _cancel.check()
         for j in range(i + 1, p):
             xi = values[:, i]
             xj = values[:, j]
