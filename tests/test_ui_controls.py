@@ -451,6 +451,25 @@ def test_applying_to_a_construct_survives_a_new_model(window):
     assert page.apply_notice.isVisibleTo(page)
 
 
+def test_variation_level_drives_the_amounts(window, errors):
+    page = window._pages[2]
+    settings = window.state.spec.heterogeneity
+    assert page.variation.value() == "realistic"
+    page.variation.setCurrentIndex(page.variation.findData("strong"))
+    assert settings.enabled and settings.preset_name() == "strong"
+    assert page.path_sd.value() == pytest.approx(settings.path_sd)
+
+    page.variation.setCurrentIndex(page.variation.findData("none"))
+    assert not settings.enabled
+    assert not page.loading_sd.isEnabled()
+
+    page.variation.setCurrentIndex(page.variation.findData("mild"))
+    page.path_sd.setValue(0.07)
+    assert settings.path_sd == pytest.approx(0.07)
+    assert page.variation.value() == "custom"
+    assert not errors
+
+
 def test_rechecking_the_model_is_confirmed(window):
     from semsim.ui.pages.validation_panel import ValidationDialog
     dialog = ValidationDialog(window.state, window)

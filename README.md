@@ -58,6 +58,13 @@ anything.
   لذا يتحول البرنامج تلقائيًا إلى توليد درجات المتغيرات الكامنة عند وجود تعديل.
 - **واقعية الاستجابة البشرية.** مستجيبون غير مبالين (خط مستقيم أو إجابات
   عشوائية)، وقيم شاذة مقيَّدة بمدى المقياس، وفقد عشوائي مشروط (MAR).
+- **مجتمع واقعي لا نموذج مثالي.** لا تتساوى في البيانات الحقيقية متوسطات
+  الأسئلة ولا انحرافاتها ولا تشبعاتها، ولا تأتي المسارات أرقامًا مدوّرة. لذا
+  يسحب البرنامج مجتمعًا حول نموذجك: لكل متغير مستوى خاص على المقياس، ولكل سؤال
+  صعوبة وتشتت خاصان (كما في نموذج الاستجابة المتدرجة لـ Samejima)، وتتفاوت
+  التشبعات والمسارات قليلًا حول القيم المخططة دون أن تتغير إشارتها أو دلالتها
+  المطلوبة. وتُسحب الفئات الديموغرافية عشوائيًا بالنسب المطلوبة افتراضيًا،
+  فتتفاوت أعدادها كما في عينة حقيقية.
 
 ### التشغيل
 
@@ -136,6 +143,14 @@ a Monte Carlo study.
 - **Human response realism.** Careless respondents (straight-lining or random
   clicking), outliers clipped to the legal response range, and MAR missingness
   driven by an observed score.
+- **A realistic population, not a textbook one.** In real data no two items
+  share a mean, a spread or a loading, and no path is a round number. The
+  engine draws one population around your model: each construct gets its own
+  level on the scale, each item its own difficulty and spread (as in
+  Samejima's graded response model), and loadings and paths scatter a little
+  around the planned values without changing sign or the requested
+  significance. Demographic categories are drawn at random with the requested
+  shares by default, so their counts vary the way a real sample's do.
 
 ### Running it
 
@@ -205,13 +220,19 @@ simulated is the model you re-estimate.
   value. *Psychometrika, 57*, 357–369.
 - Fleishman, A. I. (1978). A method for simulating non-normal distributions.
   *Psychometrika, 43*, 521–532.
+- Embretson, S. E., & Reise, S. P. (2000). *Item Response Theory for
+  Psychologists*. Erlbaum.
 - Hu, L., & Bentler, P. M. (1999). Cutoff criteria for fit indexes in
   covariance structure analysis. *Structural Equation Modeling, 6*, 1–55.
+- MacCallum, R. C., & Tucker, L. R. (1991). Representing sources of error in
+  the common-factor model. *Psychological Bulletin, 109*, 502–511.
 - MacCallum, R. C., Browne, M. W., & Sugawara, H. M. (1996). Power analysis and
   determination of sample size for covariance structure modeling.
   *Psychological Methods, 1*, 130–149.
 - Muthén, L. K., & Muthén, B. O. (2002). How to use a Monte Carlo study to
   decide on sample size and determine power.
+- Samejima, F. (1969). Estimation of latent ability using a response pattern
+  of graded scores. *Psychometrika Monograph Supplement, 34*(4, Pt. 2).
 - Satorra, A., & Saris, W. E. (1985). Power of the likelihood ratio test in
   covariance structure analysis. *Psychometrika, 50*, 83–90.
 - Vale, C. D., & Maurelli, V. A. (1983). Simulating multivariate nonnormal

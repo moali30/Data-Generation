@@ -129,9 +129,12 @@ def calibrate(spec: ModelSpec, *, n: Optional[int] = None,
     plan = significance_module.build_plan(spec, compiled, n_cases,
                                           compute_power=False)
     working = significance_module.apply_plan(spec, plan)
+    # One population for the whole run: every round and every re-draw samples
+    # from it, so rejection sampling selects among samples, not populations.
+    from semsim.generation.heterogeneity import realise_population
+    working = realise_population(working, base_seed)
     working.power.n = n_cases
-    if plan.coefficients:
-        compiled = compile_model(working)
+    compiled = compile_model(working)
 
     target_rmsea = _target_rmsea(spec)
     tolerance = float(spec.fit_target.tolerance)

@@ -494,6 +494,54 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "This skewness/kurtosis pair is mathematically impossible: kurtosis "
         "must exceed skewness² − 2."),
 
+    "d.variation": ("التباين الواقعي بين الأسئلة والمتغيرات",
+                    "Real-world variation"),
+    "d.variation.explain": (
+        "في البيانات الحقيقية لا تتساوى متوسطات الأسئلة ولا انحرافاتها ولا "
+        "تشبعاتها، ولا تأتي المسارات أرقامًا مدوّرة. هذا الخيار يسحب مجتمعًا "
+        "واقعيًا حول نموذجك: لكل متغير مستوى خاص، ولكل سؤال صعوبة وتشتت خاصان، "
+        "وتتفاوت التشبعات والمسارات قليلًا حول القيم المخططة دون أن تتغير "
+        "إشارتها أو دلالتها المطلوبة.",
+        "In real data item means, spreads and loadings are never equal, and "
+        "paths are never round numbers. This draws one realistic population "
+        "around your model: each construct gets its own level, each item its "
+        "own difficulty and spread, and loadings and paths scatter a little "
+        "around the planned values without changing sign or the requested "
+        "significance."),
+    "d.variation.level": ("مقدار التباين", "Amount of variation"),
+    "d.variation.none": ("بدون (نموذج مثالي)", "None (textbook model)"),
+    "d.variation.mild": ("خفيف", "Mild"),
+    "d.variation.realistic": ("واقعي (موصى به)", "Realistic (recommended)"),
+    "d.variation.strong": ("قوي", "Strong"),
+    "d.variation.custom": ("مخصّص", "Custom"),
+    "d.variation.construct_level": ("تفاوت مستوى المتغيرات",
+                                    "Construct level spread"),
+    "d.variation.construct_level.hint": (
+        "بوحدات الانحراف المعياري للاستجابة الكامنة. القيمة 0.30 تباعد بين "
+        "متوسطات المتغيرات بنحو ربع درجة على مقياس خماسي.",
+        "In SD units of the latent response. 0.30 puts construct means about "
+        "a quarter of a point apart on a five-point scale."),
+    "d.variation.item_level": ("تفاوت صعوبة الأسئلة", "Item difficulty spread"),
+    "d.variation.item_level.hint": (
+        "مقدار اختلاف متوسط كل سؤال عن متوسط متغيره.",
+        "How far each item's mean departs from its construct's."),
+    "d.variation.item_spread": ("تفاوت تشتت الأسئلة", "Item spread variation"),
+    "d.variation.item_spread.hint": (
+        "يجعل الانحرافات المعيارية للأسئلة غير متساوية.",
+        "Makes the items' standard deviations differ."),
+    "d.variation.loading": ("تفاوت التشبعات", "Loading scatter"),
+    "d.variation.loading.hint": (
+        "الانحراف المعياري للتشبع في المجتمع حول القيمة المخططة.",
+        "SD of each population loading around its planned value."),
+    "d.variation.path": ("تفاوت المسارات", "Path scatter"),
+    "d.variation.path.hint": (
+        "الانحراف المعياري للمسار في المجتمع حول القيمة المخططة. لا يغيّر "
+        "إشارة المسار ولا ينقصه عن ثلاثة أرباع قيمته، والمسارات المطلوب أن "
+        "تكون غير دالة تبقى كما هي.",
+        "SD of each population path around its planned value. It never "
+        "changes a path's sign or shrinks it below three quarters of its "
+        "value, and paths meant to be non-significant are left alone."),
+
     "d.noise": ("حقن التشويش العشوائي", "Noise injection"),
     "d.noise.explain": (
         "إضافة تباين غير مفسَّر لتجنّب المطابقة المفرطة (Overfitting)، لتظهر "

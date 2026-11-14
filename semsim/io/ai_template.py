@@ -28,7 +28,8 @@ from semsim.core.errors import SemSimError
 from semsim.core.spec import (
     Bilingual, Construct, ConstructOrder, ConstructRole, DemographicCategory,
     DemographicKind, DemographicRole, DemographicVariable, Dimension,
-    EffectSize, FitLevel, IndirectEffect, Item, LatentCovariance,
+    EffectSize, FitLevel, HETEROGENEITY_PRESETS, IndirectEffect, Item,
+    LatentCovariance,
     MissingMechanism, ModelSpec, ResponseStyle, ScaleKind, ScaleSpec,
 )
 from semsim.core.validation import validate
@@ -48,6 +49,7 @@ _STYLES = tuple(s.value for s in ResponseStyle if s is not ResponseStyle.CUSTOM)
 _ROLES = (ConstructRole.INDEPENDENT.value, ConstructRole.MEDIATOR.value,
           ConstructRole.DEPENDENT.value, ConstructRole.MODERATOR.value)
 _FIT_LEVELS = tuple(f.value for f in FitLevel if f is not FitLevel.CUSTOM)
+_VARIATIONS = ("none", *HETEROGENEITY_PRESETS)
 
 
 @dataclass(frozen=True)
@@ -162,7 +164,16 @@ _INSTRUCTIONS: Dict[str, Any] = {
         "in 'interactions'. Age, gender and similar variables go in "
         "'demographics', not in 'constructs'.",
         "'scale' is likert or continuous. 'scale_points' is 5 unless told "
-        "otherwise. Attitude scales usually fit 'response_style' negative_skew.",
+        "otherwise.",
+        "'response_style' sets where a construct's answers sit on the scale. "
+        "Real attitude and evaluation scales (satisfaction, quality, trust, "
+        "intention, attitudes towards something the respondent chose) lean "
+        "towards agreement, so use negative_skew for them, which gives means "
+        "of about 3.6 to 4.1 on a 5-point scale. Use symmetric only for a "
+        "construct the user expects to sit near the middle of the scale, and "
+        "positive_skew for one most respondents disagree with or rarely "
+        "experience (stress, burnout, intention to leave). Choose each "
+        "construct's style on its own merits.",
     ],
     "paths": [
         "'from' and 'to' are construct names. Use 'effect', or 'coefficient' for "
@@ -210,8 +221,10 @@ _INSTRUCTIONS: Dict[str, Any] = {
         "first category is the reference. Each of its control paths must name "
         "another category in 'category', using the exact category label.",
         "Any other variable has one effect, so leave 'category' out.",
-        "'exact_quotas' true gives each category its exact share; false uses "
-        "weighted random sampling.",
+        "'exact_quotas' false (the default) draws each respondent at random "
+        "with the category shares as weights, so the counts vary the way a "
+        "collected sample's do (317, 204, 158 rather than 320, 200, 160). Set "
+        "it to true only when the user says the sample was filled by quota.",
     ],
     "defaults": [
         "'sample_size' is required. If the user gives no number, use 300 for "
@@ -219,6 +232,12 @@ _INSTRUCTIONS: Dict[str, Any] = {
         "fit_target.level good targets RMSEA of about 0.045. Add 'rmsea', 'cfi' "
         "or 'srmr' only if the user names a value.",
         "All 'realism' percentages are 0 unless the user asks for imperfections.",
+        "'realism.variation' makes the data look collected rather than "
+        "simulated: constructs and items get different means and spreads, and "
+        "the population loadings and paths scatter a little around the planned "
+        "values, as they do in any real sample. Keep it realistic unless the "
+        "user asks for textbook-clean data (none), slightly uneven data (mild) "
+        "or very uneven data (strong).",
         "Empty optional sections may be left as [] or {}.",
     ],
 }
@@ -233,6 +252,7 @@ _ALLOWED_VALUES: Dict[str, Any] = {
     "fit_target.level": list(_FIT_LEVELS),
     "realism.missing_mechanism": [MissingMechanism.MCAR.value,
                                   MissingMechanism.MAR.value],
+    "realism.variation": list(_VARIATIONS),
 }
 
 
@@ -317,7 +337,7 @@ def build_template() -> Dict[str, Any]:
         "indirect_effects": [{"chain": ["SQ", "SAT", "LOY"],
                               "significant": True}],
         "demographics": {
-            "exact_quotas": True,
+            "exact_quotas": False,
             "variables": [
                 {"name": "Gender", "label_ar": "النوع", "label_en": "Gender",
                  "level": "nominal", "role": "control",
@@ -353,6 +373,7 @@ def build_template() -> Dict[str, Any]:
             "missing_percent": 0, "missing_mechanism": "mcar",
             "careless_percent": 0, "outlier_percent": 0,
             "common_method_loading": 0, "skewness": -0.3, "kurtosis": 0.2,
+            "variation": "realistic",
         },
     }
 
@@ -710,7 +731,7 @@ def _read_demographics(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any]
                        constructs: Dict[str, str], used_names: Dict[str, str]) -> None:
     section = reader.section(payload, "demographics")
     reader.keys(section, ("exact_quotas", "variables"), "demographics")
-    spec.quota_exact = reader.flag(section, "exact_quotas", "demographics", True)
+    spec.quota_exact = reader.flag(section, "exact_quotas", "demographics", False)
 
     for where, entry in reader.objects(section, "variables", "demographics"):
         reader.keys(entry, ("name", "label_ar", "label_en", "level", "role",
@@ -888,7 +909,7 @@ def _read_settings(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any]) ->
     realism = reader.section(payload, "realism")
     reader.keys(realism, ("missing_percent", "missing_mechanism", "careless_percent",
                           "outlier_percent", "common_method_loading", "skewness",
-                          "kurtosis"), "realism")
+                          "kurtosis", "variation"), "realism")
     missing = float(reader.number(realism, "missing_percent", "realism", 0, 50, 0.0))
     mechanism = reader.choice(
         realism, "missing_mechanism", "realism",
@@ -909,6 +930,8 @@ def _read_settings(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any]) ->
         realism, "skewness", "realism", -3, 3, 0.0))
     spec.distribution.default_kurtosis = float(reader.number(
         realism, "kurtosis", "realism", -2, 20, 0.0))
+    spec.heterogeneity.apply_preset(reader.choice(
+        realism, "variation", "realism", _VARIATIONS, "realistic"))
 
 
 def from_payload(payload: Dict[str, Any]) -> ImportResult:

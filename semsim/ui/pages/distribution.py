@@ -14,6 +14,9 @@ Four decisions live here, in the order a researcher makes them:
     the resulting category proportions drawn as bars.  The bars are painted by
     hand in :class:`_ProportionChart`: matplotlib cannot repaint fast enough to
     follow a spin box, and this chart has to follow one.
+*   **Real-world variation** -- how far constructs and items differ from one
+    another, and how far the population loadings and paths scatter around the
+    planned values, so the data do not carry the uniformity of a textbook model.
 *   **Noise injection** -- the deliberate imperfections (careless respondents,
     outliers, missingness, jitter) that keep a simulated matrix from fitting
     too perfectly.
@@ -47,6 +50,10 @@ from semsim.ui.widgets.common import (
 #: ``NoiseSpec.careless_style`` is a bare string, not an enum; these are its
 #: three legal values, each with a catalogue entry of its own.
 CARELESS_STYLES: Tuple[str, str, str] = ("random", "straightline", "mixed")
+
+#: The variation presets offered, plus ``custom`` for hand-set amounts.
+VARIATION_LEVELS: Tuple[str, ...] = ("none", "mild", "realistic", "strong",
+                                     "custom")
 
 #: numpy's default_rng accepts anything up to 2**32-1; a spin box is int-sized.
 MAX_SEED: int = 2_147_483_647
@@ -187,6 +194,7 @@ class DistributionPage(StagePage):
 
         self._build_global()
         self._build_preview()
+        self._build_variation()
         self._build_noise()
         self._build_reproducibility()
         self.scroll.add_stretch()
@@ -352,7 +360,88 @@ class DistributionPage(StagePage):
         self._apply_scale(construct.all_items())
 
     # ------------------------------------------------------------------ #
-    # 3. Noise injection
+    # 3. Real-world variation
+    # ------------------------------------------------------------------ #
+
+    def _build_variation(self) -> None:
+        card = self.add_card("d.variation")
+        card.add(InfoBanner("d.variation.explain"))
+
+        self.variation = EnumCombo(str, "d.variation", members=VARIATION_LEVELS)
+        self.variation.value_changed.connect(self._on_variation_preset)
+        card.add(Field("d.variation.level", self.variation))
+
+        def amount(maximum: float, step: float) -> "object":
+            box = float_spin(0.0, maximum, 0.0, decimals=2, step=step)
+            box.valueChanged.connect(lambda _v: self._on_variation_amounts())
+            return box
+
+        self.construct_level_sd = amount(1.0, 0.05)
+        card.add(Field("d.variation.construct_level", self.construct_level_sd,
+                       hint_key="d.variation.construct_level.hint"))
+        self.item_level_sd = amount(1.0, 0.05)
+        card.add(Field("d.variation.item_level", self.item_level_sd,
+                       hint_key="d.variation.item_level.hint"))
+        self.item_spread_sd = amount(0.5, 0.01)
+        card.add(Field("d.variation.item_spread", self.item_spread_sd,
+                       hint_key="d.variation.item_spread.hint"))
+        self.loading_sd = amount(0.2, 0.01)
+        card.add(Field("d.variation.loading", self.loading_sd,
+                       hint_key="d.variation.loading.hint"))
+        self.path_sd = amount(0.15, 0.01)
+        card.add(Field("d.variation.path", self.path_sd,
+                       hint_key="d.variation.path.hint"))
+        self._variation_editors = [
+            self.construct_level_sd, self.item_level_sd, self.item_spread_sd,
+            self.loading_sd, self.path_sd,
+        ]
+
+    def _on_variation_preset(self, level: object) -> None:
+        if self._updating:
+            return
+        settings = self.spec.heterogeneity
+        level = str(level or "realistic")
+        if level == "custom":
+            # Keep the current amounts as the starting point for editing.
+            settings.enabled = True
+        else:
+            settings.apply_preset(level)
+        self._show_variation()
+        self.edit()
+
+    def _on_variation_amounts(self) -> None:
+        if self._updating:
+            return
+        settings = self.spec.heterogeneity
+        settings.enabled = True
+        settings.construct_level_sd = float(self.construct_level_sd.value())
+        settings.item_level_sd = float(self.item_level_sd.value())
+        settings.item_spread_sd = float(self.item_spread_sd.value())
+        settings.loading_sd = float(self.loading_sd.value())
+        settings.path_sd = float(self.path_sd.value())
+        with self.quiet():
+            self.variation.set_value(settings.preset_name())
+        self._update_variation_gating()
+        self.edit()
+
+    def _show_variation(self) -> None:
+        settings = self.spec.heterogeneity
+        with self.quiet():
+            self.variation.set_value(settings.preset_name())
+            self.construct_level_sd.setValue(settings.construct_level_sd)
+            self.item_level_sd.setValue(settings.item_level_sd)
+            self.item_spread_sd.setValue(settings.item_spread_sd)
+            self.loading_sd.setValue(settings.loading_sd)
+            self.path_sd.setValue(settings.path_sd)
+        self._update_variation_gating()
+
+    def _update_variation_gating(self) -> None:
+        enabled = bool(self.spec.heterogeneity.enabled)
+        for editor in self._variation_editors:
+            editor.setEnabled(enabled)
+
+    # ------------------------------------------------------------------ #
+    # 4. Noise injection
     # ------------------------------------------------------------------ #
 
     def _build_noise(self) -> None:
@@ -438,7 +527,7 @@ class DistributionPage(StagePage):
                                    and mechanism is MissingMechanism.MAR)
 
     # ------------------------------------------------------------------ #
-    # 4. Reproducibility
+    # 5. Reproducibility
     # ------------------------------------------------------------------ #
 
     def _build_reproducibility(self) -> None:
@@ -570,6 +659,7 @@ class DistributionPage(StagePage):
 
         self._check_feasible()
         self._update_preview()
+        self._show_variation()
         self._update_noise_gating()
         self._update_engine_note()
 

@@ -156,6 +156,11 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
     rng = np.random.default_rng(actual_seed)
 
     report("status.compiling", 0.05)
+    if compiled is None and sigma_override is None:
+        # A caller that hands over a compiled model has already drawn its
+        # population (the calibration loop does, once for all its draws).
+        from semsim.generation.heterogeneity import realise_population
+        spec = realise_population(spec, actual_seed)
     cm = compiled if compiled is not None else compile_model(spec)
     warnings.extend(cm.warnings)
 

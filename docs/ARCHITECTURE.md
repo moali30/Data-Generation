@@ -18,6 +18,7 @@ semsim/generation/fleishman.py     Fleishman (1978) polynomial coefficients
            generation/vale_maurelli.py  Vale & Maurelli (1983) non-normal MVN
            generation/thresholds.py     continuous y* -> Likert categories
            generation/noise.py          careless responders, outliers, missingness
+           generation/heterogeneity.py  one realistic population around the spec
            generation/engine.py         orchestrator: spec -> DataFrame
 
 semsim/targeting/cudeck_browne.py  inject model error for a target RMSEA
@@ -305,6 +306,24 @@ def inject_missing(data, mechanism, proportion, rng, driver=None) -> tuple[np.nd
     # on an observed score (returns float array with np.nan).
 def apply_noise(data: np.ndarray, spec: ModelSpec, cm: CompiledModel,
                 rng) -> tuple[np.ndarray, NoiseReport]
+```
+
+## `semsim/generation/heterogeneity.py`
+
+```python
+def realise_population(spec: ModelSpec, seed: int) -> ModelSpec
+    # A deep copy describing one population around the specification, drawn
+    # from its own stream keyed on the run seed (spec.heterogeneity):
+    #   - each Likert item gets explicit cut points, shifted by its construct's
+    #     level plus its own difficulty and stretched by its own spread;
+    #   - loadings and second-order loadings move around the planned value;
+    #   - paths meant to be significant, and exogenous correlations, move but
+    #     keep their sign and at least 75% of their size.
+    # Explicit thresholds/proportions, null paths, interactions and anything
+    # touching a control term are left alone. A change that compiles with more
+    # warnings than the original is undone. The copy has heterogeneity
+    # switched off, so it is never varied twice. calibrate() calls it once per
+    # run; generate_dataset() calls it when given no compiled model.
 ```
 
 ## `semsim/generation/engine.py`

@@ -1,8 +1,15 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.2.3
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.3.0
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.3.0
+
+- البيانات بقت شبه البيانات اللي بتتجمع فعلًا. قبل كده كل أسئلة المتغير كان ليها نفس المتوسط (3.00 مثلًا) ونفس الانحراف المعياري ونفس التشبع، والتوزيع متماثل تمامًا، وده بيكشف إن البيانات مولَّدة. دلوقتي البرنامج بيسحب «مجتمع واقعي» حوالين نموذجك: كل متغير ليه مستوى خاص على المقياس، وكل سؤال ليه صعوبة وتشتت خاصين، والتشبعات والمسارات بتتفاوت شوية حوالين القيم اللي حددتها من غير ما إشارتها أو الدلالة المطلوبة تتغير.
+- إعداد جديد في صفحة «توليد البيانات والتوزيعات» اسمه «التباين الواقعي بين الأسئلة والمتغيرات»: بدون، خفيف، واقعي (الافتراضي)، قوي، أو مخصّص بخمس قيم.
+- العينة الديموغرافية بقت تتسحب عشوائيًا بالنسب المطلوبة افتراضيًا، فالأعداد بتطلع زي العينات الحقيقية (317 و204 و158 بدل 320 و200 و160). الحصص الدقيقة لسه موجودة لو العينة حصصية فعلًا.
+- قالب الذكاء الاصطناعي فيه مفتاح جديد `realism.variation`، والحصص العشوائية بقت الافتراضية، والمساعد بيتوجّه يختار نمط الاستجابة المناسب لكل متغير (مقاييس الرضا والثقة والنية بتميل للموافقة) بدل ما يخلي كل المتغيرات متماثلة حوالين المنتصف.
 
 ### الجديد في 1.2.3
 
@@ -73,9 +80,20 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.2.2
+## SEM Data Simulation Engine — v1.3.0
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.3.0
+
+- Generated data now look collected rather than simulated. Every item of a construct used to share the same mean (3.00, say), the same standard deviation and the same loading, in a perfectly symmetric distribution, which gave the data away. The program now draws one realistic population around your model: each construct has its own level on the scale, each item its own difficulty and spread, and the loadings and paths scatter a little around the values you set without changing sign or the significance you asked for.
+- A new "Real-world variation" setting on the Distributions page: none, mild, realistic (the default), strong, or custom with five amounts.
+- Demographic categories are now drawn at random with the requested shares by default, so the counts vary the way a real sample's do (317, 204, 158 rather than 320, 200, 160). Exact quotas remain available for a genuine quota sample.
+- The AI template has a new `realism.variation` key, defaults to random quotas, and steers the assistant to choose each construct's response style on its own merits (satisfaction, trust and intention scales lean towards agreement) instead of centring every construct on the midpoint.
+
+### What's new in 1.2.3
+
+- Fixes the program closing without a message as soon as a simulation started (in 1.2.1 and 1.2.2). The progress bar was being updated from the computation thread instead of the interface.
 
 ### What's new in 1.2.2
 
