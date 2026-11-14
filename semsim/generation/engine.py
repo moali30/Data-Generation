@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -216,7 +216,9 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
         items_cm = _questionnaire_view(cm)
 
     report("status.generating", 0.55)
-    observed = _apply_scales(spec, items_cm, y_star, warnings)
+    from semsim.generation.respondent_styles import draw_respondent_styles
+    styles = draw_respondent_styles(spec, n_cases, actual_seed)
+    observed = _apply_scales(spec, items_cm, y_star, warnings, styles)
 
     report("status.generating", 0.70)
     noise_report = None
@@ -684,8 +686,13 @@ def _factor_score_estimates(cm: CompiledModel, y_star: np.ndarray
 
 
 def _apply_scales(spec: ModelSpec, cm: CompiledModel, y_star: np.ndarray,
-                  warnings: List[str]) -> np.ndarray:
-    """Turn the continuous responses into the scores a respondent would give."""
+                  warnings: List[str], styles: Any = None) -> np.ndarray:
+    """Turn the continuous responses into the scores a respondent would give.
+
+    ``styles`` carries each respondent's answering style
+    (:class:`semsim.generation.respondent_styles.RespondentStyles`); it acts
+    on rating-scale items only, around each item's own neutral point.
+    """
     from semsim.generation import thresholds as th
     n, p = y_star.shape
     covariates = spec.covariate_item_ids()
@@ -712,7 +719,10 @@ def _apply_scales(spec: ModelSpec, cm: CompiledModel, y_star: np.ndarray,
                 and not scale.thresholds and not scale.category_proportions):
             tau = th.scale_thresholds(scale)
             scale = replace(scale, thresholds=[float(v) for v in -tau[::-1]])
-        out[:, index] = th.apply_scale(y_star[:, index], scale)
+        column = y_star[:, index]
+        if styles is not None and scale.kind is ScaleKind.LIKERT:
+            column = styles.apply(column, th.scale_thresholds(scale))
+        out[:, index] = th.apply_scale(column, scale)
 
     if any_ordinal and all(item.scale.kind is ScaleKind.LIKERT
                            for item in items):

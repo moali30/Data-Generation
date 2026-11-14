@@ -30,6 +30,7 @@ from semsim.core.spec import (
     DemographicKind, DemographicRole, DemographicVariable, Dimension,
     ASSOCIATION_V_MAX, AssociationDirection, AssociationStrength,
     DemographicAssociation,
+    RESPONDENT_STYLE_PRESETS,
     EffectSize, FitLevel, GROUP_D_MAX, GROUP_ETA_MAX, GroupDifference,
     GroupDirection, GroupEffect, HETEROGENEITY_PRESETS, IndirectEffect, Item,
     LatentCovariance,
@@ -53,6 +54,7 @@ _ROLES = (ConstructRole.INDEPENDENT.value, ConstructRole.MEDIATOR.value,
           ConstructRole.DEPENDENT.value, ConstructRole.MODERATOR.value)
 _FIT_LEVELS = tuple(f.value for f in FitLevel if f is not FitLevel.CUSTOM)
 _VARIATIONS = ("none", *HETEROGENEITY_PRESETS)
+_STYLE_LEVELS = ("none", *RESPONDENT_STYLE_PRESETS)
 
 
 @dataclass(frozen=True)
@@ -270,6 +272,10 @@ _INSTRUCTIONS: Dict[str, Any] = {
         "values, as they do in any real sample. Keep it realistic unless the "
         "user asks for textbook-clean data (none), slightly uneven data (mild) "
         "or very uneven data (strong).",
+        "'realism.respondent_styles' gives each respondent a way of using the "
+        "scale: some pick the ends, some keep to the middle, some agree with "
+        "everything. Keep it realistic unless the user asks for clean data "
+        "(none) or for strong response styles (strong).",
         "Empty optional sections may be left as [] or {}.",
     ],
 }
@@ -291,6 +297,7 @@ _ALLOWED_VALUES: Dict[str, Any] = {
     "realism.missing_mechanism": [MissingMechanism.MCAR.value,
                                   MissingMechanism.MAR.value],
     "realism.variation": list(_VARIATIONS),
+    "realism.respondent_styles": list(_STYLE_LEVELS),
 }
 
 
@@ -417,7 +424,7 @@ def build_template() -> Dict[str, Any]:
             "missing_percent": 0, "missing_mechanism": "mcar",
             "careless_percent": 0, "outlier_percent": 0,
             "common_method_loading": 0, "skewness": -0.3, "kurtosis": 0.2,
-            "variation": "realistic",
+            "variation": "realistic", "respondent_styles": "realistic",
         },
     }
 
@@ -1049,7 +1056,7 @@ def _read_settings(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any]) ->
     realism = reader.section(payload, "realism")
     reader.keys(realism, ("missing_percent", "missing_mechanism", "careless_percent",
                           "outlier_percent", "common_method_loading", "skewness",
-                          "kurtosis", "variation"), "realism")
+                          "kurtosis", "variation", "respondent_styles"), "realism")
     missing = float(reader.number(realism, "missing_percent", "realism", 0, 50, 0.0))
     mechanism = reader.choice(
         realism, "missing_mechanism", "realism",
@@ -1072,6 +1079,8 @@ def _read_settings(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any]) ->
         realism, "kurtosis", "realism", -2, 20, 0.0))
     spec.heterogeneity.apply_preset(reader.choice(
         realism, "variation", "realism", _VARIATIONS, "realistic"))
+    spec.respondent_styles.apply_preset(reader.choice(
+        realism, "respondent_styles", "realism", _STYLE_LEVELS, "realistic"))
 
 
 def from_payload(payload: Dict[str, Any]) -> ImportResult:

@@ -182,6 +182,10 @@ def test_degrees_of_freedom_match_the_estimator():
 
 def test_control_coefficient_and_substantive_paths_are_recovered():
     spec = with_controls()
+    # Recovery is checked against clean data: answering styles add a little
+    # method variance on purpose, which shaves about 0.006 off this
+    # coefficient and is tested on its own.
+    spec.respondent_styles.enabled = False
     ds = generate_dataset(spec, n=6000, seed=11)
     result = estimate(ds.model_frame, spec, use_polychoric=False)
     table = result.path_estimates.set_index(["source", "target"])

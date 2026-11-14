@@ -195,6 +195,7 @@ class DistributionPage(StagePage):
         self._build_global()
         self._build_preview()
         self._build_variation()
+        self._build_respondent_styles()
         self._build_noise()
         self._build_reproducibility()
         self.scroll.add_stretch()
@@ -448,6 +449,63 @@ class DistributionPage(StagePage):
             editor.setEnabled(enabled)
 
     # ------------------------------------------------------------------ #
+    # Respondent answering styles
+    # ------------------------------------------------------------------ #
+
+    def _build_respondent_styles(self) -> None:
+        card = self.add_card("d.styles")
+        card.add(InfoBanner("d.styles.explain"))
+        self.styles_level = EnumCombo(str, "d.variation", members=VARIATION_LEVELS)
+        self.styles_level.value_changed.connect(self._on_styles_preset)
+        card.add(Field("d.styles.level", self.styles_level))
+        self.extreme_sd = float_spin(0.0, 0.6, 0.0, decimals=2, step=0.05)
+        self.extreme_sd.valueChanged.connect(lambda _v: self._on_styles_amounts())
+        card.add(Field("d.styles.extreme", self.extreme_sd,
+                       hint_key="d.styles.extreme.hint"))
+        self.acquiescence_sd = float_spin(0.0, 0.4, 0.0, decimals=2, step=0.01)
+        self.acquiescence_sd.valueChanged.connect(
+            lambda _v: self._on_styles_amounts())
+        card.add(Field("d.styles.acquiescence", self.acquiescence_sd,
+                       hint_key="d.styles.acquiescence.hint"))
+
+    def _on_styles_preset(self, level: object) -> None:
+        if self._updating:
+            return
+        settings = self.spec.respondent_styles
+        level = str(level or "realistic")
+        if level == "custom":
+            settings.enabled = True
+        else:
+            settings.apply_preset(level)
+        self._show_styles()
+        self.edit()
+
+    def _on_styles_amounts(self) -> None:
+        if self._updating:
+            return
+        settings = self.spec.respondent_styles
+        settings.enabled = True
+        settings.extreme_sd = float(self.extreme_sd.value())
+        settings.acquiescence_sd = float(self.acquiescence_sd.value())
+        with self.quiet():
+            self.styles_level.set_value(settings.preset_name())
+        self._update_styles_gating()
+        self.edit()
+
+    def _show_styles(self) -> None:
+        settings = self.spec.respondent_styles
+        with self.quiet():
+            self.styles_level.set_value(settings.preset_name())
+            self.extreme_sd.setValue(settings.extreme_sd)
+            self.acquiescence_sd.setValue(settings.acquiescence_sd)
+        self._update_styles_gating()
+
+    def _update_styles_gating(self) -> None:
+        enabled = bool(self.spec.respondent_styles.enabled)
+        self.extreme_sd.setEnabled(enabled)
+        self.acquiescence_sd.setEnabled(enabled)
+
+    # ------------------------------------------------------------------ #
     # 4. Noise injection
     # ------------------------------------------------------------------ #
 
@@ -667,6 +725,7 @@ class DistributionPage(StagePage):
         self._check_feasible()
         self._update_preview()
         self._show_variation()
+        self._show_styles()
         self._update_noise_gating()
         self._update_engine_note()
 

@@ -1,8 +1,15 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.5.0
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.6.0
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.6.0
+
+- أسلوب إجابة خاص بكل مستجيب: في البيانات الحقيقية فيه ناس بتختار الطرفين (1 و5) كل ما توافق أو ترفض، وناس بتلزم المنتصف، وناس بتوافق على أي عبارة حتى المعكوسة. دلوقتي كل مستجيب بياخد أسلوب ثابت في كل الأسئلة، بدل ما كل المستجيبين يستخدموا المقياس بنفس الطريقة.
+- كارت جديد في صفحة «توليد البيانات والتوزيعات» اسمه «أسلوب الإجابة عند كل مستجيب»: بدون، خفيف، واقعي (الافتراضي)، قوي، أو مخصّص بقيمتين (الأطراف مقابل المنتصف، والميل للموافقة).
+- متوسطات الأسئلة شبه ما بتتغيرش، والمسارات بتتحرك حوالي 0.02 في المستوى الواقعي، لأن أسلوب الإجابة بيضيف تباين طريقة مشترك صغير زي البيانات الحقيقية (اختبار هارمان بيرتفع حوالي نقطتين مئويتين). والعبارات المعكوسة ارتباطها السالب بباقي الأسئلة بيضعف شوية بسبب الميل للموافقة.
+- قالب الذكاء الاصطناعي فيه مفتاح جديد `realism.respondent_styles`.
 
 ### الجديد في 1.5.0
 
@@ -99,9 +106,16 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.5.0
+## SEM Data Simulation Engine — v1.6.0
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.6.0
+
+- Each respondent now has an answering style of their own. In real data some people pick the ends (1 and 5) whenever they agree or disagree, some keep to the middle, and some agree with any statement, reverse-worded ones included. Each respondent now keeps one style across all the items, instead of everyone using the scale alike.
+- A new "How each respondent answers" card on the data generation page: none, mild, realistic (the default), strong, or custom with two amounts (extremes versus midpoint, and agreeing regardless).
+- Item means barely change and paths move by about 0.02 at the realistic level, because answering styles add a little shared method variance, as in collected data (Harman's test rises by about two percentage points). Reverse-worded items correlate a little less negatively with the rest because of acquiescence.
+- The AI template has a new `realism.respondent_styles` key.
 
 ### What's new in 1.5.0
 

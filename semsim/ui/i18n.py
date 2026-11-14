@@ -583,6 +583,31 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "own difficulty and spread, and loadings and paths scatter a little "
         "around the planned values without changing sign or the requested "
         "significance."),
+    "d.styles": ("أسلوب الإجابة عند كل مستجيب", "How each respondent answers"),
+    "d.styles.explain": (
+        "المستجيبون لا يستخدمون المقياس بالطريقة نفسها: بعضهم يختار الطرفين "
+        "(1 و5) كلما وافق أو رفض، وبعضهم يلزم المنتصف، وبعضهم يوافق على أي "
+        "عبارة حتى العبارات المعكوسة. يأخذ كل مستجيب أسلوبًا خاصًا به في كل "
+        "الأسئلة، فتظهر البيانات كما تُجمع فعلًا. يضيف ذلك قدرًا صغيرًا من "
+        "تباين الطريقة المشترك (يحرّك المسار المعياري نحو 0.02 في المستوى "
+        "الواقعي).",
+        "Respondents do not use the scale alike: some pick the ends (1 and 5) "
+        "whenever they agree or disagree, some keep to the middle, and some "
+        "agree with any statement, reverse-worded ones included. Each "
+        "respondent keeps one style across all the items, as in collected "
+        "data. This adds a little shared method variance (a standardised path "
+        "moves by about 0.02 at the realistic level)."),
+    "d.styles.level": ("مقدار اختلاف الأسلوب", "Amount of style difference"),
+    "d.styles.extreme": ("الأطراف مقابل المنتصف", "Extremes versus midpoint"),
+    "d.styles.extreme.hint": (
+        "مدى اختلاف المستجيبين بين من يختار الطرفين ومن يلزم المنتصف.",
+        "How far respondents range from always picking the ends to keeping "
+        "to the middle."),
+    "d.styles.acquiescence": ("الميل للموافقة", "Agreeing regardless"),
+    "d.styles.acquiescence.hint": (
+        "مدى اختلاف المستجيبين في الموافقة على العبارات أيًّا كان مضمونها.",
+        "How far respondents differ in agreeing with statements whatever "
+        "they say."),
     "d.variation.level": ("مقدار التباين", "Amount of variation"),
     "d.variation.none": ("بدون (نموذج مثالي)", "None (textbook model)"),
     "d.variation.mild": ("خفيف", "Mild"),

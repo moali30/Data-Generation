@@ -74,6 +74,10 @@ anything.
   العينات الحقيقية، كالعمر وسنوات الخبرة، بقوة تحددها بمعامل كرامر V. تُقطع
   فئات كل متغير من درجة كامنة مرتبطة بدرجات المتغيرات الأخرى (رابطة جاوس)،
   فيحتفظ كل متغير بنسب فئاته ويظهر الارتباط في اختبار كاي تربيع.
+- **أسلوب إجابة لكل مستجيب.** يأخذ كل مستجيب ميلًا ثابتًا في كل الأسئلة:
+  إلى الطرفين أو إلى المنتصف، وإلى الموافقة أيًّا كانت صياغة العبارة
+  (Baumgartner & Steenkamp, 2001)، فيضيف ذلك تباين الطريقة الصغير الذي
+  تحمله البيانات المجموعة فعلًا.
 
 ### التشغيل
 
@@ -174,6 +178,10 @@ a Monte Carlo study.
   Each variable's categories are cut from a latent score correlated with
   the others' (a Gaussian copula), so every variable keeps its shares and
   the chi-square test shows the link.
+- **Respondent answering styles.** Each respondent keeps one tendency
+  across all the items: towards the ends or the middle of the scale, and
+  towards agreeing whatever the wording (Baumgartner & Steenkamp, 2001),
+  adding the small method variance collected data carry.
 
 ### Running it
 
@@ -237,6 +245,9 @@ simulated is the model you re-estimate.
 
 ## References
 
+- Baumgartner, H., & Steenkamp, J.-B. E. M. (2001). Response styles in
+  marketing research: A cross-national investigation. *Journal of
+  Marketing Research, 38*, 143–156.
 - Browne, M. W., & Cudeck, R. (1993). Alternative ways of assessing model fit.
 - Cohen, J. (1988). *Statistical Power Analysis for the Behavioral
   Sciences* (2nd ed.). Erlbaum.

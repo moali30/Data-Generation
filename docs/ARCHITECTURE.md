@@ -21,6 +21,7 @@ semsim/generation/fleishman.py     Fleishman (1978) polynomial coefficients
            generation/noise.py          careless responders, outliers, missingness
            generation/heterogeneity.py  one realistic population around the spec
            generation/group_differences.py  comparison groups that differ as planned
+           generation/respondent_styles.py  each respondent's use of the scale
            generation/engine.py         orchestrator: spec -> DataFrame
 
 semsim/targeting/cudeck_browne.py  inject model error for a target RMSEA
@@ -374,6 +375,20 @@ def apply_group_differences(spec: ModelSpec, data: pd.DataFrame,
     # MAX_ATTEMPTS) until each test is significant or not as asked; the
     # closest draw is kept otherwise, with a warning. generate_dataset()
     # calls it once the answers are final.
+```
+
+## `semsim/generation/respondent_styles.py`
+
+```python
+def draw_respondent_styles(spec, n, seed) -> RespondentStyles | None
+    # From its own stream (spec.respondent_styles): a stretch
+    # s = exp(sd_e z - sd_e^2 / 2) (extreme versus midpoint) and a shift
+    # a = sd_a z (acquiescence) per respondent. _apply_scales maps each
+    # rating item's latent response y to m + s (y - m) + a before cutting,
+    # where m is the middle of the item's cut points. Reverse items carry
+    # a negative loading, so the shift agrees with them as written.
+    # The continuous shadow, the demographics and every other stream are
+    # untouched; continuous items are left alone.
 ```
 
 ## `semsim/generation/engine.py`

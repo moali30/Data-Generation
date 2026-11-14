@@ -618,6 +618,64 @@ class HeterogeneitySpec:
         return "custom"
 
 
+#: Respondent answering styles: (extreme_sd, acquiescence_sd).
+RESPONDENT_STYLE_PRESETS: Dict[str, Tuple[float, ...]] = {
+    "mild": (0.10, 0.05),
+    "realistic": (0.20, 0.08),
+    "strong": (0.30, 0.12),
+}
+
+
+@dataclass
+class RespondentStyleSpec:
+    """How each respondent uses the rating scale, whatever the question.
+
+    Real respondents differ in more than their opinions.  Some answer at the
+    ends of the scale and others keep to the middle (extreme versus midpoint
+    responding), and some agree with whatever they are asked, positively
+    worded or not (acquiescence).  See
+    :mod:`semsim.generation.respondent_styles`.  Both values are standard
+    deviations on the z-scale of the latent response: ``extreme_sd`` of the
+    log of each respondent's stretch around the scale's neutral point,
+    ``acquiescence_sd`` of each respondent's shift towards agreeing.
+
+    References
+    ----------
+    Baumgartner, H., & Steenkamp, J.-B. E. M. (2001). Response styles in
+        marketing research: A cross-national investigation. *Journal of
+        Marketing Research*, 38(2), 143-156.
+    """
+
+    enabled: bool = True
+    extreme_sd: float = 0.20
+    acquiescence_sd: float = 0.08
+
+    def apply_preset(self, name: str) -> None:
+        """Set the amounts from a named preset, or switch off for ``none``."""
+        if name == "none":
+            self.enabled = False
+            return
+        values = RESPONDENT_STYLE_PRESETS.get(name)
+        if values is None:
+            return
+        self.enabled = True
+        self.extreme_sd, self.acquiescence_sd = values
+
+    def preset_name(self) -> str:
+        """The preset these settings match, ``none``, or ``custom``."""
+        if not self.enabled:
+            return "none"
+        current = (self.extreme_sd, self.acquiescence_sd)
+        for name, values in RESPONDENT_STYLE_PRESETS.items():
+            if all(abs(a - b) < 1e-9 for a, b in zip(current, values)):
+                return name
+        return "custom"
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and (self.extreme_sd > 0 or self.acquiescence_sd > 0)
+
+
 @dataclass
 class DistributionSpec:
     """Global non-normality controls; per-item values override these."""
@@ -954,6 +1012,8 @@ class ModelSpec:
     distribution: DistributionSpec = field(default_factory=DistributionSpec)
     noise: NoiseSpec = field(default_factory=NoiseSpec)
     heterogeneity: HeterogeneitySpec = field(default_factory=HeterogeneitySpec)
+    respondent_styles: RespondentStyleSpec = field(
+        default_factory=RespondentStyleSpec)
     engine: GenerationEngine = GenerationEngine.AUTO
 
     # -- targeting --------------------------------------------------------- #
@@ -1647,6 +1707,7 @@ __all__ = [
     "DemographicKind", "DemographicRole", "DemographicCategory",
     "GroupEffect", "GroupDirection", "GroupDifference", "GROUP_D_MAX",
     "GROUP_ETA_MAX", "AssociationStrength", "AssociationDirection",
+    "RespondentStyleSpec", "RESPONDENT_STYLE_PRESETS",
     "DemographicAssociation", "ASSOCIATION_V_MAX",
     "DemographicTerm", "DemographicVariable", "ControlPath",
 ]

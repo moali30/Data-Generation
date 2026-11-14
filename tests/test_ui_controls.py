@@ -637,3 +637,19 @@ def test_two_demographics_can_be_linked(window, errors):
     settle()
     assert spec.demographic_associations == []
     assert not errors
+
+
+def test_style_level_drives_the_amounts(window, errors):
+    page = window._pages[2]
+    settings = window.state.spec.respondent_styles
+    assert page.styles_level.value() == "realistic"
+    page.styles_level.setCurrentIndex(page.styles_level.findData("strong"))
+    assert settings.preset_name() == "strong"
+    assert page.extreme_sd.value() == pytest.approx(settings.extreme_sd)
+    page.styles_level.setCurrentIndex(page.styles_level.findData("none"))
+    assert not settings.enabled and not page.extreme_sd.isEnabled()
+    page.styles_level.setCurrentIndex(page.styles_level.findData("mild"))
+    page.acquiescence_sd.setValue(0.25)
+    assert settings.acquiescence_sd == pytest.approx(0.25)
+    assert page.styles_level.value() == "custom"
+    assert not errors
