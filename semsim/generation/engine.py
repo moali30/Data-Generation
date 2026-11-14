@@ -70,6 +70,10 @@ class GeneratedDataset:
     #: Category codes per respondent, and any dummy columns.  Kept apart from
     #: ``data`` so reliability and item statistics see questionnaire items only.
     demographics: Optional[pd.DataFrame] = None
+    #: Careless respondents added on top of the sample (``CarelessBlock``):
+    #: they are in the file a researcher receives, not in ``data``, which is
+    #: the sample left after screening them out.
+    careless: Any = None
 
     @property
     def item_names(self) -> List[str]:
@@ -86,11 +90,41 @@ class GeneratedDataset:
         return pd.concat([self.demographics[wanted], self.data], axis=1)
 
     @property
-    def full_frame(self) -> pd.DataFrame:
-        """Everything a researcher gets in a file: demographics, then items."""
+    def clean_frame(self) -> pd.DataFrame:
+        """The analysed sample: demographics, then items, careless ones out."""
         if self.demographics is None or self.demographics.empty:
             return self.data
         return pd.concat([self.demographics, self.data], axis=1)
+
+    @property
+    def full_frame(self) -> pd.DataFrame:
+        """Everything a researcher gets in a file: demographics, then items.
+
+        Careless respondents sit at their places in it, as collected.
+        """
+        frame = self.clean_frame
+        block = self.careless
+        if block is None or not getattr(block, "n", 0):
+            return frame
+        from semsim.generation.careless import insert_rows
+        return insert_rows(frame, block.frame(), block.positions)
+
+    @property
+    def n_in_file(self) -> int:
+        """Rows in the file: the sample plus any careless respondents."""
+        return int(self.n) + int(getattr(self.careless, "n", 0) or 0)
+
+    def in_file_order(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """A per-respondent frame of the sample, with empty careless rows.
+
+        For extras such as latent scores, which careless respondents have
+        none of, so they line up with the rows of :attr:`full_frame`.
+        """
+        block = self.careless
+        if block is None or not getattr(block, "n", 0) or len(frame) != self.n:
+            return frame
+        from semsim.generation.careless import insert_rows
+        return insert_rows(frame, None, block.positions)
 
     @property
     def has_missing(self) -> bool:
@@ -103,6 +137,8 @@ class GeneratedDataset:
             "seed": self.seed,
             "engine": self.engine_used.value,
             "missing_cells": int(self.data.isna().to_numpy().sum()),
+            "careless": int(getattr(self.careless, "n", 0) or 0),
+            "rows_in_file": self.n_in_file,
             "warnings": len(self.warnings),
         }
 
@@ -222,10 +258,14 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
 
     report("status.generating", 0.70)
     noise_report = None
+    # Careless respondents either come on top of the sample (added below,
+    # from a stream of their own) or replace part of it here.
+    added_on_top = bool(getattr(spec.noise, "careless_screened", False))
     if spec.noise.enabled:
         try:
             from semsim.generation.noise import apply_noise
-            observed, noise_report = apply_noise(observed, spec, items_cm, rng)
+            observed, noise_report = apply_noise(observed, spec, items_cm, rng,
+                                                 careless=not added_on_top)
         except ImportError:
             warnings.append("NOISE_UNAVAILABLE: the noise module is not "
                             "installed; the dataset carries no contamination.")
@@ -238,6 +278,11 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
         demographics, notes = apply_group_differences(spec, data, demographics,
                                                       actual_seed, drawn=drawn)
         warnings.extend(notes)
+    careless = _add_careless(spec, items_cm, y_star, data, demographics,
+                             n_cases, actual_seed, noise_report)
+    if careless is not None and noise_report is None:
+        noise_report = careless[1]
+    careless = careless[0] if careless is not None else None
     shadow = (pd.DataFrame(y_star, columns=[f"{c}_star"
                                             for c in items_cm.item_names])
               if spec.export.include_continuous_shadow else None)
@@ -258,8 +303,35 @@ def generate_dataset(spec: ModelSpec, *, n: Optional[int] = None,
         n=n_cases, seed=actual_seed, engine_used=engine,
         latent_scores=latent, continuous_shadow=shadow,
         noise_report=noise_report, model_error=model_error,
-        warnings=warnings, demographics=demographics,
+        warnings=warnings, demographics=demographics, careless=careless,
     )
+
+
+def _add_careless(spec: ModelSpec, items_cm: CompiledModel, y_star: np.ndarray,
+                  data: pd.DataFrame, demographics: Optional[pd.DataFrame],
+                  n_cases: int, seed: int, noise_report: Any
+                  ) -> Optional[Tuple[Any, Any]]:
+    """Careless respondents on top of the sample, and the noise report."""
+    from semsim.generation import careless as careless_module
+    k = careless_module.extra_count(spec, n_cases)
+    if k <= 0:
+        return None
+    from semsim.generation.noise import NoiseReport, _scales_for
+    scales = _scales_for(spec, items_cm, data.shape[1])
+
+    def score(latent: np.ndarray) -> np.ndarray:
+        return _apply_scales(spec, items_cm, latent, [], None)
+
+    block = careless_module.draw_careless(spec, y_star, data, demographics,
+                                          scales, score, k, seed)
+    if block is None:
+        return None
+    report = noise_report if noise_report is not None else NoiseReport()
+    report.n_careless = block.n
+    report.careless_rows = list(block.positions)
+    report.applied.insert(0, f"careless[{spec.noise.careless_style}]="
+                             f"{block.n} rows added on top of the sample")
+    return block, report
 
 
 # --------------------------------------------------------------------------- #

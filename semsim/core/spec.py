@@ -530,9 +530,17 @@ class NoiseSpec:
     #: Multiplicative inflation of every unique variance (1.0 == untouched).
     #: Values above 1 attenuate reliability the way real measurement does.
     unique_variance_inflation: float = 1.0
-    #: Share of respondents who answer without reading (flat or random lines).
-    careless_proportion: float = 0.0
-    careless_style: str = "random"          # "random" | "straightline" | "mixed"
+    #: Share of the collected responses given without reading (flat lines,
+    #: lines that go flat part-way through, random answers).  Screened survey
+    #: data typically lose a few percent this way.
+    careless_proportion: float = 0.05
+    #: "realistic" (a mix of all three) | "random" | "straightline" | "mixed"
+    careless_style: str = "realistic"
+    #: True: careless respondents come on top of the planned sample, as the
+    #: responses a researcher removes when screening the data, so the file
+    #: holds n + k rows and the analysis the planned n.  False: they replace
+    #: part of the sample and stay in the analysis.
+    careless_screened: bool = True
     #: Share of cells replaced by multivariate outliers.
     outlier_proportion: float = 0.0
     outlier_magnitude_sd: float = 3.5

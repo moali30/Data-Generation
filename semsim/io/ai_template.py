@@ -38,6 +38,10 @@ from semsim.core.spec import (
 )
 from semsim.core.validation import validate
 
+#: Careless respondents expected when a template does not say: a few
+#: percent of the collected responses, as screened survey data typically lose.
+_CARELESS_PERCENT = 5.0
+
 FORMAT = "semsim-ai-template"
 TEMPLATE_VERSION = 1
 
@@ -265,7 +269,16 @@ _INSTRUCTIONS: Dict[str, Any] = {
         "medium effects and 500 or more when weak effects must be significant.",
         "fit_target.level good targets RMSEA of about 0.045. Add 'rmsea', 'cfi' "
         "or 'srmr' only if the user names a value.",
-        "All 'realism' percentages are 0 unless the user asks for imperfections.",
+        "The 'realism' percentages are 0 unless the user asks for "
+        "imperfections, except 'careless_percent': keep it at 5 unless the "
+        "user says how many careless respondents to expect (0 for none).",
+        "'realism.careless_percent' is the share of the collected responses "
+        "given without reading (one answer repeated down the page, from the "
+        "start or part-way through, or random answers). With "
+        "'careless_removed' true they come on top of 'sample_size', for the "
+        "researcher to remove when screening the data, and every planned "
+        "result holds on the remaining sample; false mixes them into the "
+        "sample instead.",
         "'realism.variation' makes the data look collected rather than "
         "simulated: constructs and items get different means and spreads, and "
         "the population loadings and paths scatter a little around the planned "
@@ -422,7 +435,8 @@ def build_template() -> Dict[str, Any]:
         "significance": {"alpha": 0.05},
         "realism": {
             "missing_percent": 0, "missing_mechanism": "mcar",
-            "careless_percent": 0, "outlier_percent": 0,
+            "careless_percent": 5, "careless_removed": True,
+            "outlier_percent": 0,
             "common_method_loading": 0, "skewness": -0.3, "kurtosis": 0.2,
             "variation": "realistic", "respondent_styles": "realistic",
         },
@@ -1055,6 +1069,7 @@ def _read_settings(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any]) ->
 
     realism = reader.section(payload, "realism")
     reader.keys(realism, ("missing_percent", "missing_mechanism", "careless_percent",
+                          "careless_removed",
                           "outlier_percent", "common_method_loading", "skewness",
                           "kurtosis", "variation", "respondent_styles"), "realism")
     missing = float(reader.number(realism, "missing_percent", "realism", 0, 50, 0.0))
@@ -1066,7 +1081,10 @@ def _read_settings(reader: _Reader, spec: ModelSpec, payload: Dict[str, Any]) ->
     spec.noise.missing_mechanism = (MissingMechanism(mechanism) if missing > 0
                                     else MissingMechanism.NONE)
     spec.noise.careless_proportion = float(reader.number(
-        realism, "careless_percent", "realism", 0, 50, 0.0)) / 100.0
+        realism, "careless_percent", "realism", 0, 30,
+        _CARELESS_PERCENT)) / 100.0
+    spec.noise.careless_screened = reader.flag(
+        realism, "careless_removed", "realism", True)
     spec.noise.outlier_proportion = float(reader.number(
         realism, "outlier_percent", "realism", 0, 20, 0.0)) / 100.0
     method = float(reader.number(realism, "common_method_loading", "realism", 0, 0.9, 0.0))

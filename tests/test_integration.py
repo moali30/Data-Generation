@@ -208,7 +208,9 @@ def test_noise_lands_where_it_was_asked_to() -> None:
     assert abs(realised_missing - 0.08) < 0.02, realised_missing
     report = dataset.noise_report
     assert report is not None
-    assert getattr(report, "n_careless", 0) == round(0.05 * 2000)
+    # The share is of the whole file: 105 careless on top of 2000 is 5.0%.
+    assert getattr(report, "n_careless", 0) == round(2000 * 0.05 / 0.95)
+    assert len(dataset.full_frame) == 2000 + report.n_careless
 
 
 # --------------------------------------------------------------------------- #

@@ -200,6 +200,10 @@ class ValidationReport:
 # --------------------------------------------------------------------------- #
 
 
+#: Above this share of careless responses, validation warns: published
+#: screening rates rarely go higher.
+CARELESS_SHARE_HIGH = 0.15
+
 def _d(
     severity: Severity,
     code: str,
@@ -2377,6 +2381,21 @@ def _check_noise(spec: ModelSpec, out: List[Diagnostic]) -> None:
                 hint_ar="استخدم نسبة بين 0 و0.10، فالنسب المنشورة لا تتجاوز "
                         "عادة 10%.",
             ))
+
+    careless = _num(getattr(noise, "careless_proportion", 0.0))
+    if CARELESS_SHARE_HIGH < careless < 1.0:
+        out.append(_d(
+            Severity.WARNING,
+            "CARELESS_SHARE_HIGH",
+            f"{careless:.0%} of the responses would be careless. Screened "
+            "survey data usually lose 2% to 10% this way.",
+            f"{careless:.0%} من الاستجابات ستكون لمستجيبين غير مبالين، "
+            "والبيانات الحقيقية بعد الفحص تفقد عادة من 2% إلى 10% فقط.",
+            hint_en="Lower the careless share unless the study expects an "
+                    "unusually inattentive sample.",
+            hint_ar="قلّل النسبة إلا إذا كانت الدراسة تتوقع عينة غير مبالية "
+                    "بشكل غير معتاد.",
+        ))
 
     infl = _num(getattr(noise, "unique_variance_inflation", 1.0), 1.0)
     if infl <= 0.0:

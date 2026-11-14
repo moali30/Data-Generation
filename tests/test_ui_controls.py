@@ -653,3 +653,18 @@ def test_style_level_drives_the_amounts(window, errors):
     assert settings.acquiescence_sd == pytest.approx(0.25)
     assert page.styles_level.value() == "custom"
     assert not errors
+
+
+def test_careless_respondents_default_to_being_screened_out(window, errors):
+    page = window._pages[2]
+    noise = window.state.spec.noise
+    assert page.careless_style.value() == "realistic"
+    assert page.careless_screened.isChecked() and noise.careless_screened
+    page.careless_screened.setChecked(False)
+    assert not noise.careless_screened
+    page.careless_style.setCurrentIndex(
+        page.careless_style.findData("straightline"))
+    assert noise.careless_style == "straightline"
+    page.noise_enabled.setChecked(False)
+    assert not page.careless_screened.isEnabled()
+    assert not errors

@@ -1,8 +1,17 @@
 <div dir="rtl" align="right">
 
-## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.6.1
+## محرك محاكاة بيانات النمذجة بالمعادلات البنائية — الإصدار 1.7.0
 
 ملف تنفيذي واحد لويندوز 64-بت. **لا يحتاج تثبيت Python ولا أي تبعيات** — نزّله وشغّله.
+
+### الجديد في 1.7.0
+
+- مستجيبون غير مبالين في ملف البيانات، زي أي استبيان إلكتروني حقيقي. الافتراضي 5% من الاستجابات، بمزيج واقعي: ناس بتكرر نفس الإجابة في كل الأسئلة (غالبًا المحايد أو الموافق مش "غير موافق بشدة")، وناس بتقرا أول الاستبيان وبعدين تكرر نفس الإجابة للباقي، وناس بتجاوب عشوائي.
+- بيتضافوا فوق حجم العينة ومتوزعين في صفوف عشوائية في الملف: لو العينة 400، الملف فيه 421 صف، والـ 21 الزيادة هما اللي الباحث بيحذفهم في فحص البيانات. كل الأهداف (المسارات والدلالة والمطابقة) بتتحقق على الـ 400 بعد الحذف، والعينة نفسها بتطلع زي ما كانت بالظبط.
+- صفحة النتائج والتقرير وورقة المواصفات في Excel وسكربت R بيقولوا عدد المستجيبين غير المبالين ونوعهم وأرقام صفوفهم في الملف.
+- في كارت التشويش: نمط جديد «واقعي» (الافتراضي)، واختيار «إضافتهم فوق حجم العينة». لو شلت العلامة بيرجعوا جوه العينة ويفضلوا في التحليل زي الإصدارات القديمة.
+- قالب الذكاء الاصطناعي: `careless_percent` افتراضيه 5، ومفتاح جديد `careless_removed`.
+- المشاريع المحفوظة قبل كده بتفتح بنفس إعداداتها (نسبة 0% فضلت 0%).
 
 ### الجديد في 1.6.1
 
@@ -112,9 +121,18 @@
 
 ---
 
-## SEM Data Simulation Engine — v1.6.1
+## SEM Data Simulation Engine — v1.7.0
 
 A single-file Windows 64-bit executable. **No Python installation, no dependencies** — download and run.
+
+### What's new in 1.7.0
+
+- The data file now holds careless respondents, as every online survey does. By default they are 5% of the responses, in a realistic mix: some give the same answer to every question (mostly the neutral or an agreeing option, rarely "strongly disagree"), some read the first part and then repeat one answer for the rest, and some answer at random.
+- They come on top of the sample, at random rows of the file: a sample of 400 gives a file of 421 rows, and the 21 extra are the ones a researcher removes when screening the data. Every target (paths, significance, fit) holds on the 400 that remain, and the sample itself is exactly what it would have been without them.
+- The results page, the report, the Excel specification sheet and the R script say how many careless respondents there are, of which kind, and which rows of the file they are.
+- The noise card has a new "Realistic" style (the default) and an "Add them on top of the sample" option. Unticked, they replace part of the sample and stay in the analysis, as in earlier versions.
+- AI template: `careless_percent` defaults to 5, and a new `careless_removed` key.
+- Projects saved earlier open with their own settings (a 0% share stays 0%).
 
 ### What's new in 1.6.1
 

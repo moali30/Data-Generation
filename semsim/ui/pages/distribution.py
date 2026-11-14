@@ -48,8 +48,9 @@ from semsim.ui.widgets.common import (
 )
 
 #: ``NoiseSpec.careless_style`` is a bare string, not an enum; these are its
-#: three legal values, each with a catalogue entry of its own.
-CARELESS_STYLES: Tuple[str, str, str] = ("random", "straightline", "mixed")
+#: legal values, each with a catalogue entry of its own.
+CARELESS_STYLES: Tuple[str, ...] = ("realistic", "random", "straightline",
+                                    "mixed")
 
 #: The variation presets offered, plus ``custom`` for hand-set amounts.
 VARIATION_LEVELS: Tuple[str, ...] = ("none", "mild", "realistic", "strong",
@@ -532,6 +533,10 @@ class DistributionPage(StagePage):
         self.careless_style.value_changed.connect(lambda _v: self._on_noise())
         card.add(Field("d.careless_style", self.careless_style))
 
+        self.careless_screened = TCheckBox("d.careless_screened")
+        self.careless_screened.toggled.connect(lambda _c: self._on_noise())
+        card.add(self.careless_screened)
+
         self.outliers = percent_spin(0.0)
         self.outliers.valueChanged.connect(lambda _v: self._on_noise())
         card.add(Field("d.outliers", self.outliers))
@@ -557,7 +562,8 @@ class DistributionPage(StagePage):
         card.add(Field("d.jitter", self.jitter))
 
         self._noise_editors = [
-            self.inflation, self.careless, self.careless_style, self.outliers,
+            self.inflation, self.careless, self.careless_style,
+            self.careless_screened, self.outliers,
             self.outlier_sd, self.missing_mechanism, self.missing_proportion,
             self.mar_driver, self.jitter,
         ]
@@ -569,7 +575,8 @@ class DistributionPage(StagePage):
         noise.enabled = bool(self.noise_enabled.isChecked())
         noise.unique_variance_inflation = float(self.inflation.value())
         noise.careless_proportion = percent_value(self.careless)
-        noise.careless_style = str(self.careless_style.value() or "random")
+        noise.careless_style = str(self.careless_style.value() or "realistic")
+        noise.careless_screened = bool(self.careless_screened.isChecked())
         noise.outlier_proportion = percent_value(self.outliers)
         noise.outlier_magnitude_sd = float(self.outlier_sd.value())
         noise.missing_mechanism = enum_value(
@@ -696,6 +703,8 @@ class DistributionPage(StagePage):
             self.inflation.setValue(noise.unique_variance_inflation)
             self.careless.setValue(noise.careless_proportion * 100.0)
             self.careless_style.set_value(noise.careless_style)
+            self.careless_screened.setChecked(
+                bool(getattr(noise, "careless_screened", True)))
             self.outliers.setValue(noise.outlier_proportion * 100.0)
             self.outlier_sd.setValue(noise.outlier_magnitude_sd)
             self.missing_mechanism.set_value(noise.missing_mechanism)

@@ -43,6 +43,16 @@ HEADLINE = [
 ]
 
 
+def careless_note(dataset: Any) -> str:
+    """Which file rows are careless respondents, ahead of the data summary."""
+    block = getattr(dataset, "careless", None)
+    if block is None or not getattr(block, "n", 0):
+        return ""
+    return translator.t(
+        "r.careless_note", total=getattr(dataset, "n_in_file", "-"),
+        k=block.n, n=getattr(dataset, "n", "-"),
+        rows=", ".join(str(r) for r in block.file_rows)) + "\n"
+
 class ResultsPage(StagePage):
     TITLE_KEY = "stage.6.title"
     SUBTITLE_KEY = "stage.6.subtitle"
@@ -181,6 +191,7 @@ class ResultsPage(StagePage):
         page = self._tab()
         self._panel("r.data_preview", page, max_rows=25)
         self._data_note = QLabel()
+        self._data_note.setWordWrap(True)
         theme.set_role(self._data_note, "hint")
         page.add(self._data_note)
         page.add_stretch()
@@ -451,6 +462,7 @@ class ResultsPage(StagePage):
         missing = int(data.isna().to_numpy().sum())
         total = data.size or 1
         self._data_note.setText(
+            careless_note(dataset) +
             f"{translator.t('r.n')} = {len(data)}   |   "
             f"{translator.t('m.items')} = {data.shape[1]}   |   "
             f"{translator.t('r.missing')} = {missing} "

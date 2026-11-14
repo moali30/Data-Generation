@@ -141,7 +141,8 @@ def test_descriptive_variable_leaves_the_answers_untouched():
 def test_a_model_without_demographics_has_no_extra_columns():
     ds = generate_dataset(plain_model(), n=100, seed=5)
     assert ds.demographics is None
-    assert ds.model_frame is ds.data and ds.full_frame is ds.data
+    assert ds.model_frame is ds.data and ds.clean_frame is ds.data
+    assert list(ds.full_frame.columns) == list(ds.data.columns)
 
 
 # --------------------------------------------------------------------------- #

@@ -665,14 +665,28 @@ STRINGS: Dict[str, Tuple[str, str]] = {
         "measurement does."),
     "d.careless": ("نسبة المستجيبين غير المبالين", "Careless respondents"),
     "d.careless.explain": (
-        "مستجيبون يجيبون دون قراءة — إمّا بخط مستقيم (نفس الإجابة لكل الأسئلة) "
-        "أو بإجابات عشوائية. ظاهرة حقيقية في الاستبيانات الإلكترونية.",
-        "Respondents who answer without reading: a straight line of identical "
-        "answers, or random clicking. A real feature of online surveys."),
+        "مستجيبون يجيبون دون قراءة: الإجابة نفسها لكل الأسئلة، أو يقرؤون "
+        "أول الاستبيان ثم يكررون الإجابة نفسها لما تبقّى، أو يختارون "
+        "عشوائيًا. يعود كل استبيان إلكتروني بنسبة منهم (غالبًا بين 2% و10%)، "
+        "ويحذفهم الباحث قبل التحليل. النسبة هنا من إجمالي الاستجابات في "
+        "الملف. وعند إضافتهم فوق حجم العينة تتحقق كل النتائج المخططة على "
+        "العينة بعد حذفهم، ويذكر البرنامج أرقام صفوفهم.",
+        "Respondents who answer without reading: the same answer to every "
+        "question, a careful start that turns into one repeated answer, or "
+        "random clicks. Every online survey brings some back (often 2% to "
+        "10%), and researchers remove them before analysing. The share is of "
+        "all the responses in the file. Added on top of the sample, every "
+        "planned result holds once they are removed, and the program says "
+        "which rows they are."),
     "d.careless_style": ("نمط عدم المبالاة", "Careless style"),
+    "d.careless.realistic": ("واقعي: مزيج من الأنواع الثلاثة",
+                             "Realistic: a mix of all three"),
     "d.careless.random": ("عشوائي", "Random"),
     "d.careless.straightline": ("خط مستقيم", "Straight-lining"),
     "d.careless.mixed": ("مختلط", "Mixed"),
+    "d.careless_screened": (
+        "إضافتهم فوق حجم العينة (يحذفهم الباحث قبل التحليل)",
+        "Add them on top of the sample (removed before analysis)"),
     "d.outliers": ("نسبة القيم الشاذة", "Outliers"),
     "d.outlier_magnitude": ("حجم الشذوذ (بالانحرافات المعيارية)",
                             "Outlier magnitude (SD)"),
@@ -857,6 +871,13 @@ STRINGS: Dict[str, Tuple[str, str]] = {
     "r.min": ("الأدنى", "Min"),
     "r.max": ("الأعلى", "Max"),
     "r.missing": ("المفقود", "Missing"),
+    "r.careless_note": (
+        "يضم الملف {total} استجابة، منها {k} لمستجيبين غير مبالين في "
+        "الصفوف: {rows}. كل النتائج في هذه الصفحة محسوبة على الاستجابات الـ "
+        "{n} الأخرى، فاحذف هذه الصفوف قبل تحليل الملف.",
+        "The file holds {total} responses, {k} of them from careless "
+        "respondents, in rows {rows}. Every result on this page uses the "
+        "other {n}, so remove those rows before analysing the file."),
     "r.floor": ("نسبة أدنى فئة", "Floor %"),
     "r.ceiling": ("نسبة أعلى فئة", "Ceiling %"),
     "r.mardia": ("اختبار مارديا للاعتدالية المتعددة",

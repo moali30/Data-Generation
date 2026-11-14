@@ -78,6 +78,11 @@ anything.
   إلى الطرفين أو إلى المنتصف، وإلى الموافقة أيًّا كانت صياغة العبارة
   (Baumgartner & Steenkamp, 2001)، فيضيف ذلك تباين الطريقة الصغير الذي
   تحمله البيانات المجموعة فعلًا.
+- **مستجيبون غير مبالين يحذفهم الباحث.** يضم الملف نسبة من الاستجابات
+  المعطاة دون قراءة (5% افتراضيًا): نفس الإجابة لكل الأسئلة، أو من منتصف
+  الاستبيان، أو إجابات عشوائية (Meade & Craig, 2012; Curran, 2016).
+  تُضاف فوق حجم العينة في صفوف متفرقة، وتتحقق كل النتائج المخططة على
+  العينة بعد حذفها، ويذكر البرنامج أرقام صفوفها.
 
 ### التشغيل
 
@@ -182,6 +187,12 @@ a Monte Carlo study.
   across all the items: towards the ends or the middle of the scale, and
   towards agreeing whatever the wording (Baumgartner & Steenkamp, 2001),
   adding the small method variance collected data carry.
+- **Careless respondents to screen out.** The file holds a share of
+  responses given without reading (5% by default): one answer repeated
+  from the start or part-way through, or random answers (Meade & Craig,
+  2012; Curran, 2016). They come on top of the sample at scattered rows,
+  every planned result holds once they are removed, and the program
+  says which rows they are.
 
 ### Running it
 
@@ -253,6 +264,9 @@ simulated is the model you re-estimate.
   Sciences* (2nd ed.). Erlbaum.
 - Cramér, H. (1946). *Mathematical Methods of Statistics*. Princeton
   University Press.
+- Curran, P. G. (2016). Methods for the detection of carelessly invalid
+  responses in survey data. *Journal of Experimental Social Psychology,
+  66*, 4–19.
 - Cudeck, R., & Browne, M. W. (1992). Constructing a covariance matrix that
   yields a specified minimizer and a specified minimum discrepancy function
   value. *Psychometrika, 57*, 357–369.
@@ -268,6 +282,8 @@ simulated is the model you re-estimate.
   determination of sample size for covariance structure modeling.
   *Psychological Methods, 1*, 130–149.
 - Nelsen, R. B. (2006). *An Introduction to Copulas* (2nd ed.). Springer.
+- Meade, A. W., & Craig, S. B. (2012). Identifying careless responses in
+  survey data. *Psychological Methods, 17*, 437–455.
 - Muthén, L. K., & Muthén, B. O. (2002). How to use a Monte Carlo study to
   decide on sample size and determine power.
 - Samejima, F. (1969). Estimation of latent ability using a response pattern

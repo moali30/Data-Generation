@@ -19,6 +19,7 @@ semsim/generation/fleishman.py     Fleishman (1978) polynomial coefficients
            generation/vale_maurelli.py  Vale & Maurelli (1983) non-normal MVN
            generation/thresholds.py     continuous y* -> Likert categories
            generation/noise.py          careless responders, outliers, missingness
+           generation/careless.py       careless respondents added on top of the sample
            generation/heterogeneity.py  one realistic population around the spec
            generation/group_differences.py  comparison groups that differ as planned
            generation/respondent_styles.py  each respondent's use of the scale
@@ -300,16 +301,51 @@ class NoiseReport:
 
 def inject_careless(data: np.ndarray, scales: list[ScaleSpec], proportion: float,
                     style: str, rng) -> tuple[np.ndarray, list[int]]
+    # "realistic" (default): careless_patterns() on the chosen rows.
     # "random": uniform draws over the response scale.
     # "straightline": one category repeated across the whole row.
     # "mixed": half and half.
+def careless_patterns(block, scales, rng, *, reference=None) -> tuple[np.ndarray, list[str]]
+    # Each row becomes a straight-liner (35%), a late straight-liner who goes
+    # flat from 40-80% of the way down (35%) or a random responder (30%).
+    # The repeated code is the midpoint for a third of them and otherwise
+    # drawn from the attentive sample's pooled answers; a random answer comes
+    # half from the item's own distribution, half uniform over the scale.
 def inject_outliers(data, proportion, magnitude_sd, rng, scales=None) -> tuple[np.ndarray, int]
 def inject_missing(data, mechanism, proportion, rng, driver=None) -> tuple[np.ndarray, int]
     # MCAR: uniform. MAR: logistic in the driver column, so missingness depends
     # on an observed score (returns float array with np.nan).
 def apply_noise(data: np.ndarray, spec: ModelSpec, cm: CompiledModel,
-                rng) -> tuple[np.ndarray, NoiseReport]
+                rng, *, careless=True) -> tuple[np.ndarray, NoiseReport]
+    # careless=False skips the careless step (the engine passes it when
+    # spec.noise.careless_screened adds them on top instead).
 ```
+
+## `semsim/generation/careless.py`
+
+```python
+@dataclass
+class CarelessBlock:
+    items: pd.DataFrame; demographics: pd.DataFrame | None
+    positions: list[int]          # zero-based rows of the file, ascending
+    kinds: list[str]              # straightline / partial / random
+    file_rows -> list[int]        # one-based, as a spreadsheet shows them
+
+def extra_count(spec, n) -> int
+    # k with k / (n + k) = noise.careless_proportion, when careless_screened.
+def draw_careless(spec, y_star, data, demographics, scales, score, k, seed)
+    # From its own stream [seed, 49979687]: first answers drawn from the
+    # attentive latent responses' mean and covariance and scored like theirs,
+    # made careless by careless_patterns(); demographics copied from random
+    # attentive rows; positions scattered over the n + k rows.
+def insert_rows(frame, extra, positions) -> pd.DataFrame
+```
+
+`GeneratedDataset.data` and `.demographics` stay the analysed sample (every
+target is calibrated on it). `.careless` holds the block; `.full_frame` is the
+file with the careless rows in place, `.clean_frame` the sample without them,
+`.n_in_file` the file's row count and `.in_file_order(frame)` lines a
+per-respondent extra (latent scores, continuous shadow) up with the file.
 
 ## `semsim/generation/heterogeneity.py`
 
